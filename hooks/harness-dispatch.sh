@@ -363,6 +363,35 @@ block_generic() {
   # Update tmux pane border with current status
   update_pane_status "$HNAME" "$CURRENT" "$DONE_COUNT" "$TOTAL"
 
+  # ── Phase 0 gate: Sketch must be approved before implementation ──
+  local SKETCH_APPROVED=$(jq -r '.sketch_approved // false' "$PROGRESS" 2>/dev/null || echo "false")
+  if [ "$SKETCH_APPROVED" != "true" ] && [ "$DONE_COUNT" -eq 0 ]; then
+    # No tasks completed yet and no sketch approved — enforce Phase 0
+    local SKETCH_MSG="## ${HNAME}: Phase 0 — Sketch the Vision\n\n"
+    SKETCH_MSG="${SKETCH_MSG}**Mission:** ${MISSION}\n\n"
+    SKETCH_MSG="${SKETCH_MSG}Before implementing anything, you must create a high-fidelity HTML sketch\n"
+    SKETCH_MSG="${SKETCH_MSG}illustrating the end state you're building toward.\n\n"
+    SKETCH_MSG="${SKETCH_MSG}1. Read claude_files/${CANONICAL}-harness.md — absorb \"The World We Want\"\n"
+    SKETCH_MSG="${SKETCH_MSG}2. Explore the current codebase to understand what exists today\n"
+    SKETCH_MSG="${SKETCH_MSG}3. Create \`claude_files/${CANONICAL}-vision.html\` showing:\n"
+    SKETCH_MSG="${SKETCH_MSG}   - UI mockups / architecture diagrams of the end state\n"
+    SKETCH_MSG="${SKETCH_MSG}   - Before → After comparisons\n"
+    SKETCH_MSG="${SKETCH_MSG}   - Key decisions and trade-offs\n"
+    SKETCH_MSG="${SKETCH_MSG}   - How seed waypoints map to the overall vision\n"
+    SKETCH_MSG="${SKETCH_MSG}4. Open it: \`open claude_files/${CANONICAL}-vision.html\`\n"
+    SKETCH_MSG="${SKETCH_MSG}5. Wait for user feedback — do NOT start implementation\n"
+    SKETCH_MSG="${SKETCH_MSG}6. Once approved, set \`\"sketch_approved\": true\` in progress.json\n\n"
+    SKETCH_MSG="${SKETCH_MSG}The sketch is a 10-minute investment that prevents hours of misaligned work.\n"
+    SKETCH_MSG="${SKETCH_MSG}Escape: touch /tmp/claude_allow_stop_${SESSION_ID}"
+
+    python3 -c "
+import json, sys
+msg = sys.argv[1]
+print(json.dumps({'decision': 'block', 'reason': msg}))
+" "$(echo -e "$SKETCH_MSG")"
+    exit 0
+  fi
+
   # ── Verification readiness check (K8s ReadinessProbe) ──
   # If the current task was just marked completed, run readiness gate
   local READINESS_WARN=""

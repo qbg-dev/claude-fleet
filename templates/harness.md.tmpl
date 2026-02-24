@@ -32,6 +32,23 @@ likely order, dependencies between areas. But frame as suggestions:]
 [Key files, architecture, APIs—the landscape the agent will navigate.
 Not "you must read these files" but "here's what's here and why."]
 
+## Phase 0: Sketch the Vision
+
+Before any implementation, create `claude_files/{{HARNESS}}-vision.html`—a high-fidelity
+HTML illustration of the end state you're building toward. This is your proposal to the
+user. It should show:
+
+- **What the end state looks like** — UI mockups, architecture diagrams, data flows
+- **Before → After** — what changes from today
+- **Key decisions** — trade-offs you plan to make, and why
+- **Waypoint map** — how the seed tasks connect to the overall vision
+
+Open it in the browser (`open claude_files/{{HARNESS}}-vision.html`) and wait for user
+feedback. Do NOT proceed to implementation until the sketch is approved. Once approved,
+set `"sketch_approved": true` in the progress file.
+
+The sketch is a 10-minute investment that prevents hours of misaligned work.
+
 ## Progress File
 
 `claude_files/{{HARNESS}}-progress.json` — tracks seed waypoints, not a railroad.
