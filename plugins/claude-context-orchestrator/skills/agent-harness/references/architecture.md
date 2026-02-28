@@ -4,9 +4,9 @@
 
 | Concern | Location | Shared? | What lives here |
 |---------|----------|---------|-----------------|
-| **Infrastructure** | `~/.claude-ops/` | Global — all projects | Scripts, hooks, templates, tests |
-| **State** | `claude_files/{name}-*` | Per-harness | Progress, harness.md, journal |
-| **Policy** | `claude_files/{name}-*` | Per-harness | best-practices.json, context-injections.json |
+| **Infrastructure** | `~/.claude-ops/` | Global — all projects | Scripts, hooks, templates, tests, event bus library |
+| **State** | `{project}/.claude/harness/{name}/` | Per-harness | tasks.json, policy.json, agents/module-manager/ |
+| **Event Bus** | `{project}/.claude/bus/` | Per-project | Single stream.jsonl, cursors, schema, seq counter |
 | **Execution** | `TeamCreate` + `Task` tool | Ephemeral | Worker spawn, messaging, task delegation |
 
 ---
@@ -15,321 +15,348 @@
 
 Shared across all projects. Agents source directly — never copy into projects.
 
+### Libraries
+
 | Path | What |
 |------|------|
-| `~/.claude-ops/scaffold.sh` | Create new harness from 7 templates |
-| `~/.claude-ops/lib/harness-jq.sh` | Task graph queries (source in all scripts) |
+| `~/.claude-ops/lib/harness-jq.sh` | Task graph queries, manifest registry, hook helpers |
+| `~/.claude-ops/lib/event-bus.sh` | Event bus v3 (single stream, publish, read, query, compact, checkpoint) |
+| `~/.claude-ops/lib/pane-resolve.sh` | Pane ID + harness resolution for hooks |
+| `~/.claude-ops/lib/bus-paths.sh` | Agent path resolution: `resolve_agent_file`, `resolve_agent_inbox`, `resolve_agent_outbox` |
 | `~/.claude-ops/lib/handoff.sh` | Session rotation/replacement |
-| `~/.claude-ops/lib/bead.sh` | Cross-harness coordination (wisps, claims, gates) |
-| `~/.claude-ops/hooks/harness-dispatch.sh` | Stop hook: session->harness routing |
-| `~/.claude-ops/hooks/stop-check.sh` | General code-review for non-harness sessions |
-| `~/.claude-ops/hooks/admission/deploy-mutator.sh` | PreToolUse: auto-injects deploy flags |
-| `~/.claude-ops/hooks/admission/context-injector.sh` | PreToolUse: injects knowledge before tool calls |
-| `~/.claude-ops/hooks/operators/progress-validator.sh` | PostToolUse: runs checks.d/ + validates progress |
-| `~/.claude-ops/hooks/operators/activity-logger.sh` | PostToolUse: logs tool use to activity JSONL |
-| `~/.claude-ops/hooks/operators/checks.d/` | Modular code quality checks (drop files in/out) |
-| `~/.claude-ops/templates/*.tmpl` | 7 scaffold templates |
-| `~/.claude-ops/tests/run-all.sh` | 181 tests, 9 suites |
 
----
+### Hooks (by type)
 
-## State Layer: CLAUDE.md (the entry point)
+| Path | Type | Event | What |
+|------|------|-------|------|
+| `hooks/publishers/prompt-publisher.sh` | Publisher | UserPromptSubmit | Prompt logging + inbox sync + bus events |
+| `hooks/publishers/post-tool-publisher.sh` | Publisher | PostToolUse | Tool logging + bus telemetry |
+| `hooks/interceptors/pre-tool-context-injector.sh` | Interceptor | PreToolUse | Context injections from policy.json + bus reads |
+| `hooks/gates/stop-harness-dispatch.sh` | Gate | Stop | Harness routing, phase gates, rotation |
+| `hooks/gates/stop-session.sh` | Gate | Stop | Code-review for non-harness sessions |
+| `hooks/dispatch/harness-*.sh` | Module | (sourced) | Gate/rotation/discovery/gc modules |
+| `hooks/operators/checks.d/*.sh` | Check | (sourced) | Modular code quality checks |
 
-CLAUDE.md holds stable things — mission, architecture rules, safety. It *points to* the progress file but doesn't contain the feature list.
+### Scripts
 
-**Why separate?** Goals are stable (mission doesn't change session to session). Features are dynamic (status changes every commit). Mixing them causes drift.
+| Script | What it does |
+|--------|-------------|
+| `~/.claude-ops/scripts/scaffold.sh` | Create new harness from templates + manifest |
+| `~/.claude-ops/scripts/monitor-agent.sh` | Polling monitor + Claude session |
+| `~/.claude-ops/scripts/harness-api.ts` | REST API on :7777 (dashboard, bus, agents) |
+| `~/.claude-ops/scripts/tmux-harness-summary.sh` | Tmux status bar agent summary |
 
-```markdown
-## Autonomous Harness
+### Templates
 
-**Mission:** [One paragraph — what we're building and *why*.]
+| Template | Generates |
+|----------|-----------|
+| `templates/seed.sh.tmpl` | `.claude/scripts/{name}-seed.sh` |
+| `templates/start.sh.tmpl` | `.claude/scripts/{name}-start.sh` |
+| `templates/policy.json.tmpl` | `.claude/harness/{name}/policy.json` |
+| `templates/acceptance.md.tmpl` | `.claude/harness/{name}/acceptance.md` |
+| `templates/worker-seed.sh` | Worker agent seed prompt (takes MODULE + WORKER_NAME args) |
+| `templates/report.css` | Shared stylesheet for reports |
 
-**Progress file:** `claude_files/{name}-progress.json` — read this first every session.
+### CLI Tools
 
-**Architecture rules:**
-- [Framework/pattern constraints]
-- [No mock data — empty state with error message if API missing]
-- [Commit after each meaningful unit]
+| Tool | What |
+|------|------|
+| `~/.claude-ops/bin/harness.sh` | Unified CLI: list, status, stop, start, restart, logs, health, scaffold, register |
+| `~/.claude-ops/bin/report-issue.sh` | File structured issues or feature requests |
 
-**Safety:**
-- Do NOT send messages (WhatsApp, Discord, Nexus, email)
-- Do NOT deploy to production
-- Do NOT run destructive git commands
+### Test Suite
 
-**Self-clear:** When context feels heavy, run `bash .claude/scripts/{name}-continue.sh`
+```bash
+bash ~/.claude-ops/tests/run-all.sh              # Full suite
+bash ~/.claude-ops/tests/test-event-bus.sh        # 43 bus v3 tests (single stream)
+bash ~/.claude-ops/tests/test-registration.sh     # 16 three-tier discovery tests
+bash ~/.claude-ops/tests/test-hooks.sh            # Hook integration tests
+bash ~/.claude-ops/tests/test-harness-jq.sh       # 35 task graph + manifest tests
+bash ~/.claude-ops/tests/test-scaffold.sh         # Scaffold tests
+bash ~/.claude-ops/tests/test-waves.sh            # Wave function tests
+bash ~/.claude-ops/tests/test-cycle-phase.sh      # Cycle phase enforcement tests
+bash ~/.claude-ops/tests/test-worker-dispatch.sh  # Worker dispatch tests
 ```
 
 ---
 
-## State Layer: Progress File (durable memory)
+## State Layer: Per-Harness Directory (v3)
 
-JSON file that survives across sessions. Agent reads it at start, updates after each unit of work.
+Each harness at `{project}/.claude/harness/{name}/`:
 
-### Unified Task Graph Schema
+| File | Purpose | Git tracked? |
+|------|---------|-------------|
+| `tasks.json` | Task graph: `{tasks: {id: {status, description, blockedBy, owner}}}` | YES |
+| `policy.json` | Context injections, rules, learnings | YES |
+| `acceptance.md` | Pass/fail status per criterion | YES |
+| `agents/module-manager/config.json` | lifecycle, model, sleep_duration, mission, rotation | YES |
+| `agents/module-manager/state.json` | status, cycles_completed, last_cycle_at | YES |
+| `agents/module-manager/mission.md` | Goal + Constraints (MUST MEET) + Scope | YES |
+| `agents/module-manager/MEMORY.md` | Synthesized learnings ≤200 lines | YES |
+| `agents/module-manager/permissions.json` | bypassPermissions + disallowedTools | YES |
+| `agents/module-manager/inbox.jsonl` | Messages received (materialized by bus) | NO |
+| `agents/module-manager/outbox.jsonl` | Messages sent (audit trail) | NO |
+| `agents/module-manager/memory/` | ref/, notes/, scripts/ subdirs | YES |
 
-All harnesses use this schema. Tasks form a DAG via `blockedBy` — the current task is derived at query time (first `in_progress`, else first unblocked `pending`), never stored as a top-level field.
+**Removed in v3**: `progress.json`, `harness.md`, `journal.md`, `spec.md` (merged into mission.md), `identity.json`, `subscriptions.yaml`
+
+### Agent Workspace (v3 — 6 files per agent)
+
+Module-managers at `agents/module-manager/`, workers at `agents/worker/{name}/`:
+
+| File | Purpose |
+|------|---------|
+| `mission.md` | What to do (replaces identity.json mission field) |
+| `config.json` | Static config: model, lifecycle, monitoring thresholds |
+| `state.json` | Runtime state: type (execution/optimization/monitoring), loop counts, acceptance |
+| `MEMORY.md` | Persistent learnings — agent reads and updates each loop |
+| `inbox.jsonl` | Messages received (materialized by bus side-effects) |
+| `outbox.jsonl` | Messages sent (audit trail) |
+
+---
+
+## State Layer: v3 File Schemas
+
+### tasks.json (module root — task graph)
 
 ```json
 {
-  "harness": "billing-migration",
-  "mission": "Brief mission statement — carried into seed prompts after /clear",
-  "status": "active",
-  "started_at": "2026-02-21T22:27:47Z",
-  "session_count": 1,
   "tasks": {
-    "billing": {
-      "status": "in_progress",
-      "description": "Query property bills via chat -> bill-card RichCard",
+    "task-id": {
+      "status": "pending|in_progress|completed",
+      "description": "self-contained task description",
       "blockedBy": [],
       "owner": null,
-      "steps": ["backend", "tool", "richcard", "wire", "css", "test"],
-      "completed_steps": ["backend", "tool"],
-      "team": null,
-      "metadata": {
-        "notes": "API returns paginated results, need scroll handler",
-        "test_evidence": "",
-        "chrome_verified": false
-      }
-    },
-    "meter-reading": {
-      "status": "pending",
-      "description": "Meter reading submission via chat",
-      "blockedBy": ["billing"],
-      "owner": null,
-      "steps": ["backend", "tool", "richcard", "wire", "css", "test"],
-      "completed_steps": [],
-      "team": null,
       "metadata": {}
     }
-  },
-  "state": {},
-  "learnings": [
-    "uview-ui u-form needs :model not v-model for nested objects",
-    "WeChat pages.json subpackages must have unique root paths"
-  ],
-  "commits": ["abc1234 feat: add billing query"],
-  "rotation": {
-    "max_rounds": 20,
-    "max_features_per_session": 3,
-    "mode": "new_session",
-    "claude_command": "cdo"
-  },
-  "current_session": {
-    "round_count": 0,
-    "tasks_completed": 0,
-    "started_at": "2026-02-21T22:27:47Z"
   }
 }
 ```
 
-### Shared jq Functions (`~/.claude-ops/lib/harness-jq.sh`)
+### agents/module-manager/config.json
 
-Source in any harness script: `source ~/.claude-ops/lib/harness-jq.sh`
+```json
+{
+  "name": "mod-ops",
+  "mission": "one-line mission description",
+  "lifecycle": "bounded|long-running",
+  "model": "sonnet",
+  "sleep_duration": 900,
+  "rotation": {
+    "max_rounds": 1,
+    "mode": "new_session",    // "new_session" | "none"
+    "claude_command": "cdo"   // cdo (opus) | cds (sonnet) | cdh (haiku)
+  },
+  "scope_tags": [],
+  "created_at": "ISO"
+}
+```
+
+### agents/module-manager/state.json
+
+```json
+{
+  "status": "active|done",
+  "cycles_completed": 0,
+  "last_cycle_at": null,
+  "session_count": 0
+}
+```
+
+### Task Graph Functions (`harness-jq.sh`)
 
 | Function | Returns |
 |----------|---------|
-| `harness_current_task $PF` | First in_progress task, else first unblocked pending, else "ALL_DONE" |
+| `harness_current_task $PF` | First in_progress, else first unblocked pending, else "ALL_DONE" |
 | `harness_next_task $PF` | Next unblocked pending (skipping in_progress) |
-| `harness_done_count $PF` | Count of completed tasks |
-| `harness_total_count $PF` | Total task count |
-| `harness_completed_names $PF` | Comma-separated completed task IDs |
-| `harness_pending_names $PF` | Comma-separated pending task IDs |
+| `harness_done_count $PF` / `harness_total_count $PF` | Counts |
+| `harness_completed_names $PF` / `harness_pending_names $PF` | Comma-separated IDs |
 | `harness_task_description $PF $TASK` | Description of a specific task |
-| `harness_name $PF` / `harness_mission $PF` | Read `.harness` / `.mission` |
-| `harness_check_blocked $PF $TASK` | JSON blocker details or "null" if unblocked |
-| `harness_set_in_progress $PF $TASK` | Set status (validates deps — refuses if blocked, returns exit 1 with blocker details) |
+| `harness_check_blocked $PF $TASK` | JSON blocker details or "null" |
+| `harness_set_in_progress $PF $TASK` | Set status (validates deps) |
 | `harness_set_completed $PF $TASK` | Set status to completed |
-| `harness_would_unblock $PF $TASK` | Tasks that become runnable when this task completes |
-| `harness_state $PF $KEY` | Read `.state.*` (harness-specific fields) |
-
-**Dependency enforcement:** `harness_set_in_progress` validates blockedBy at write time. If blocked, it prints exactly what's blocking to stderr and returns exit 1.
-
-### Derived Fields (computed, never stored)
-
-```bash
-source ~/.claude-ops/lib/harness-jq.sh
-CURRENT=$(harness_current_task "$PROGRESS")    # first in_progress or first unblocked pending
-NEXT=$(harness_next_task "$PROGRESS")          # next unblocked pending
-DONE=$(harness_done_count "$PROGRESS")         # count of completed
-TOTAL=$(harness_total_count "$PROGRESS")       # total tasks
-```
-
-### Field Glossary
-
-| Field | Level | Purpose |
-|-------|-------|---------|
-| `harness` | Top | Self-identifying slug — dispatch reads this instead of parsing filename |
-| `mission` | Top | One-liner for seed prompts. Reminds the agent *why*. |
-| `status` | Top | `"active"` or `"done"`. Hooks check this. |
-| `tasks` | Top | DAG of tasks with `blockedBy` dependency edges |
-| `state` | Top | Harness-specific data (swarm fields, pass rate history, etc.) |
-| `learnings` | Top | Persistent memory. Seed script carries last 5 forward. Terse bullet points. |
-| `session_count` | Top | Bumped on each `/clear` + reseed. |
-| `rotation` | Top | Session rotation config (max_rounds, claude_command, mode) |
-| `current_session` | Top | Per-session counters (round_count, tasks_completed) |
-| `blockedBy` | Task | Array of task IDs that must complete before this task can start |
-| `owner` | Task | Agent name if claimed (for multi-agent/swarm harnesses) |
-| `team` | Task | Claude Code sub-team name if spawned for this task |
-| `description` | Task | Enough context to start work without reading harness.md. Carried into seed prompts. |
-| `steps` | Task | Explicit step array. Allows per-task cycle customization. |
-| `metadata` | Task | Harness-specific per-task data (test_evidence, chrome_verified, findings, notes) |
-
-### Journal File (`claude_files/{name}-journal.md`)
-
-Human-readable briefing that accumulates over the harness lifetime. The agent appends a section after each task or round. Unlike `learnings` (terse bullets for machine consumption in seed prompts), the journal is for **humans** — Warren reads this to understand:
-
-1. **What the agent did** and what worked
-2. **Difficulties and dead ends** — what approaches failed and why
-3. **Blocked on external action** — checkboxed items that need a human
-4. **Key metrics** — before/after numbers for the round
-5. **Next priorities** — what the agent plans to tackle next
-
-**Format:** Each entry is a Markdown section with timestamp and task name. Use `[ ]` checkboxes for blocked items.
+| `harness_would_unblock $PF $TASK` | Tasks that become runnable on completion |
+| `harness_init $PF` | Initialize path cache for v3 config/state/tasks resolution |
+| `worker_scaffold $DIR $NAME $MISSION` | Create worker directory with 6-file model |
+| `worker_pane_register $PID $MOD $NAME ...` | Register worker in pane-registry |
+| `worker_loop_update $STATE $PID $TARGET $DELTA $MSG` | Update worker state + registry after loop |
+| `pane_registry_update $PID $HARNESS $TASK $DONE $TOTAL $DISPLAY [$TARGET] [$ROLE]` | Update pane-registry entry (single atomic write) |
 
 ---
 
-## Policy Layer: Hook Architecture
+## Event Bus Layer (`{project}/.claude/bus/`)
 
-K8s-inspired three-layer enforcement. All hooks at `~/.claude-ops/hooks/`, shared across projects.
+### v3 Architecture
 
-```
-+------------------------------------------------------------+
-|                  HOOK CONTROL PLANE                         |
-|                                                             |
-|  Admission Controllers   Operators       Probes             |
-|  (PreToolUse gates)      (PostToolUse)   (Stop checks)      |
-|                                                             |
-|  deploy-mutator.sh       progress-       task-readiness.sh  |
-|  context-injector.sh     validator.sh    harness-dispatch.sh |
-|                          activity-                           |
-|                          logger.sh                           |
-|                                                             |
-|  Config: best-practices.json (monitor-evolvable)            |
-|  Knowledge: context-injections.json (monitor-evolvable)     |
-|  Checks: checks.d/*.sh (monitor adds/removes files)        |
-+------------------------------------------------------------+
-```
+Single `stream.jsonl` (no topic directories). Events carry `_event_type`, `_seq` (monotonic), `_ts`. Pluggable side-effects declared in `schema.json` and executed from `~/.claude-ops/bus/side-effects/*.sh`. Atomic writes via mkdir-based spinlock.
 
-### Three evolvable surfaces
+### Bus Event Types (v3 — 16 types)
 
-All take effect instantly — no restart needed:
+| Event type | Published by |
+|------------|-------------|
+| `prompt` | prompt-publisher.sh |
+| `session.start` | prompt-publisher.sh (first prompt) |
+| `session.end` | stop hooks |
+| `tool-call` | post-tool-publisher.sh |
+| `file-edit` | post-tool-publisher.sh |
+| `deploy` | post-tool-deploy-flag.sh |
+| `error` | any hook on error |
+| `config-change` | post-tool-publisher.sh |
+| `subagent.start` | subagent-lifecycle.sh |
+| `subagent.stop` | subagent-lifecycle.sh |
+| `context.compacting` | pre-compact-evolve.sh |
+| `stop.blocked` | hook_block() in harness-jq.sh |
+| `work-order` | bus_publish (direct) |
+| `announcement` | bus_publish_announcement() |
+| `work-order.completed` | lead agent |
+| `work-order.created` | lead agent |
 
-| Surface | Per-harness file | What it controls |
-|---------|-----------------|-----------------|
-| **best-practices.json** | `claude_files/{name}-best-practices.json` | Thresholds, deploy rules, verification standards |
-| **context-injections.json** | `claude_files/{name}-context-injections.json` | Knowledge injected before tool calls |
-| **checks.d/*.sh** | `~/.claude-ops/hooks/operators/checks.d/` | Modular code quality checks |
-
-### Hooks inventory
-
-| Hook | Type | What it does |
-|------|------|-------------|
-| `harness-dispatch.sh` | Stop | Routes sessions to `block_generic()` via registry |
-| `stop-check.sh` | Stop | General code-review for non-harness sessions |
-| `admission/deploy-mutator.sh` | PreToolUse (Bash) | Auto-injects --fast --skip-langfuse, blocks test deploy |
-| `admission/context-injector.sh` | PreToolUse (all) | Injects relevant knowledge before tool calls |
-| `operators/progress-validator.sh` | PostToolUse (Write/Edit) | Runs checks.d/ modules + validates progress changes |
-| `operators/activity-logger.sh` | PostToolUse (all) | Logs tool use to `/tmp/claude_activity_{harness}.jsonl` |
-
-### PreCompact hook
-
-Critical for continuous-loop harnesses. Fires before Claude compacts context, giving the agent one last chance to persist discoveries. Six preservation layers: (1) uncommitted work guard, (2) journal entry, (3) progress update, (4) session decision log, (5) draft preservation, (6) active file bookmark.
-
-### Project-level dispatch
-
-Each project has `.claude/hooks/harness-dispatch.sh` that imports from `~/.claude-ops/hooks/`:
+### Bus API
 
 ```bash
-#!/usr/bin/env bash
-# Project dispatch — delegates to shared infrastructure
-source ~/.claude-ops/hooks/harness-dispatch.sh "$@"
+source ~/.claude-ops/lib/event-bus.sh
+
+bus_publish "file-edit" '{"agent":"my-agent","file":"src/main.ts"}'
+bus_read "my-consumer" --type "file-edit" --limit 10  # Advances cursor
+bus_query "file-edit"                                  # Legacy: type + after_seq
+bus_query --type "deploy" --from "code-health" --after 500 --limit 50
+bus_query --pattern "work-order" --since "2026-02-27T00:00:00Z"
+bus_query_filter "telemetry"                           # Named filter from schema.json
+bus_subscribe "my-consumer"                            # Init cursor at current max
+bus_ack "my-consumer" 142                              # Manual cursor advance
+bus_git_checkpoint "auto: wave 3 complete"
+bus_compact                                            # Prune consumed events (global)
 ```
+
+### Convenience Aliases
+
+```bash
+bus_publish_deploy "agent" "static" "test"
+bus_publish_announcement "bot" "message" "urgent"
+```
+
+---
+
+## Registration
+
+| Source | Key | Written by |
+|--------|-----|------------|
+| `pane-registry.json` | pane ID `.harness` | `harness-launch.sh`, stop hooks, `harness register` |
+
+pane-registry.json is the sole source of truth. session-registry.json was fully removed in v3. All hooks read via `resolve_pane_and_harness()` in `pane-resolve.sh`.
 
 ---
 
 ## Execution Layer: Teams
 
-Default execution layer for all harnesses. Uses Claude Code's native team primitives as the ephemeral execution runtime. Only omit for fully sequential task chains.
+| Mode | When | Agents | Team? |
+|------|------|--------|-------|
+| **Swarm** | 2+ independent tasks | 1 lead + N workers | Yes (TeamCreate) |
+| **Solo** | All tasks sequential | 1 (harness agent) | No |
 
-```
-Harness starts -> Lead creates TeamCreate("harness-{name}")
-              -> TaskCreate for each pending task
-              -> Task(subagent) spawns workers
-              -> Workers complete tasks -> Lead syncs to progress.json
-              -> Rotation/shutdown -> TeamDelete
-              -> Next session recreates from progress.json
-```
+### Swarm Lifecycle
 
-**Sync protocol:** progress.json -> TaskCreate on start; TaskUpdate -> progress.json on complete. Progress.json is always the source of truth.
+1. `{name}-seed.sh` injected into module-manager → reads tasks.json + config.json
+2. Module-manager calls `TeamCreate`, creates tasks from tasks.json, spawns workers
+3. Workers claim tasks, complete them, notify module-manager via `hq_send` + bus
+4. Module-manager updates tasks.json + publishes bus events
+5. On rotation: `harness_bump_session` → handoff.sh → new session re-reads tasks.json + state.json
+6. All done: shutdown workers → `bus_git_checkpoint` → `state.json status="done"`
 
-Full documentation: see `teams.md`.
+### Hooks Integration
 
----
-
-## Two-Layer Config Architecture
-
-**Layer 1: XML config** (`{project}/.claude/agent-harness.xml`)
-Per-project. Claude reads via `@include` in CLAUDE.md. Stop hook extracts subset at runtime.
-
-**Layer 2: Shell hooks** enforce the XML at lifecycle boundaries.
-
-Required XML sections: `<project>` (orientation), `<checklist>` (quality gates), `<stop-prompts>` (accountability).
-
-Optional: gated `<item>` elements, `<workflow>`, `<sensitive-paths>`, `<progress-file>`.
-
-### Minimal Harness XML
-
-```xml
-<agent-harness>
-  <project>
-    <name>My Project</name>
-    <purpose>What this codebase does, in one line</purpose>
-  </project>
-  <checklist>
-    <item>No mock/placeholder data introduced</item>
-    <item>Changes follow existing patterns</item>
-    <item>Git diff reviewed — no accidental files</item>
-    <item>Feature summary provided (Before/After/How to test/Expected)</item>
-  </checklist>
-  <stop-prompts>
-    <code-changes>
-      <question>What does it do now?</question>
-      <question>How did you verify it works?</question>
-    </code-changes>
-  </stop-prompts>
-</agent-harness>
-```
+Hooks fire on the **lead agent only** — workers are subagents with their own lifecycle.
 
 ---
 
-## Safety
+## Durable State (`~/.claude-ops/state/`)
 
-### Threat Model
-
-| Risk | Example | Mitigation |
-|------|---------|------------|
-| **Outbound comms** | Agent sends WhatsApp/email | Block unless harness explicitly enables |
-| **Destructive git** | `git push --force` | Block in PostToolUse hook |
-| **Production access** | SSH to prod, deploy scripts | Block unless harness explicitly enables |
-| **Credential exposure** | Committing .env | Block in PostToolUse + checklist |
-| **Runaway costs** | Infinite API calls | Rate limit in hooks |
-| **Data destruction** | `rm -rf`, DROP TABLE | Block destructive patterns |
-
-**Principle: whitelist over blacklist.** For overnight harnesses, prefer listing what the agent CAN do.
-
-| Harness Type | Safety Level |
-|---|---|
-| **Interactive** (human watching) | Low — just the obvious |
-| **Overnight** (unattended) | Medium — + outbound comms, + prod access |
-| **Multi-agent swarm** | High — + messaging limits, + file scope |
-| **Production-touching** | Maximum — whitelist only |
+| Path | Purpose |
+|------|---------|
+| `pane-registry.json` | Agent discovery metadata (Tier 0 source of truth) |
+| `sessions/{sid}/` | Per-session: allow-stop, echo-state.json, baseline.txt, flags |
+| `harness-runtime/{name}/` | Per-harness: stop-flag, rotation-advisory |
+| `health.json` | Per-agent health status |
+| `metrics.jsonl` | Unified event stream |
 
 ---
 
-## Self-Regulation
+## Per-Harness Manifests
 
-The harness isn't static. Claude tightens constraints when in dangerous territory, relaxes for routine work.
+```
+~/.claude-ops/harness/manifests/{name}/manifest.json
+```
 
-- **Sensitive path detection:** Stop hook cross-references changed files against `<sensitive-paths>`. If matched: CAUTION prepended, extra questions added.
-- **Dynamic guardrails:** Claude can create temporary PostToolUse hooks for risky operations (DB migrations, auth changes).
-- **Blast radius awareness:** 1-3 files = routine. 10+ files = sweeping, consider splitting. Deploy/DB/auth = add guardrails.
+Registry functions in harness-jq.sh: `harness_list_active`, `harness_project_root`, `harness_progress_path`, `harness_list_all`.
+
+---
+
+## Ops Registry (v4)
+
+Dynamic agent discovery at `{project}/.claude/harness/ops-registry.json`. The hq-v3 harness reads this to aggregate module state.
+
+Current system (v4): 1 coordinator (`hq-v3`) + 4 module-managers (`mod-ops`, `mod-tenant`, `mod-intel`, `mod-platform`) + 14 workers.
+
+```json
+{
+  "_meta": { "version": 4 },
+  "coordinator": "hq-v3",
+  "agents": {
+    "hq-v3": { "type": "coordinator", "modules": ["mod-ops", "mod-tenant", "mod-intel", "mod-platform"] },
+    "mod-ops": { "type": "module-manager", "workers": ["wo-fullchain", "pm-workbench"], "preview_port": 8012 },
+    ...
+  }
+}
+```
+
+---
+
+## Module-Manager Agent Slot (v3)
+
+v3 introduces `agents/module-manager/` as the primary agent slot (replaces `agents/sidecar/` for modules that have workers). `harness-launch.sh` checks `agents/module-manager/permissions.json` first, falls back to `agents/sidecar/permissions.json`.
+
+Module-managers coordinate workers but also have their own workspace (MEMORY.md, inbox, outbox). Workers are at `agents/worker/{name}/`.
+
+---
+
+## Worker Worktree Isolation
+
+Workers run in **git worktrees** for branch isolation — each worker gets its own copy of the repo on its own branch. No git lock contention between workers or with the main checkout.
+
+```
+~/Desktop/zPersonalProjects/
+  Wechat/                    ← main checkout (module-managers + hq-v3)
+  Wechat-wo-fullchain/       ← worktree for wo-fullchain (branch: mod-ops/wo-fullchain)
+  Wechat-pm-workbench/       ← worktree for pm-workbench (branch: mod-ops/pm-workbench)
+  Wechat-kf-quality/         ← worktree for kf-quality (branch: mod-tenant/kf-quality)
+  ...
+```
+
+Module-managers create worktrees with `git worktree add` and launch workers with `tmux split-window -d -c $WORKTREE_DIR`. Workers use `--add-dir ${PROJECT_ROOT}/.claude/harness/${MODULE}` to read harness files from the main repo.
+
+**Key benefit:** Workers commit freely to their own branch. Module-managers merge approved work into module integration branches (`mod-ops/work`, etc.). hq-v3 merges integration branches to main.
+
+---
+
+## `--allowedTools` + `--dangerously-skip-permissions` Interaction
+
+These flags are orthogonal:
+- `--allowedTools` filters which tools are **available** to the model (whitelist)
+- `--dangerously-skip-permissions` auto-approves **usage** of available tools (no user confirmation)
+
+Both should be set for unattended agents: bypass removes the approval prompt, allowedTools restricts the blast radius. A worker with `allowedTools: ["Edit(src/miniapp/**)", "Read", "Grep"]` and `--dangerously-skip-permissions` can freely edit miniapp files but cannot touch anything else.
+
+---
+
+## File Ownership Map
+
+`{project}/.claude/harness/file-ownership.json` defines which module/worker owns which source files. Workers' `permissions.json` `allowedTools` should match their ownership entries.
+
+| Module | Owns |
+|--------|------|
+| mod-ops | `src/admin/app/pages/pm-workbench/`, `src/admin/routes/work-order*` |
+| mod-tenant | `src/miniapp/`, `src/wechat/callback/`, chatbot tool handlers |
+| mod-intel | `src/bi/`, `src/admin/app/pages/finance/`, `src/admin/routes/dashboard*` |
+| mod-platform | `scripts/deploy*`, `data/config/databases.json` |
+| hq-v3 | Read-only everywhere |
+| Shared | `src/admin/routes/index.ts`, `data/config/security-policies.json` (MM serializes) |

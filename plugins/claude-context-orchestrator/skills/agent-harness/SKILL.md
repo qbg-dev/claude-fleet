@@ -1,373 +1,394 @@
 ---
 name: "agent-harness"
-description: "Build and launch autonomous agent harnesses with worker, monitor, and control plane. Trigger: HARNESSUP."
+description: "Build and launch autonomous agent harnesses with worker, monitor, and event bus. Trigger: HARNESSUP."
 ---
 
 # Agent Harness
 
-A harness is a task graph + hooks that let a Claude agent work autonomously for hours. The agent decides WHAT. The harness tracks WHERE. Hooks enforce HOW.
-
-**Three separations:** Infrastructure (`~/.claude-ops/`, global) | State (`claude_files/{name}-*`, per-harness) | Policy (best-practices/context-injections, monitor-evolvable).
+A harness is a task graph + hooks + event bus that let a Claude agent work autonomously for hours.
+The agent decides WHAT. The harness tracks WHERE. Hooks enforce HOW. The bus connects WHO.
 
 **Trigger: HARNESSUP** — reflect, evolve, continue.
 
 ---
 
-## Two Paths to a Running Harness
+## Canonical Source of Truth
 
-### Fast Path: Populate from Plan (common case)
+All harness infrastructure lives at **`~/.claude-ops/`**. Read these files directly
+for up-to-date details — they are the source of truth, not this skill document.
 
-You already have a plan or know exactly what tasks to create. This is the 80% case — skip exploration, go straight to file creation.
-
-```
-1. Scaffold          bash ~/.claude-ops/scripts/scaffold.sh my-feature /path/to/project
-2. Read scaffolds    Read all 9 generated template files + manifest
-3. Read a reference  Read an existing harness (e.g., bi-opt-progress.json) for patterns
-4. Write all files   Write all 10 files in parallel (9 scaffold + journal)
-5. Post-scaffold     Update manifest status, agent-harness.xml, verify
-6. Launch            bash .claude/scripts/my-feature-start.sh --monitor
-```
-
-**Step 4 checklist — 10 files to populate:**
-
-| # | File | Key fields |
-|---|------|-----------|
-| 1 | `claude_files/{name}-progress.json` | `status: "active"`, `mission`, `started_at`, 10-25 tasks with `blockedBy` DAG |
-| 2 | `claude_files/{name}-harness.md` | The World We Want, Why This Matters, Constraints, Terrain Map, Deploy Commands, Safety |
-| 3 | `claude_files/{name}-goal.md` | North Star, Success Looks Like, Tensions to Navigate |
-| 4 | `claude_files/{name}-best-practices.json` | verification, deploy, code_quality, rotation sections |
-| 5 | `claude_files/{name}-context-injections.json` | file_context, command_context, tool_context |
-| 6 | `claude_files/{name}-journal.md` | **Not scaffolded — create manually.** Session 0 retrospective if prior work exists |
-| 7 | `.claude/scripts/{name}-seed.sh` | Enhance with team mandate, file paths, domain-specific tables |
-| 8 | `.claude/scripts/{name}-start.sh` | Usually fine as-is from scaffold |
-| 9 | `.claude/scripts/{name}-continue.sh` | Usually fine as-is from scaffold |
-| 10 | `~/.claude-ops/harness/manifests/{name}/manifest.json` | **Set `status: "active"`** (scaffold defaults to "done") |
-
-**Step 5 — post-scaffold fixups (easy to forget):**
-- Update manifest `status` from `"done"` to `"active"`
-- Add `goal` and `journal` paths to manifest `files` object
-- Add entry to `agent-harness.xml` `<available-harnesses>` table
-- Run `jq '.tasks | keys | length' claude_files/{name}-progress.json` to verify task count
-- Run `bash .claude/scripts/{name}-seed.sh` to verify seed generates correctly
-
-### Full Path: Explore → Design → Build (new domain)
-
-You don't know the codebase yet. Need to explore before designing tasks.
-
-```
-1. Scaffold          bash ~/.claude-ops/scripts/scaffold.sh my-feature /path/to/project
-2. Explore           Read CLAUDE.md, Glob for key dirs, Grep for patterns
-3. Design            Choose archetype, identify tasks, map dependencies
-4. Populate          Write all 10 files (same as Fast Path step 4)
-5. Post-scaffold     Same fixups as Fast Path
-6. Self-test         JSON validation, script syntax, seed dry-run, hook tests
-7. Launch            bash .claude/scripts/my-feature-start.sh --monitor
-```
+| What you need | Where to read |
+|---------------|---------------|
+| **Templates** | `~/.claude-ops/templates/seed.sh.tmpl`, `worker-seed.sh` |
+| **Task graph queries** | `~/.claude-ops/lib/harness-jq.sh` |
+| **Event bus library** | `~/.claude-ops/lib/event-bus.sh` |
+| **Stop hook enforcement** | `~/.claude-ops/hooks/gates/stop-harness-dispatch.sh` |
+| **Context injection** | `~/.claude-ops/hooks/interceptors/pre-tool-context-injector.sh` |
+| **Prompt/telemetry publishing** | `~/.claude-ops/hooks/publishers/prompt-publisher.sh`, `post-tool-publisher.sh` |
+| **Session registration** | `~/.claude-ops/lib/harness-launch.sh` |
+| **Watchdog daemon** | `~/.claude-ops/scripts/harness-watchdog.sh` (launchd plist: `~/Library/LaunchAgents/com.claude-ops.harness-watchdog.plist`) |
+| **Scaffold** | `~/.claude-ops/scripts/scaffold.sh` |
+| **Harness API** | `~/.claude-ops/scripts/harness-api.ts` (REST on :7777) |
+| **Per-harness manifests** | `~/.claude-ops/harness/manifests/{name}/manifest.json` |
+| **Ops registry** | `{project}/.claude/harness/ops-registry.json` |
+| **v3 migration tests** | `~/.claude-ops/tests/test-v3-migration.sh` (145 tests) |
+| **Architecture reference** | `{project}/claude_files/ref/agent-architecture.md` |
 
 ---
 
-## Archetypes
+## Quick Create (Conversational)
 
-| Archetype | When | Example | Key trait |
-|-----------|------|---------|-----------|
-| **List-driven** | Tasks enumerable upfront | Miniapp migration (known pages) | Static DAG |
-| **Exploration-first** | Must profile before planning | Performance optimization | `state.phase: "discovery"` |
-| **Continuous-loop** | Metric can always improve | Eval pass rate, BI quality | Self-resetting `evolve-harness` task |
-| **Deadline-driven** | Hard deadline, ruthless priority | Demo prep, sprint | Phases tied to dates |
+When the user provides a harness description (even just a sentence), do ALL of this:
 
----
-
-## Critical Lessons (Hard-Won)
-
-### Team Mandates Go in the Seed, Not the Harness
-
-**The seed prompt is what forces agent behavior.** Agents read the seed first and follow it mechanically; the harness.md is read second and interpreted loosely.
-
-Three failed attempts taught this:
-1. Harness suggestion ("use subagents aggressively") → ignored
-2. Harness + monitor nudge → premature completion
-3. **Seed mandate + "REQUIRES TEAM" in task descriptions → success** (4 agents spawned in parallel)
-
-**Pattern for team-mandatory tasks:**
-```bash
-# In seed.sh — near the top, impossible to miss:
-cat <<EOF
-## CRITICAL: Team Mandate for Phase A
-**For tasks marked REQUIRES TEAM, you MUST use TeamCreate to spawn 2-3 agents.**
-Do NOT attempt these tasks solo.
-EOF
-```
-
-```json
-// In progress.json — task description starts with REQUIRES TEAM:
-"pillar-components": {
-  "description": "REQUIRES TEAM (frontend-agent). Create PillarSection.tsx...",
-  "team": "frontend-agent"
-}
-```
-
-### Manifest Status Bug
-
-`scaffold.sh` creates the manifest with `"status": "done"`. You MUST update it to `"active"` when populating. The start.sh script updates progress.json status but NOT the manifest.
-
-### Journal Is Not Scaffolded
-
-The scaffold creates 9 files. The journal (`claude_files/{name}-journal.md`) is NOT one of them. Always create it manually — it's the human-readable briefing Warren reads.
-
-### Available-Harnesses Table
-
-After creating a harness, add it to `agent-harness.xml`'s `<available-harnesses>` table. This is how other agents (and the dispatch hook) discover harnesses.
-
-### Task Descriptions Are the Real Instructions
-
-Put enough context per task that the seed script can include it directly. Don't force the agent to re-read a 200-line harness.md after every `/clear`. The description + steps should be self-contained.
-
-### Phase Grouping for 10+ Tasks
-
-Without phases, agents work on polish before core. Use `metadata.phase` to tag tasks. Phase A (foundations) must complete before Phase B (features). The blockedBy DAG enforces this.
+1. **Extract**: name (kebab-case from description), lifecycle (default: bounded)
+2. **Scaffold**: Run `bash ~/.claude-ops/scripts/scaffold.sh [--long-running] <name> <project> --from-description "description"`
+3. **Explore codebase** for relevant files (use Glob/Grep for key paths matching description keywords)
+4. **Generate and write** (all new harnesses use `agents/module-manager/`):
+   - `agents/module-manager/config.json`: lifecycle, model, sleep_duration, mission (one line)
+   - `agents/module-manager/state.json`: status=active, cycles_completed=0, sleep_duration
+   - `agents/module-manager/mission.md`: Goal + Constraints (MUST MEET) + Scope + Optimization Targets
+   - `agents/module-manager/MEMORY.md`: empty stub
+   - `agents/module-manager/inbox.jsonl`, `outbox.jsonl`: empty
+   - `agents/module-manager/memory/{ref,notes,scripts}/`: stub dirs with .gitkeep
+   - `agents/module-manager/permissions.json`: permission_mode + model + allowedTools (scoped to file-ownership.json)
+   - `agents/worker/{name}/`: 6-file workspace per worker + `permissions.json`
+   - `tasks.json`: task graph with blockedBy DAG, 8-15 tasks
+   - `INDEX.md`: navigation guide — key files, entry points (replaces harness.md)
+   - `policy.json`: empty `{"rules": [], "inject": {}}`
+5. **Post-scaffold checklist**:
+   - [ ] Manifest status is `active`
+   - [ ] Seed generates: `bash .claude/scripts/<name>-seed.sh`
+6. **Show Warren**: task list, key files identified
+7. **After approval**: `bash .claude/scripts/<name>-start.sh`
 
 ---
 
-## Progress Schema
+## Per-Harness Directory Layout (v3)
 
-```json
-{
-  "harness": "name", "mission": "...", "status": "active|done",
-  "started_at": "ISO", "session_count": 0,
-  "tasks": {
-    "task-id": {
-      "status": "pending|in_progress|completed",
-      "description": "What to do. Start with REQUIRES TEAM if team-mandatory.",
-      "blockedBy": [],
-      "owner": null,
-      "steps": ["step1", "step2"],
-      "completed_steps": [],
-      "team": null,
-      "metadata": { "phase": "A" }
-    }
-  },
-  "state": {},
-  "rotation": { "max_rounds": 20, "claude_command": "cdo" },
-  "current_session": { "started_at": null, "round_count": 0, "tasks_completed": 0 },
-  "commits": [], "learnings": []
-}
-```
+Each harness at `{project}/.claude/harness/{name}/`:
 
-Derived fields (via `harness-jq.sh`, never stored): `current_task`, `done_count`, `pending_names`.
+| Path | Purpose | Notes |
+|------|---------|-------|
+| `tasks.json` | Task graph: `{tasks: {id: {status, description, blockedBy, owner}}}` | Module-level, owned by module-manager |
+| `policy.json` | Context injections, rules, learnings | Grows over time |
+| `INDEX.md` | Navigation guide: key files, entry points | Replaces harness.md |
+| `agents/module-manager/permissions.json` | Agent permission config | Model, permission_mode, disallowedTools |
+| `agents/module-manager/mission.md` | Goal + Constraints (MUST MEET) + Scope | Warren-authored; stop hook reads Constraints |
+| `agents/module-manager/config.json` | lifecycle, model, sleep_duration, mission (1 line), rotation | Read by stop hook + seed |
+| `agents/module-manager/state.json` | status, cycles_completed, last_cycle_at, sleep_duration | Updated via harness_bump_session |
+| `agents/module-manager/MEMORY.md` | Synthesized learnings ≤200 lines | Agent writes every cycle |
+| `agents/module-manager/inbox.jsonl` | Messages received (materialized by bus side-effects) | Bus-only writes |
+| `agents/module-manager/outbox.jsonl` | Messages sent (audit trail) | Bus-only writes |
+| `agents/module-manager/memory/ref/` | External ground truth (Warren-provided, read-only) | Agent never overwrites |
+| `agents/module-manager/memory/notes/` | Agent's detailed topic notes (overflow from MEMORY.md) | Agent writes freely |
+| `agents/module-manager/memory/scripts/` | Reusable scripts agent has written | Agent writes freely |
+| `agents/worker/{name}/` | Worker workspace (same 6-file structure as module-manager) | |
+
+**Removed in v3**: `progress.json`, `journal.md`, `spec.md` (merged into mission.md), `acceptance.md` (merged into mission.md Constraints), `harness.md` (replaced by INDEX.md), `identity.json`
 
 ---
 
-## Seed Script Anatomy
+## Hook System (Three Types)
 
-The seed is the most important file. It's what the agent reads first and follows mechanically. Structure:
+All hooks use event-prefix naming convention. Registered globally in `~/.claude/settings.json`.
+
+| Type | Purpose | Return |
+|------|---------|--------|
+| **Publisher** | Emit events to bus | `{}` |
+| **Interceptor** | Inject context before tool calls | `{"additionalContext": "..."}` |
+| **Gate** | Block/allow stopping | `{"decision":"block","reason":"..."}` |
+
+### Active Hooks (11 total)
+
+**Publishers** (6): `prompt-publisher.sh`, `post-tool-publisher.sh`, `subagent-lifecycle.sh`, `post-tool-deploy-flag.sh`, `post-tool-write-flag.sh`, `pre-compact-evolve.sh`
+
+**Interceptors** (2): `snippet_injector.py`, `pre-tool-context-injector.sh`
+
+**Gates** (3+): `stop-harness-dispatch.sh`, `stop-session.sh`, `prompt-echo-deferred.sh`, `stop-echo.sh`
+
+> Full hook inventory with paths and behavior → `references/hooks.md`
+
+---
+
+## Event Bus (v3 — single stream)
+
+Project-scoped at `{project}/.claude/bus/`. Single `stream.jsonl` with monotonic `_seq` numbering. Pluggable side-effects at `~/.claude-ops/bus/side-effects/*.sh`. Default enabled (`EVENT_BUS_ENABLED=true`).
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-HARNESS="my-feature"
+source ~/.claude-ops/lib/event-bus.sh
+bus_publish "task.completed" '{"harness":"mod-customer","task_id":"t3","summary":"..."}'
+bus_publish "file-edit" '{"agent":"my-agent","file":"src/main.ts"}'
+bus_read "my-consumer" --type "file-edit" --limit 10   # Advances cursor
+bus_query "file-edit"                                   # No cursor, type filter
+bus_git_checkpoint "auto: wave 3 complete"
+bus_compact                                             # Prune consumed events
+```
+
+Bus events: `prompt`, `session.start`, `session.end`, `tool-call`, `file-edit`, `deploy`, `error`, `config-change`, `subagent.start`, `subagent.stop`, `context.compacting`, `stop.blocked`, `work-order`, `announcement`, `work-order.completed`, `work-order.created`, `task.started`, `task.completed`, `agent.stopped`, `agent.respawned`, `agent.crash`, `agent.stuck`, `agent.nudged`, `agent.crash-loop`
+
+> Full bus API, side-effects, compaction → `references/architecture.md`
+
+---
+
+## Harness Roles
+
+| Mode | Detection Rule | Lifecycle | Purpose |
+|------|----------------|-----------|---------|
+| **Self-sidecar** | Default (no `.parent`) | CHECK → ACT → RECORD | Agent manages harness AND executes tasks |
+| **Sidecar** | Worker directories exist at `agents/worker/` | CHECK → COMMUNICATE → REFLECT | Monitors workers, routes findings, updates MEMORY.md |
+| **Worker** | `lifecycle: bounded` AND `.parent` set | Execute → Report → Repeat | Executes tasks, reports to sidecar via bus |
+
+---
+
+## RECORD Phase (every cycle)
+
+Always at end of cycle, before stopping:
+
+```bash
+# 1. Update MEMORY.md (synthesize learnings, prune to ≤200 lines)
+
+# 2. Bump cycle counter in state.json
+source ~/.claude-ops/lib/harness-jq.sh
+harness_bump_session .claude/harness/HARNESS/tasks.json
+
+# 3. Publish task completions to bus
+source ~/.claude-ops/lib/event-bus.sh
+bus_publish "task.completed" '{"harness":"HARNESS","task_id":"TASK_ID","summary":"one line"}'
+# bus side-effect update_tasks_json.sh automatically updates tasks.json status
+```
+
+**No journal.md.** MEMORY.md is the synthesized record. The stop hook gate enforces that MEMORY.md was updated before advancing cycles.
+
+---
+
+## Quick Start: Scaffold
+
+```bash
+bash ~/.claude-ops/scripts/scaffold.sh my-feature /path/to/project
+```
+
+### Post-Scaffold Fixups
+
+1. **Manifest status → `active`** (at `~/.claude-ops/harness/manifests/{name}/manifest.json`)
+2. **Write mission.md** at `agents/module-manager/mission.md`
+3. **Verify seed**: `bash .claude/scripts/{name}-seed.sh`
+
+---
+
+## Registration
+
+| Tier | Source | Key | Written by |
+|------|--------|-----|------------|
+| **0** | `pane-registry.json` | pane ID `.harness` | `harness-launch.sh`, hooks, `harness register` |
+
+pane-registry.json is the sole source of truth. session-registry.json removed in v3.
+
+---
+
+## Watchdog Daemon
+
+Runs every 30s via launchd. Detects crash / stuck / graceful-sleep / healthy. Respawns crashed agents immediately. Waits `sleep_duration` for graceful stops before respawning.
+
+```bash
+# Manual test
+bash ~/.claude-ops/scripts/harness-watchdog.sh --once
+
+# Status
+bash ~/.claude-ops/scripts/harness-watchdog.sh --status
+
+# Logs
+tail -f ~/.claude-ops/state/watchdog.log
+```
+
+Crash-loop guard: > 3 crashes/hr → publish `agent.crash-loop` → stop retrying → notify Warren.
+
+---
+
+## Configuration Reference
+
+| Variable | Default | Used by |
+|----------|---------|---------|
+| `EVENT_BUS_ENABLED` | `true` | event-bus.sh |
+| `WAVE_GATE_ENABLED` | `true` | stop-harness-dispatch.sh |
+| `CYCLE_GATE_REQUIRE_MEMORY` | `true` | harness-gates.sh |
+| `CYCLE_GATE_REQUIRE_ACCEPTANCE` | `true` | harness-gates.sh |
+| `CONTEXT_INJECTOR_MAX_MATCHES` | `3` | pre-tool-context-injector.sh |
+
+---
+
+## Launch
+
+```bash
+bash .claude/scripts/my-feature-start.sh    # Standard launch
+bash .claude/scripts/my-feature-seed.sh      # Context reset (reseed)
+```
+
+Aliases: `cdo` (Opus), `cds` (Sonnet), `cdh` (Haiku), `cdoc` (Opus+Chrome).
+
+**Auto-Launch (Default):** After scaffolding and populating a harness, ALWAYS launch automatically.
+
+---
+
+## Permission Model
+
+`harness-launch.sh` reads `agents/module-manager/permissions.json` via `jq` to build CLI flags (falls back to `agents/sidecar/permissions.json` for legacy harnesses). Per-worker permissions at `agents/worker/{name}/permissions.json`.
+
+| JSON field | CLI flag | Example |
+|------------|----------------|---------|
+| `permission_mode` | `--dangerously-skip-permissions` / `--permission-mode` | `bypassPermissions` |
+| `model` | `--model` | `opus`, `sonnet`, `haiku`, `cdo`, `cds` |
+| `allowedTools` | `--allowedTools` (array, comma-joined) | `["Edit:src/**", "Bash(bun *)"]` |
+| `disallowedTools` | `--disallowedTools` (array, comma-joined) | `["Bash(./scripts/deploy*)"]` |
+| `tools` | `--tools` (array, comma-joined) | `["Read", "Grep", "Glob"]` |
+| `addDirs` | `--add-dir` (array, comma-joined) | `["../other-repo"]` |
+
+**`--allowedTools` patterns:** Space-before-asterisk: `Bash(git add *)`. Need BOTH `Edit(path)` AND `Write(path)`. Root files need BOTH `Edit(CLAUDE.md)` and `Edit(**/CLAUDE.md)`.
+
+---
+
+## Seed Template
+
+Regenerate all seeds after template changes (hq-v3-seed.sh is custom — skip it):
+
+```bash
 PROJECT_ROOT="/path/to/project"
-PROGRESS="$PROJECT_ROOT/claude_files/${HARNESS}-progress.json"
-
-# Source harness-jq for progress queries
-source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || true
-
-# Compute progress summary
-TOTAL=$(jq '.tasks | length' "$PROGRESS")
-DONE=$(jq '[.tasks[] | select(.status == "completed")] | length' "$PROGRESS")
-PENDING=$(jq '[.tasks[] | select(.status == "pending") | select(.blockedBy == [] or .blockedBy == null)] | length' "$PROGRESS")
-CURRENT=$(jq -r '[.tasks | to_entries[] | select(.value.status == "in_progress") | .key] | first // "none"' "$PROGRESS")
-
-cat <<EOF
-run HARNESSUP
-
-You are the **${HARNESS}** agent.
-
-## Where We Are
-- $DONE/$TOTAL waypoints, $PENDING unblocked
-- Currently: ${CURRENT:-orienting}
-
-## [TEAM MANDATE — if applicable]
-**For tasks marked REQUIRES TEAM, you MUST use TeamCreate.**
-
-## [DOMAIN-SPECIFIC TABLES — pillar mappings, module IDs, etc.]
-
-## [KEY FILES — what to create, what NOT to modify]
-
-## Orient Yourself
-1. Read claude_files/${HARNESS}-harness.md
-2. Read claude_files/${HARNESS}-progress.json
-3. Decide what matters most right now
-4. Work on it. Update progress + journal with what you learn.
-EOF
+TMPL="$HOME/.claude-ops/templates/seed.sh.tmpl"
+for seed in "$PROJECT_ROOT/.claude/scripts/"*-seed.sh; do
+  name=$(basename "$seed" | sed 's/-seed\.sh$//')
+  [ "$name" = "hq-v3" ] && continue  # hq-v3-seed.sh is custom
+  sed "s|{{HARNESS}}|$name|g; s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g" "$TMPL" > "$seed"
+done
 ```
-
-**Tips:**
-- Put the team mandate BEFORE "Orient Yourself" — it's read first
-- Include concrete file paths, not vague descriptions
-- Include domain-specific reference tables (module IDs, SQL prefixes, etc.)
-- Compute `TEAM_TASKS` from progress.json to show pending team-mandatory work
 
 ---
 
-## Hook Layers
+## Rotation Setup
 
-Three layers, all at `~/.claude-ops/hooks/`, symlinked from project:
+**v3**: rotation config lives in `agents/module-manager/config.json`. The stop hook reads it directly for lifecycle and rotation mode.
 
-| Layer | Event | Hooks |
-|-------|-------|-------|
-| **Admission** | PreToolUse | `deploy-mutator.sh` (auto-injects flags), `context-injector.sh` (knowledge injection) |
-| **Operators** | PostToolUse | `progress-validator.sh` (quality checks), `activity-logger.sh` (tool use log) |
-| **Probes** | Stop | `harness-dispatch.sh` (blocks stop, shows task graph), `task-readiness.sh` (verification gate) |
-
-Three monitor-evolvable surfaces (instant, no restart):
-- `claude_files/{name}-best-practices.json` — thresholds, rules
-- `claude_files/{name}-context-injections.json` — knowledge for tool calls
-- `~/.claude-ops/hooks/operators/checks.d/*.sh` — drop-in quality checks
-
-### Hook Setup (symlinks + settings)
-
-```bash
-mkdir -p .claude/hooks/admission .claude/hooks/operators
-ln -sf ~/.claude-ops/hooks/harness-dispatch.sh .claude/hooks/
-ln -sf ~/.claude-ops/hooks/admission/deploy-mutator.sh .claude/hooks/admission/
-ln -sf ~/.claude-ops/hooks/admission/context-injector.sh .claude/hooks/admission/
-ln -sf ~/.claude-ops/hooks/operators/progress-validator.sh .claude/hooks/operators/
-ln -sf ~/.claude-ops/hooks/operators/activity-logger.sh .claude/hooks/operators/
+```json
+// agents/module-manager/config.json
+{
+  "lifecycle": "bounded",
+  "rotation": { "mode": "new_session", "max_rounds": 1, "claude_command": "cdo" }
+}
 ```
 
-Register in `.claude/settings.local.json`:
+---
+
+## Seed Launch Pattern (CRITICAL — Never Use `-p`)
+
+**WRONG:** `cdo -p .claude/scripts/my-seed.sh` — Claude reads the file and asks "what should I do?"
+
+**CORRECT:** Generate seed text → start Claude → tmux-paste the text:
+
+```bash
+# 1. Generate seed to temp file
+bash .claude/scripts/my-seed.sh > /tmp/my-seed.txt
+
+# 2. Create tmux window (use -d to stay in current pane)
+tmux new-window -d -t h -n my-harness -c "$PROJECT_ROOT"
+
+# 3. Build Claude command with permissions from permissions.json
+PERMS=".claude/harness/my-harness/agents/module-manager/permissions.json"
+MODEL=$(jq -r '.model // "sonnet"' "$PERMS")
+ALLOWED=$(jq -r '(.allowedTools // []) | join(",")' "$PERMS")
+DISALLOWED=$(jq -r '(.disallowedTools // []) | join(",")' "$PERMS")
+
+CLAUDE_CMD="claude --model $MODEL --dangerously-skip-permissions"
+[ -n "$ALLOWED" ] && CLAUDE_CMD="$CLAUDE_CMD --allowedTools $ALLOWED"
+[ -n "$DISALLOWED" ] && CLAUDE_CMD="$CLAUDE_CMD --disallowedTools $DISALLOWED"
+
+tmux send-keys -t h:my-harness "$CLAUDE_CMD"
+tmux send-keys -t h:my-harness -H 0d  # hex Enter — CRITICAL
+sleep 12  # wait for TUI to init
+
+# 4. Paste seed content via load-buffer
+tmux load-buffer /tmp/my-seed.txt
+tmux paste-buffer -t h:my-harness
+sleep 2
+tmux send-keys -t h:my-harness -H 0d  # submit
+```
+
+**Key rules:**
+- **`-H 0d` (hex enter)** is the only reliable submit. Literal `Enter` does NOT submit.
+- **`-d` flag** on `new-window`/`split-window` prevents focus switch.
+- **`load-buffer` + `paste-buffer`** for multi-line seeds (safer than `send-keys -l`).
+- **Permissions from JSON**: Read `permissions.json` via `jq` and build CLI flags, rather than hardcoding.
+
+---
+
+## Worker Under Module-Manager Pattern
+
+Workers scaffold inside the module's directory:
+
+```
+.claude/harness/{module}/agents/worker/{name}/
+  mission.md        — MM-authored: goal, constraints, scope
+  config.json       — lifecycle: bounded, parent: {module}
+  state.json        — status, cycles_completed
+  permissions.json  — model, allowedTools scoped to owned files
+  MEMORY.md         — worker's synthesized learnings
+  inbox.jsonl       — must exist (create empty if not present)
+  outbox.jsonl
+  memory/           — ref/, notes/, scripts/
+```
+
+**`config.json` required fields:**
 ```json
 {
-  "hooks": {
-    "PreToolUse": [
-      { "matcher": "Bash", "hooks": [
-        { "type": "command", "command": "bash .claude/hooks/admission/deploy-mutator.sh" },
-        { "type": "command", "command": "bash .claude/hooks/admission/context-injector.sh" }
-      ]},
-      { "matcher": "Write|Edit|Read", "hooks": [
-        { "type": "command", "command": "bash .claude/hooks/admission/context-injector.sh" }
-      ]}
-    ],
-    "PostToolUse": [
-      { "matcher": "Write|Edit|NotebookEdit", "hooks": [
-        { "type": "command", "command": "bash .claude/hooks/operators/progress-validator.sh" },
-        { "type": "command", "command": "bash .claude/hooks/operators/activity-logger.sh" }
-      ]},
-      { "matcher": "Bash", "hooks": [
-        { "type": "command", "command": "bash .claude/hooks/operators/activity-logger.sh" }
-      ]}
-    ],
-    "Stop": [
-      { "matcher": "", "hooks": [
-        { "type": "command", "command": "bash .claude/hooks/harness-dispatch.sh" }
-      ]}
-    ]
-  }
+  "name": "worker-name",
+  "lifecycle": "bounded",
+  "model": "sonnet",
+  "parent": "mod-ops",
+  "rotation": {"mode": "new_session", "max_rounds": 1, "claude_command": "cds"}
 }
 ```
 
----
-
-## Launch & Lifecycle
-
-```bash
-# Launch worker + monitor
-bash .claude/scripts/my-feature-start.sh --monitor
-
-# Worker only
-bash .claude/scripts/my-feature-start.sh
-
-# Specific task
-bash .claude/scripts/my-feature-start.sh --task first-task
-
-# Check status
-bash .claude/scripts/my-feature-start.sh --status
-
-# Print seed only (for piping into existing session)
-bash .claude/scripts/my-feature-start.sh --seed-only
-
-# Context reset (clear + reseed)
-bash .claude/scripts/my-feature-continue.sh
-
-# Rotation (new session, same pane)
-bash ~/.claude-ops/lib/handoff.sh --harness my-feature --model opus
-
-# Deactivate
-jq '.status = "done"' progress.json > /tmp/p.json && mv /tmp/p.json progress.json
-
-# Escape hatch (let agent stop once)
-touch /tmp/claude_allow_stop_{session_id}
-```
-
-Aliases: `cdo` (Opus), `cds` (Sonnet), `cdh` (Haiku), `cdoc` (Opus+Chrome), `cdo1m` (1M context).
-
-### Monitor Agent
-
-Captures target pane every N seconds, diffs, sends events. Every 6 captures: META-REFLECTION.
-
-State dirs keyed by stable pane IDs (`/tmp/monitor-agent-pid413/`), not tmux targets — survives window reorders.
-
-```bash
-# Manual launch (--pane required):
-bash ~/.claude-ops/scripts/monitor-agent.sh --pane h:my-feature.1 h:my-feature.0 120 "mission"
-# Stop:
-bash ~/.claude-ops/scripts/monitor-agent.sh --stop h:my-feature.0
-```
-
-**Critical: `--pane` must match where the monitor Claude session actually runs.** The `--pane` argument tells the daemon where to send POLL/IDLE/REFLECT events. If it points at the wrong pane, events go nowhere and the monitor never gets nudged.
-
-> **WARNING:** `tmux display-message -p` returns the **focused** pane, not the caller's. Use process-tree tracing instead.
-
-```bash
-# Walk process tree to find own pane (correct)
-OWN_PANE_ID=$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' | while read pid id; do
-  p=$PPID; while [ "$p" -gt 1 ]; do
-    [ "$p" = "$pid" ] && echo "$id" && break 2
-    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
-  done
-done)
-MY_PANE=$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' | awk -v id="$OWN_PANE_ID" '$1 == id {print $2; exit}')
-bash ~/.claude-ops/scripts/monitor-agent.sh --pane "$MY_PANE" h:target.0 120 "mission" &
-```
-Do NOT cache the pane ID from a different context (e.g., the start script or a parent shell) — pane indices shift when tmux splits/closes windows.
-
-### Control Plane (overnight runs)
-
-```bash
-nohup bash ~/.claude-ops/scripts/control-plane.sh &
-```
-
-Auto-restarts dead agents, runs maintenance sweeps. Config: `~/.claude-ops/control-plane.conf` (hot-reloaded). Stop: `--stop`. Health: `cat /tmp/harness_health.json | jq .`
-
----
-
-## Converting to Continuous-Loop
-
-When a list-driven harness finishes but the domain is never "done":
-
+**`permissions.json` example (file-ownership scoped):**
 ```json
-"evolve-harness": {
-  "status": "pending",
-  "description": "Cycle boundary. Run eval, analyze failures, write 3-5 NEW tasks, reset to pending, increment cycle_count.",
-  "blockedBy": []
+{
+  "permission_mode": "bypassPermissions",
+  "model": "opus",
+  "allowedTools": [
+    "Read", "Grep", "Glob",
+    "Bash(bun test *)", "Bash(git *)", "Bash(curl*)",
+    "Edit(src/admin/app/pages/pm-workbench/**)", "Write(src/admin/app/pages/pm-workbench/**)",
+    "Edit(.claude/harness/mod-ops/agents/worker/pm-workbench/**)",
+    "Write(.claude/harness/mod-ops/agents/worker/pm-workbench/**)"
+  ],
+  "disallowedTools": ["Bash(./scripts/deploy-prod*)"]
 }
 ```
 
-**Critical:** Update `status=pending` AND `blockedBy=[new IDs]` in a single `jq` write. Two writes = self-selection loop.
-
-3 consecutive cycles with no metric improvement → test-hardening-only mode.
+**Workers run in git worktrees** for branch isolation:
+- Worktree dir: `../Wechat-{worker}/` (e.g. `../Wechat-wo-fullchain/`)
+- Branch: `{module}/{worker}` (e.g. `mod-ops/wo-fullchain`)
+- Module-manager creates worktree, launches Claude in a tmux split-pane with `-c $WORKTREE_DIR`
+- Worker uses `--add-dir ${PROJECT_ROOT}/.claude/harness/${MODULE}` to access harness files
+- See `TMUX-OPS.md` "Worker Worktree Launch Pattern" for full script
 
 ---
 
-## tmux Gotchas (Must-Know)
+## Critical Lessons
 
-These caused real production bugs. `harness_launch()` handles them — but for manual tmux ops:
-
-1. **`tmux display-message -p` returns the FOCUSED pane**, not the caller's. Use `find_own_pane()` (process-tree walk via `$$` → `pane_pid`) — see harness-dispatch.sh:44.
-2. **`split-window` without `-t` splits the ACTIVE pane.** Always: `tmux split-window -d -t $TARGET_PANE`.
-3. **Always `-d`** on `new-window`/`split-window` to avoid stealing focus.
-4. **Use `-H 0d` for Enter**, not the literal string `Enter`.
-5. **Never `cdo -p "prompt"`** — shell escaping breaks. Launch bare, wait for load, send seed via `send-keys -l`.
+1. **Team mandates go in the SEED** — agents follow the seed mechanically
+2. **Task descriptions are the real instructions** — make them self-contained
+3. **Custom seed scripts (hq-v3-seed.sh)** — never overwrite with generic template
+4. **`--allowedTools` needs BOTH Edit AND Write** for every path
+5. **Each stop hook must be its own group** in settings.json
+6. **Triple enforcement** for long-running harnesses (seed + context injection + policy.json)
+7. **Recurring mistakes → add context injection** to policy.json
+8. **Seed launch via tmux paste, never `-p`**
+9. **No journal.md** — write to MEMORY.md; stop hook gate checks MEMORY.md mtime
+10. **harness_bump_session** updates state.json cycles_completed (call in RECORD phase)
+11. **`tmux new-window -d`** — always use `-d` to avoid stealing focus from current pane
+12. **Workers in git worktrees** — `../Wechat-{worker}/` isolates branches + prevents git lock conflicts
+13. **`--add-dir`** gives workers read access to harness files in main repo while working in worktree
+14. **`--allowedTools` + `--dangerously-skip-permissions` are orthogonal** — both needed for unattended agents. allowedTools restricts tool availability; bypass auto-approves usage.
+15. **File ownership scoping** — worker permissions.json allowedTools should match file-ownership.json entries
+16. **Git index.lock from concurrent agents** — use worktrees to prevent; `lsof .git/index.lock || rm` to fix stale locks
+17. **`harness-launch.sh` checks `agents/module-manager/` first** — falls back to `agents/sidecar/` for backward compat
 
 ---
 
@@ -375,65 +396,29 @@ These caused real production bugs. `harness_launch()` handles them — but for m
 
 | Symptom | Fix |
 |---------|-----|
-| Agent keeps stopping | `ls /tmp/claude_allow_stop_*` (escape hatch?), check dispatch hook |
-| Hook doesn't fire | `jq '.hooks' .claude/settings.local.json` |
-| Agent repeats done work | Seed script not reading progress |
-| Monitor in wrong pane | `--pane` must be resolved from the monitor's own pane at start time (not cached from parent). Pane indices shift on split/close. |
-| Ghost notifications | Delete stale `/tmp/monitor-agent-*` dirs |
-| Stale status bar | Use `#(bash script)` not `#(cat file)` in tmux.conf |
-| Agent ignores team mandate | Mandate in harness.md? Move to seed.sh. Add "REQUIRES TEAM" to task descriptions |
-| Manifest shows "done" after scaffold | Scaffold defaults to "done" — update to "active" |
+| Agent keeps stopping | Check `allow-stop` files, check stop-harness-dispatch.sh |
+| Agent ignores mandates | Move to seed.sh, add to policy.json rules |
+| Hooks don't fire | Check `harness register --show` for pane-registry |
+| Bus events missing | Check `EVENT_BUS_ENABLED` (default: true in event-bus.sh) |
+| Cycle gate warning | Update MEMORY.md this cycle; call `harness_bump_session` |
+| Seed launch: agent reads file | Never use `cdo -p seed.sh`; use tmux paste pattern |
+| Pane-registry stale entries | Use Python to clean (jq `!=` breaks in bash) |
+| Seed killed by pipefail | Add `|| true` on pane detection line |
+| Worker permissions hang | Add both Edit and Write to allowedTools |
+| Watchdog not respawning | Check `~/.claude-ops/state/watchdog.log`; verify `graceful-stop` sentinel exists |
+| Crash-loop flag | Delete `~/.claude-ops/state/harness-runtime/{harness}/crash-loop` to resume |
 
-Quick all-harness status:
-```bash
-source ~/.claude-ops/lib/harness-jq.sh
-for f in claude_files/*-progress.json; do
-  echo "$(harness_name "$f"): $(harness_done_count "$f")/$(harness_total_count "$f") current=$(harness_current_task "$f")"
-done
-```
+Quick status: `source ~/.claude-ops/lib/harness-jq.sh && for f in .claude/harness/*/tasks.json; do echo "$(basename $(dirname $f)): $(harness_done_count "$f")/$(harness_total_count "$f")"; done`
 
 ---
 
-## File Map
-
-```
-~/.claude-ops/
-├── lib/harness-launch.sh          # Core: tmux launch orchestration
-├── lib/harness-jq.sh              # Task graph queries
-├── lib/handoff.sh                 # Session rotation
-├── lib/bead.sh                    # Cross-harness coordination
-├── scripts/scaffold.sh            # Create harness from templates
-├── scripts/control-plane.sh       # Daemon (health + sweeps)
-├── scripts/monitor-agent.sh       # Polling monitor + REFLECT
-├── scripts/tmux-harness-summary.sh
-├── hooks/{admission,operators}/   # All hook scripts (project symlinks here)
-├── templates/*.tmpl               # 7 scaffold templates
-├── harness/manifests/             # Per-harness registry
-├── sweeps.d/                      # Cron maintenance scripts
-├── control-plane.conf             # Daemon config
-├── tests/run-all.sh               # 181 tests, 9 suites
-└── plugins/                       # Skills including this one
-
-Per-project (in repo):
-├── .claude/hooks/                 # Symlinks to ~/.claude-ops/hooks/
-├── .claude/scripts/{name}-*.sh    # start, seed, continue
-├── .claude/agent-harness.xml      # Available-harnesses table (update when adding!)
-└── claude_files/{name}-*          # progress.json, harness.md, goal.md, journal.md,
-                                   # best-practices.json, context-injections.json
-```
-
----
-
-## References
+## References (on-demand)
 
 | File | Topic |
 |------|-------|
-| `references/adding-harness.md` | Step-by-step tutorial + pre-launch checklist |
-| `references/hooks.md` | Hook templates, debugging |
-| `references/dispatch.md` | Session routing, registry, rotation |
-| `references/teams.md` | Swarm patterns, worker spawn |
-| `references/beads.md` | Cross-harness wisps, claims, gates |
-| `references/failure-modes.md` | Antipatterns, production insights |
-| `references/philosophy.md` | HDD principles, 4 archetypes |
-| `references/worked-example.md` | Real walkthroughs |
-| `agents/harness-builder.md` | Spawnable builder agent |
+| `references/architecture.md` | Three-layer architecture, event bus, file model |
+| `references/hooks.md` | Hook types, active inventory, registration, debugging |
+| `references/failure-modes.md` | Antipatterns, bus failures |
+| `references/philosophy.md` | HDD principles, archetypes, agent mindset |
+
+> These reference files are supplementary. The canonical source for all harness behavior is `~/.claude-ops/`.
