@@ -1,235 +1,162 @@
 #!/usr/bin/env bash
 # {{HARNESS}}-seed.sh — Generate seed prompt for the {{HARNESS}} harness.
+# Roles: self-manager (manage + execute), worker (execute only).
 set -euo pipefail
 
 HARNESS="{{HARNESS}}"
 PROJECT_ROOT="{{PROJECT_ROOT}}"
-PROGRESS="$PROJECT_ROOT/claude_files/${HARNESS}-progress.json"
+HARNESS_DIR="$PROJECT_ROOT/.claude/harness/${HARNESS}"
 
-# Source harness-jq if available
 HARNESS_JQ="$HOME/.claude-ops/lib/harness-jq.sh"
-if [ -f "$HARNESS_JQ" ]; then
-  source "$HARNESS_JQ"
+[ -f "$HARNESS_JQ" ] && source "$HARNESS_JQ"
+
+SIDECAR_DIR="$HARNESS_DIR/agents/module-manager"
+CONFIG_FILE="$SIDECAR_DIR/config.json"
+STATE_FILE="$SIDECAR_DIR/state.json"
+TASKS_FILE="$HARNESS_DIR/tasks.json"
+
+if [ ! -f "$CONFIG_FILE" ] || [ ! -f "$TASKS_FILE" ]; then
+  echo "ERROR: Need config.json at $CONFIG_FILE and tasks.json at $TASKS_FILE" >&2
+  exit 1
 fi
 
-# Get progress summary
-if [ -f "$PROGRESS" ]; then
-  TOTAL=$(jq '.tasks | length' "$PROGRESS")
-  DONE=$(jq '[.tasks[] | select(.status == "completed")] | length' "$PROGRESS")
-  PENDING=$(jq '[.tasks[] | select(.status == "pending") | select(.blockedBy == [] or .blockedBy == null)] | length' "$PROGRESS")
-  CURRENT=$(jq -r '[.tasks | to_entries[] | select(.value.status == "in_progress") | .key] | first // "none"' "$PROGRESS")
-  MISSION=$(jq -r '.mission // "No mission set"' "$PROGRESS")
-else
-  TOTAL=0; DONE=0; PENDING=0; CURRENT="none"; MISSION="No progress file found"
+# ── Progress ──
+TOTAL=$(jq '.tasks | length' "$TASKS_FILE")
+DONE=$(jq '[.tasks[] | select(.status == "completed")] | length' "$TASKS_FILE")
+PENDING=$(jq '[.tasks[] | select(.status == "pending") | select(.blockedBy == [] or .blockedBy == null)] | length' "$TASKS_FILE")
+CURRENT=$(jq -r '[.tasks | to_entries[] | select(.value.status == "in_progress") | .key] | first // "none"' "$TASKS_FILE")
+MISSION=$(jq -r '.mission // "No mission set"' "$CONFIG_FILE")
+LIFECYCLE=$(jq -r '.lifecycle // "bounded"' "$CONFIG_FILE")
+CYCLES=0; LAST_CYCLE="never"
+if [ -f "$STATE_FILE" ]; then
+  CYCLES=$(jq -r '.cycles_completed // 0' "$STATE_FILE")
+  LAST_CYCLE=$(jq -r '.last_cycle_at // "never"' "$STATE_FILE")
 fi
 
-SKETCH_APPROVED=$(jq -r '.sketch_approved // false' "$PROGRESS" 2>/dev/null || echo "false")
-GEN_APPROVED=$(jq -r '.generalization_approved // false' "$PROGRESS" 2>/dev/null || echo "false")
+# ── Role detection ──
+ROLE="self-manager"
+PARENT=""
+[ -f "$STATE_FILE" ] && PARENT=$(jq -r '.parent // ""' "$STATE_FILE" 2>/dev/null || echo "")
+[ -z "$PARENT" ] && PARENT=$(jq -r '.parent // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+[ "$LIFECYCLE" = "bounded" ] && [ -n "$PARENT" ] && ROLE="worker"
 
-# Inject wave gates + spec checks (idempotent — catches hand-authored progress.json)
-if [ -f "$PROGRESS" ] && [ -f "$HARNESS_JQ" ]; then
-  HAS_WAVES=$(jq '.waves // [] | length' "$PROGRESS" 2>/dev/null || echo "0")
-  if [ "$HAS_WAVES" -gt 0 ]; then
-    harness_inject_wave_gates "$PROGRESS"
-    harness_inject_spec_checks "$PROGRESS" "$PROJECT_ROOT"
+# ── Agent memory ──
+AGENT_SLOT="module-manager"
+AGENT_DIR="$HARNESS_DIR/agents/$AGENT_SLOT"
+AGENT_MEMORY=""
+for _mem in "$AGENT_DIR/MEMORY.md" "$AGENT_DIR/memory.md"; do
+  if [ -f "$_mem" ] && [ "$(wc -l < "$_mem" 2>/dev/null | tr -d ' ')" -gt 1 ]; then
+    AGENT_MEMORY="$_mem"; break
+  fi
+done
+
+# ── File checks ──
+HAS_SPEC="false"; [ -f "$HARNESS_DIR/spec.md" ] && HAS_SPEC="true"
+HAS_ACCEPT="false"; [ -f "$HARNESS_DIR/acceptance.md" ] && HAS_ACCEPT="true"
+INBOX_COUNT=0
+[ -f "$SIDECAR_DIR/inbox.jsonl" ] && INBOX_COUNT=$(wc -l < "$SIDECAR_DIR/inbox.jsonl" 2>/dev/null | tr -d ' ')
+
+# ── Role sections ──
+ROLE_SECTION=""
+ROLE_RULES=""
+BEGIN="Read the files above. Then CHECK → ACT → RECORD."
+case "$ROLE" in
+  worker)
+    ROLE_SECTION='## Role: Worker
+Execute tasks from tasks.json. Report to module manager.
+Find next unblocked task → implement → mark completed → check inbox → repeat.
+
+### Git Discipline (mandatory)
+- **Stage only specific files**: `git add src/foo.ts src/bar.ts` — NEVER `git add -A` or `git add .`
+- **Stay on your worktree branch** — NEVER `git checkout main`, `git merge`, or `git push`
+- **Report when done** via hq_send (not direct inbox writes):
+  ```bash
+  source ~/.claude-ops/lib/harness-jq.sh
+  hq_send "$HARNESS/WORKER_NAME" "$PARENT" "status" "Task T-1 done. Changed: src/foo.ts (+42/-5). Ready for review."
+  ```'
+    ROLE_RULES="- **Never modify harness structure.** Execute tasks, report to module manager."
+    BEGIN="Read the files above. Check inbox. Then execute your next unblocked task."
+    ;;
+  *)
+    ROLE_SECTION='## Role: Self-Manager
+CHECK → ACT → RECORD. You manage the harness AND execute tasks.
+
+### Git Discipline (mandatory)
+- **Stage only specific files**: `git add src/foo.ts src/bar.ts` — NEVER `git add -A` or `git add .`
+- **Stay on your branch** — NEVER merge to main or push without Warren approval'
+    ;;
+esac
+
+PARENT_LINE=""
+[ -n "$PARENT" ] && PARENT_LINE="**Module Manager**: \`$PARENT\`"
+
+# ── Role display name ──
+ROLE_DISPLAY="$ROLE"
+
+# ── Pane title ──
+if [ -n "${TMUX:-}" ]; then
+  tmux select-pane -T "${HARNESS}/${ROLE_DISPLAY}" 2>/dev/null || true
+fi
+
+# ── Pane registry ──
+if [ -f "$HARNESS_JQ" ] && [ -n "${TMUX:-}" ]; then
+  _PID=$(hook_find_own_pane 2>/dev/null || echo "")
+  if [ -n "$_PID" ]; then
+    _PT=$(hook_pane_target "$_PID" 2>/dev/null || echo "")
+    pane_registry_update "$_PID" "$HARNESS" "${CURRENT:-orienting}" "$DONE" "$TOTAL" "${HARNESS} — starting" "$_PT" "$ROLE"
   fi
 fi
 
-# Wave progress (empty string = no waves defined = legacy mode)
-WAVE_PROGRESS=""
-WAVE_PROTOCOL=""
-if [ -f "$PROGRESS" ] && [ -f "$HARNESS_JQ" ]; then
-  WAVE_PROGRESS=$(harness_wave_progress "$PROGRESS" 2>/dev/null || echo "")
-  if [ -n "$WAVE_PROGRESS" ]; then
-    WAVE_BOUNDARY=$(harness_is_wave_boundary "$PROGRESS" 2>/dev/null || echo "false")
-    CURRENT_WAVE=$(harness_current_wave "$PROGRESS" 2>/dev/null || echo "null")
-    WAVE_PROTOCOL="## Wave Progress
-- $WAVE_PROGRESS
-$(if [ "$WAVE_BOUNDARY" = "true" ]; then echo "- **WAVE BOUNDARY REACHED** — time to inspect, screenshot, and report before moving on."; fi)
-
-## Wave Protocol
-At the start of each wave:
-- Re-read the Mission section above (or harness.md if compacted)
-$(if [ -n "$SPEC_FILE" ]; then echo "- **Re-read the spec** (\`$SPEC_FILE\`) in full. Check what it requires for this wave."; fi)
-
-At the end of each wave:
-1. **Double-check**: Review every task in this wave. For each task, ask: does the
-   result actually serve the mission, or did I just check a box?
-$(if [ -n "$SPEC_FILE" ]; then echo "   Also check against the spec: did you miss anything? Document deviations with rationale."; fi)
-2. **Commit** wave changes: \`feat(${HARNESS}): wave N — <wave name>\`
-3. **Deploy** (\`--service static\` or appropriate)
-4. **Inspect** via Claude Chrome — navigate to each affected feature
-5. **Take screenshots** of each feature
-6. **Generate wave report HTML** at \`~/.claude-ops/harness/reports/${HARNESS}/wave-{N}.html\`
-   This report is NOT just screenshots. It MUST contain:
-   - **Mission Alignment**: For each task in this wave, explain how the result
-     serves the mission. If something doesn't align, say so and explain what
-     you'd do differently.
-   - **Gap Analysis**: What's still missing? What did this wave reveal about
-     the distance between current reality and the mission?
-   - **Next Wave Proposal**: Based on the gaps, what should the next wave contain?
-     If you see no gaps, explain specifically why the mission is achieved.
-   You cannot complete this wave without this analysis. The report IS the gate.
-7. **Open** the report: \`open ~/.claude-ops/harness/reports/${HARNESS}/wave-{N}.html\`
-8. **Notify** Warren: \`notify \"${HARNESS} wave N complete — report ready\"\`
-9. **Wait** for Warren's confirmation before proceeding to next wave"
-  fi
-fi
-
-# Read harness.md content for inline injection
-HARNESS_MD_CONTENT=""
-if [ -f "$PROJECT_ROOT/.claude/harness/${HARNESS}/harness.md" ]; then
-  HARNESS_MD_CONTENT=$(cat "$PROJECT_ROOT/.claude/harness/${HARNESS}/harness.md")
-elif [ -f "$PROJECT_ROOT/claude_files/${HARNESS}-harness.md" ]; then
-  HARNESS_MD_CONTENT=$(cat "$PROJECT_ROOT/claude_files/${HARNESS}-harness.md")
-fi
-
-# Detect spec file (optional — detailed requirements)
-SPEC_FILE=""
-if [ -f "$PROJECT_ROOT/.claude/harness/${HARNESS}/spec.md" ]; then
-  SPEC_FILE=".claude/harness/${HARNESS}/spec.md"
-elif [ -f "$PROJECT_ROOT/claude_files/${HARNESS}-spec.md" ]; then
-  SPEC_FILE="claude_files/${HARNESS}-spec.md"
-fi
-
+# ── Output ──
 cat <<EOF
-You are a **mission-driven agent** working on the **{{HARNESS}}** harness for the Wechat bot project.
+# ${HARNESS} — ${ROLE_DISPLAY}
 
-## Your Operating Principle
+**Mission**: $MISSION
+**Tasks**: $DONE/$TOTAL done, $PENDING unblocked, current: ${CURRENT:-orienting}
+**Cycles**: $CYCLES (last: $LAST_CYCLE)$([ "$INBOX_COUNT" -gt 0 ] && echo "
+**Inbox**: $INBOX_COUNT unread messages")
 
-You do not complete task lists. You pursue a mission until the world matches the vision.
+## Read These Files
+\`\`\`
+.claude/harness/${HARNESS}/tasks.json         — task graph$([ -f "$SIDECAR_DIR/mission.md" ] && echo "
+.claude/harness/${HARNESS}/agents/module-manager/mission.md — mission + constraints")$([ -f "$HARNESS_DIR/INDEX.md" ] && echo "
+.claude/harness/${HARNESS}/INDEX.md         — navigation guide" || ([ -f "$HARNESS_DIR/harness.md" ] && echo "
+.claude/harness/${HARNESS}/harness.md       — terrain + key files"))$([ "$HAS_SPEC" = "true" ] && echo "
+.claude/harness/${HARNESS}/spec.md          — contract spec")$([ "$HAS_ACCEPT" = "true" ] && echo "
+.claude/harness/${HARNESS}/acceptance.md    — pass/fail status")$([ "$INBOX_COUNT" -gt 0 ] && echo "
+.claude/harness/${HARNESS}/agents/module-manager/inbox.jsonl — messages for you")$([ -n "$AGENT_MEMORY" ] && echo "
+${AGENT_MEMORY#$PROJECT_ROOT/} — persistent memory (READ + UPDATE each cycle)")
+\`\`\`
+Read ALL of these before doing anything else.
 
-Tasks in the progress file are **seed waypoints**—concrete starting points to help you
-understand the mission and the system. Completing them is the **starting line**, not the
-finish line. The interesting work begins AFTER you've internalized the mission through
-doing the seed tasks.
+$ROLE_SECTION
 
-If every seed task is done and you stop, you have failed. The mission is not "check boxes."
-The mission is in the harness.md—a description of the world we want. Your job is to make
-that world real, and seed tasks are just your first moves.
+$PARENT_LINE
 
-## Status: $DONE/$TOTAL seed waypoints reached, $PENDING unblocked
-- Currently: ${CURRENT:-orienting}
-- Mission: $MISSION
-- Sketch approved: $SKETCH_APPROVED
-- Generalization approved: $GEN_APPROVED
-$([ -n "$WAVE_PROGRESS" ] && echo "- Waves: $WAVE_PROGRESS")
-$([ -n "$SPEC_FILE" ] && echo "- Spec: \`$SPEC_FILE\` (read at each wave start)")
+## Rules
+- **Zero mock data.** No placeholders, no hardcoded test data.
+- **Just stop when done.** The stop hook manages sleep + rotation.
+- **Bus-only messaging.** Never write directly to another agent's inbox.jsonl.
+- **No journal.md.** Write cycle learnings to MEMORY.md instead.
+- **Git: stage specific files only.** Never \`git add -A\` or \`git add .\`
+- **Git: never push or merge to main** without Warren's explicit approval.
+$ROLE_RULES
 
-────────────────────────────────────────────────────────────
-## Mission
-────────────────────────────────────────────────────────────
+## RECORD (end of each cycle)
 
-${HARNESS_MD_CONTENT:-"(No harness.md found — check claude_files/${HARNESS}-harness.md or .claude/harness/${HARNESS}/harness.md)"}
+1. Update MEMORY.md — synthesize learnings; prune to ≤200 lines
+2. Bump cycle counter:
+   \`\`\`bash
+   source ~/.claude-ops/lib/harness-jq.sh
+   harness_bump_session .claude/harness/${HARNESS}/tasks.json
+   \`\`\`
+3. Publish completions via bus (if any tasks completed):
+   \`\`\`bash
+   source ~/.claude-ops/lib/event-bus.sh
+   bus_publish "task.completed" '{"harness":"${HARNESS}","task_id":"TASK_ID","summary":"one line"}'
+   \`\`\`
 
-────────────────────────────────────────────────────────────
-## End Mission
-────────────────────────────────────────────────────────────
+## Begin
 
-## Phase 0: Sketch the Vision (BEFORE any implementation)
-
-**This phase is mandatory.** Before writing any code or executing any task:
-
-1. Read claude_files/${HARNESS}-progress.json — understand the seed waypoints
-2. Re-read the Mission section above — absorb "The World We Want"
-3. **Check for a spec.** If the user provided detailed requirements (a spec, PRD, feature
-   brief, etc.) as part of the task, save it to \`.claude/harness/${HARNESS}/spec.md\`.
-   The spec is the authoritative requirements doc. The harness.md should contain a concise
-   summary; the full spec lives in spec.md. If the user provided spec content in a different
-   location (e.g. inline, a file elsewhere), copy it to the canonical path.
-   The system auto-detects \`.claude/harness/{name}/spec.md\` and injects spec-check tasks
-   per wave. Specs are not infallible—you can improve on them—but always check whether you
-   missed anything, and have a clear rationale for any deviation.
-4. Explore the current codebase to understand what exists today
-5. **Check other harnesses for relevant learnings** (optional but recommended):
-   If this mission touches areas covered by other harnesses, read their learnings:
-   \`jq '.learnings[]' claude_files/*-progress.json | head -20\`
-   Look for patterns, gotchas, or architectural decisions that apply here.
-6. **Create an HTML sketch** at \`claude_files/${HARNESS}-vision.html\` that illustrates:
-   - What the end state looks like (UI mockups, architecture diagrams, data flows)
-   - What changes from today's state (before → after)
-   - The key decisions and trade-offs you plan to make
-   - How the seed waypoints map to the overall vision
-7. **Open it in the browser** for the user to review: \`open claude_files/${HARNESS}-vision.html\`
-8. **Wait for user feedback.** Do NOT proceed to Phase 1 until the user approves.
-9. Once approved, mark it: update progress.json with \`"sketch_approved": true\`
-
-The sketch is your contract with the user. It ensures alignment BEFORE you invest
-hours of execution. A beautiful, high-fidelity sketch that takes 10 minutes saves
-hours of rework from misaligned assumptions.
-
-$(if [ "$SKETCH_APPROVED" != "true" ]; then
-echo "**Sketch NOT yet approved — start with Phase 0.**"
-elif [ "$GEN_APPROVED" != "true" ]; then
-echo "**Sketch approved, generalizations NOT yet approved — start with Phase 0.5.**"
-else
-echo "**Sketch and generalizations approved — proceed to Phase 1.**"
-fi)
-
-## Phase 0.5: Generalize & Get Approval (after sketch, before implementation)
-
-After the sketch is approved, step back and think beyond the seed waypoints.
-**This phase requires human approval before you can proceed to implementation.**
-
-### The generalization loop:
-1. **Review the approved sketch** — what principles and patterns does it establish?
-2. **Propose 3-5 additional improvements** NOT in the seed waypoints — novel ideas
-   that emerged from understanding the domain deeply during the sketch phase.
-3. **Write them to** \`claude_files/${HARNESS}-generalizations.md\` with:
-   - Each generalization as a section with title and rationale
-   - How it connects to the mission vision
-   - Proposed tasks/waves to implement it
-4. **Open for review**: \`open claude_files/${HARNESS}-generalizations.md\`
-5. **Notify**: \`notify "${HARNESS} generalizations ready for review"\`
-6. **Wait for user feedback.** Do NOT proceed.
-
-### The approval loop:
-The user will review your generalizations and either:
-- **Give feedback** — revise your file based on their input, then re-open and wait again
-- **Say "looks good"** — then:
-  1. Add approved generalizations as new tasks in progress.json
-  2. Assign them to waves if waves are defined
-  3. You may also **create new waves** if your generalizations form a coherent deployable unit
-  4. Set \`"generalization_approved": true\` in progress.json
-  5. Record rationale in a learnings[] entry
-  6. Proceed to Phase 1
-
-**The feedback loop may run multiple rounds.** Each round deepens your understanding
-of what the user actually wants. Modify your proposals — and your understanding of the
-mission — based on the user's input. This is not a rubber stamp; it's a dialogue.
-
-This phase turns you from a task executor into a domain expert. The seed tasks are
-the user's ideas — your generalizations show you understand WHY those ideas matter,
-not just WHAT they are.
-
-$WAVE_PROTOCOL
-
-## Phase 1: Orient & Execute Seed Tasks
-
-1. Work through seed waypoints, using teams for parallel work
-2. If you hit a bug or infra problem: \`bash ~/.claude-ops/bin/report-issue.sh --title "..." --severity medium --category bug --description "..."\`
-
-For any waypoint with 2+ independent subtasks, your FIRST action should be
-TeamCreate + spawn teammates for parallel execution. You are an orchestrator.
-Only do trivial work yourself—delegate everything substantial.
-
-## Phase 2: When Seed Waves Are Complete
-
-Completing seed waves means you now understand the domain. It does NOT mean the
-mission is achieved. The protocol:
-
-1. **Re-read the mission.** Scroll up to the Mission section above (or re-read
-   harness.md if context was compacted). Focus on "The World We Want."
-2. **Experience the system as a user.** Navigate every affected page. Click every
-   button. Read every label. Does it feel like the world described in the mission?
-3. **Identify gaps.** There are ALWAYS gaps after seed waves. Find at least 3.
-4. **Create a new wave.** Not optional. Add a wave to progress.json with:
-   - Descriptive name, tasks for each gap, status "pending"
-   - This wave should address the gaps you found
-5. **Work the new wave.** Same protocol: execute, double-check, report, gate.
-6. **Repeat.** Only stop when you can write a mission-complete report with
-   specific evidence (not "tasks done" — evidence the world matches the vision).
-
-If you finish all waves and stop without creating new ones, you have failed.
-The mission is the target, not the task list.
+$BEGIN
 EOF

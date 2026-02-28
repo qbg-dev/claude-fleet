@@ -10,7 +10,7 @@
 #   2. Agent self-handoff:
 #      bash .claude/scripts/handoff.sh --harness miniapp-chat --model opus --chrome
 #      bash .claude/scripts/handoff.sh --prompt "seed text" --model sonnet
-#      bash .claude/scripts/handoff.sh --prompt-file /tmp/seed.txt --model opus
+#      bash .claude/scripts/handoff.sh --prompt-file $(harness_tmp_dir)/seed.txt --model opus
 #
 # What happens:
 #   1. Resolves seed prompt + claude command from args
@@ -22,9 +22,15 @@
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-DEBUG_LOG="/tmp/handoff_debug.log"
-source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || HARNESS_SESSION_REGISTRY="$HOME/.claude-ops/state/session-registry.json"
-REGISTRY="$HARNESS_SESSION_REGISTRY"
+source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || HARNESS_STATE_DIR="$HOME/.claude-ops/state"
+DEBUG_LOG="$(harness_logs_dir 2>/dev/null || echo "$HARNESS_STATE_DIR/logs")/handoff.log"
+HANDOFF_DEFAULT_DELAY_SEC="${HANDOFF_DEFAULT_DELAY_SEC:-3}"
+HANDOFF_DEFAULT_MODEL="${HANDOFF_DEFAULT_MODEL:-opus}"
+HANDOFF_DEFAULT_COMMAND="${HANDOFF_DEFAULT_COMMAND:-cdoc}"
+HANDOFF_SKIP_PERMISSIONS="${HANDOFF_SKIP_PERMISSIONS:-true}"
+HANDOFF_PANE_SEARCH_DEPTH="${HANDOFF_PANE_SEARCH_DEPTH:-15}"
+HANDOFF_SEED_SIZE_WARN="${HANDOFF_SEED_SIZE_WARN:-60000}"
+# harness-jq.sh already sourced above (near DEBUG_LOG)
 
 # ── Parse arguments ──────────────────────────────────────────────────
 MODE=""           # "rotate" or "direct"
@@ -34,8 +40,8 @@ PROMPT_FILE=""
 MODEL=""
 CHROME=false
 HARNESS=""
-DELAY=3
-SKIP_PERMISSIONS=true
+DELAY="$HANDOFF_DEFAULT_DELAY_SEC"
+SKIP_PERMISSIONS="$HANDOFF_SKIP_PERMISSIONS"
 APPEND_HARNESSUP=false
 
 while [[ $# -gt 0 ]]; do
@@ -58,7 +64,7 @@ log "=== Handoff started (mode=${MODE:-auto}, harness=${HARNESS:-none}) ==="
 
 # ── Resolve from rotation signal file ────────────────────────────────
 if [ "$MODE" = "rotate" ]; then
-  SIGNAL_FILE="/tmp/claude_harness_rotate_${SESSION_ID}"
+  SIGNAL_FILE="$(harness_session_dir "$SESSION_ID")/rotate-signal"
   if [ ! -f "$SIGNAL_FILE" ]; then
     log "ERROR: Signal file not found: $SIGNAL_FILE"
     exit 1
@@ -75,31 +81,41 @@ fi
 # ── Resolve model + chrome from harness progress (if not explicit) ───
 PROGRESS=""
 if [ -n "$HARNESS" ]; then
-  # Try manifest first, then convention
-  PROGRESS=$(harness_progress_path "$HARNESS" 2>/dev/null || echo "")
-  [ -z "$PROGRESS" ] || [ ! -f "$PROGRESS" ] && PROGRESS="$PROJECT_ROOT/claude_files/${HARNESS}-progress.json"
+  # v3: progress.json is gone — use tasks.json path (harness_bump_session resolves state.json)
+  PROGRESS="$PROJECT_ROOT/.claude/harness/${HARNESS}/tasks.json"
   if [ ! -f "$PROGRESS" ]; then
-    log "ERROR: Progress file not found: $PROGRESS"
+    log "ERROR: tasks.json not found: $PROGRESS"
     exit 1
   fi
 
   if [ -z "$MODEL" ]; then
     # Read model from progress.json rotation config
-    CLAUDE_ALIAS=$(jq -r '.rotation.claude_command // "cdo"' "$PROGRESS" 2>/dev/null)
-    case "$CLAUDE_ALIAS" in
-      cdo|cdo1m)  MODEL="opus" ;;
-      cds|cds1m)  MODEL="sonnet" ;;
-      cdh)        MODEL="haiku" ;;
-      cdoc)       MODEL="opus"; CHROME=true ;;
-      cdsc)       MODEL="sonnet"; CHROME=true ;;
-      *)          MODEL="opus" ;;
-    esac
-    # Check for long context
-    case "$CLAUDE_ALIAS" in
-      cdo1m) MODEL="'opus[1m]'" ;;
-      cds1m) MODEL="'sonnet[1m]'" ;;
-    esac
-    log "Model from progress: $MODEL (alias: $CLAUDE_ALIAS)"
+    CLAUDE_ALIAS=$(jq -r ".rotation.claude_command // \"$HANDOFF_DEFAULT_COMMAND\"" "$PROGRESS" 2>/dev/null)
+    # Handle both aliases (cdo/cds/cdh) and full command strings (claude --model opus ...)
+    if echo "$CLAUDE_ALIAS" | grep -q "^claude "; then
+      # Full command string — extract model and chrome flag
+      if echo "$CLAUDE_ALIAS" | grep -q -- "--model opus"; then MODEL="opus"
+      elif echo "$CLAUDE_ALIAS" | grep -q -- "--model sonnet"; then MODEL="sonnet"
+      elif echo "$CLAUDE_ALIAS" | grep -q -- "--model haiku"; then MODEL="haiku"
+      else MODEL="opus"; fi
+      echo "$CLAUDE_ALIAS" | grep -q -- "--chrome" && CHROME=true
+    else
+      # Legacy alias format
+      case "$CLAUDE_ALIAS" in
+        cdo|cdo1m)  MODEL="opus" ;;
+        cds|cds1m)  MODEL="sonnet" ;;
+        cdh)        MODEL="haiku" ;;
+        cdoc)       MODEL="opus"; CHROME=true ;;
+        cdsc)       MODEL="sonnet"; CHROME=true ;;
+        *)          MODEL="$HANDOFF_DEFAULT_MODEL" ;;
+      esac
+      # Check for long context
+      case "$CLAUDE_ALIAS" in
+        cdo1m) MODEL="'opus[1m]'" ;;
+        cds1m) MODEL="'sonnet[1m]'" ;;
+      esac
+    fi
+    log "Model from progress: $MODEL (command: $CLAUDE_ALIAS)"
   fi
 
   # Default mode to "direct" if not rotation
@@ -107,14 +123,44 @@ if [ -n "$HARNESS" ]; then
 fi
 
 # Defaults
-[ -z "$MODEL" ] && MODEL="opus"
+[ -z "$MODEL" ] && MODEL="$HANDOFF_DEFAULT_MODEL"
 [ -z "$MODE" ] && MODE="direct"
 
-# ── Build claude command ─────────────────────────────────────────────
+# ── Build claude command (respects permissions.json) ─────────────────
 CLAUDE_CMD="claude"
-if [ "$SKIP_PERMISSIONS" = true ]; then
-  CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
+
+# Read permissions.json if harness is known
+if [ -n "$HARNESS" ]; then
+  _perms_json="$PROJECT_ROOT/.claude/harness/${HARNESS}/agents/module-manager/permissions.json"
+  [ ! -f "$_perms_json" ] && _perms_json="$PROJECT_ROOT/.claude/harness/${HARNESS}/agents/sidecar/permissions.json"
+  if [ -f "$_perms_json" ]; then
+    _perm_mode=$(jq -r '.permission_mode // "bypassPermissions"' "$_perms_json")
+    _perm_allowed=$(jq -r '(.allowedTools // []) | join(",")' "$_perms_json")
+    _perm_disallowed=$(jq -r '(.disallowedTools // []) | join(",")' "$_perms_json")
+    _perm_tools=$(jq -r '(.tools // []) | join(",")' "$_perms_json")
+    _perm_dirs=$(jq -r '(.addDirs // []) | join(",")' "$_perms_json")
+    # Apply mode (overrides SKIP_PERMISSIONS)
+    case "$_perm_mode" in
+      bypassPermissions) CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions" ;;
+      acceptEdits)       CLAUDE_CMD="$CLAUDE_CMD --permission-mode acceptEdits" ;;
+      dontAsk)           CLAUDE_CMD="$CLAUDE_CMD --permission-mode dontAsk" ;;
+      plan)              CLAUDE_CMD="$CLAUDE_CMD --permission-mode plan" ;;
+      default)           ;;  # no flag
+    esac
+    [ -n "$_perm_allowed" ]    && CLAUDE_CMD="$CLAUDE_CMD --allowedTools $_perm_allowed"
+    [ -n "$_perm_disallowed" ] && CLAUDE_CMD="$CLAUDE_CMD --disallowedTools $_perm_disallowed"
+    [ -n "$_perm_tools" ]      && CLAUDE_CMD="$CLAUDE_CMD --tools $_perm_tools"
+    [ -n "$_perm_dirs" ]       && CLAUDE_CMD="$CLAUDE_CMD --add-dir $_perm_dirs"
+  elif [ "$SKIP_PERMISSIONS" = true ]; then
+    CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
+  fi
+else
+  # No harness — fall back to SKIP_PERMISSIONS flag
+  if [ "$SKIP_PERMISSIONS" = true ]; then
+    CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
+  fi
 fi
+
 CLAUDE_CMD="$CLAUDE_CMD --model $MODEL"
 if [ "$CHROME" = true ]; then
   CLAUDE_CMD="$CLAUDE_CMD --chrome"
@@ -136,7 +182,7 @@ if [ -n "$HARNESS" ]; then
     CURRENT=$(harness_current_task "$PROGRESS" 2>/dev/null || echo "unknown")
     DONE=$(harness_done_count "$PROGRESS" 2>/dev/null || echo "?")
     TOTAL=$(harness_total_count "$PROGRESS" 2>/dev/null || echo "?")
-    SEED="Continue ${HARNESS} harness. Read claude_files/${HARNESS}-harness.md. Progress: ${DONE}/${TOTAL}. Current: ${CURRENT}."
+    SEED="Continue ${HARNESS} harness. Read .claude/harness/${HARNESS}/harness.md. Progress: ${DONE}/${TOTAL}. Current: ${CURRENT}."
   fi
 elif [ -n "$PROMPT_FILE" ]; then
   SEED=$(cat "$PROMPT_FILE")
@@ -158,35 +204,12 @@ fi
 
 log "Seed prompt: ${#SEED} chars"
 
-# ── Find current tmux pane ───────────────────────────────────────────
-find_own_pane() {
-  local panes
-  panes=$(tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null) || return 1
-
-  local check_pid=$$
-  for _ in $(seq 1 15); do
-    local parent
-    parent=$(ps -o ppid= -p "$check_pid" 2>/dev/null | tr -d ' ') || break
-    [ -z "$parent" ] || [ "$parent" = "1" ] && break
-
-    local match
-    match=$(echo "$panes" | awk -v pid="$parent" '$2 == pid { print $1; exit }')
-    if [ -n "$match" ]; then
-      echo "$match"
-      return 0
-    fi
-    check_pid="$parent"
-  done
-
-  # No fallback — better to fail loudly than grab the wrong pane
-  return 1
-}
-
-TMUX_PANE=$(find_own_pane 2>/dev/null || echo "")
+# ── Find current tmux pane (via shared hook_find_own_pane) ──────────
+TMUX_PANE=$(hook_find_own_pane 2>/dev/null || echo "")
 if [ -z "$TMUX_PANE" ]; then
   log "WARNING: No tmux pane found — falling back to /clear mode"
   if [ -n "$HARNESS" ]; then
-    echo "$HARNESS" > "/tmp/claude_harness_rotate_fallback_${HARNESS}"
+    echo "$HARNESS" > "$(harness_runtime "$HARNESS")/rotate-fallback"
   fi
   [ -n "${SIGNAL_FILE:-}" ] && rm -f "$SIGNAL_FILE"
   echo "ERROR: Not in tmux. Cannot handoff." >&2
@@ -196,51 +219,51 @@ log "Found pane: $TMUX_PANE"
 
 # ── Update harness state ─────────────────────────────────────────────
 if [ -n "$HARNESS" ] && [ -n "$PROGRESS" ] && [ -f "$PROGRESS" ]; then
-  locked_jq_write "$PROGRESS" "progress-$HARNESS" \
-    '.session_count = ((.session_count // 0) + 1) |
-     .current_session = {
-       "round_count": 0,
-       "tasks_completed": 0,
-       "started_at": (now | todate)
-     }'
+  harness_bump_session "$PROGRESS"
   log "Progress: session_count bumped, current_session reset"
 
-  # Deregister old session
-  if [ -n "$SESSION_ID" ] && [ -f "$REGISTRY" ]; then
-    locked_jq_write "$REGISTRY" "session-registry" 'del(.[$sid])' --arg sid "$SESSION_ID"
-    log "Deregistered session $SESSION_ID"
-  elif [ -f "$REGISTRY" ]; then
-    # Try to find session registered to this harness
-    OLD_SID=$(jq -r --arg h "$HARNESS" 'to_entries[] | select(.value == $h) | .key' "$REGISTRY" 2>/dev/null | head -1)
-    if [ -n "$OLD_SID" ]; then
-      locked_jq_write "$REGISTRY" "session-registry" 'del(.[$sid])' --arg sid "$OLD_SID"
-      log "Deregistered session $OLD_SID (found by harness name)"
-    fi
-  fi
-
   # Write pending registration for new session (line 2 = pane_id for dispatch matching)
-  printf '%s\n%s\n' "$HARNESS" "$TMUX_PANE" > "/tmp/claude_harness_pending_${HARNESS}"
+  printf '%s\n%s\n' "$HARNESS" "$TMUX_PANE" > "$(harness_runtime "$HARNESS")/pending-registration"
   log "Wrote pending registration for $HARNESS (pane $TMUX_PANE)"
 fi
 
 # ── Save seed to temp file ───────────────────────────────────────────
-SEED_FILE=$(mktemp /tmp/handoff_seed_XXXXXX.txt)
+SEED_FILE=$(mktemp "$(harness_tmp_dir)/handoff_seed_XXXXXX.txt")
 echo "$SEED" > "$SEED_FILE"
 
 # ── Launch background daemon ─────────────────────────────────────────
 # nohup + trap HUP + disown ensures survival after parent Claude process dies.
 # (setsid is Linux-only; on macOS we use trap "" HUP instead)
 HARNESS_FOR_RESULT="${HARNESS:-handoff}"
+
+# Guard against duplicate rotation daemons (stop hook can fire twice)
+ROTATION_LOCK="$(harness_runtime "$HARNESS_FOR_RESULT")/handoff.lock"
+if ! mkdir "$ROTATION_LOCK" 2>/dev/null; then
+  log "Rotation already in progress (lock exists: $ROTATION_LOCK). Skipping."
+  exit 0
+fi
+
 nohup bash -c '
   # Ignore HUP so we survive parent death (macOS-compatible alternative to setsid)
   trap "" HUP
-  PANE="$1"; CLAUDE_CMD="$2"; SEED_FILE="$3"; PROJECT="$4"; DLOG="$5"; DELAY="$6"; SIGNAL="$7"; HNAME="$8"
+  HANDOFF_DEATH_WAIT_POLLS="${HANDOFF_DEATH_WAIT_POLLS:-15}"
+  HANDOFF_DEATH_POLL_INTERVAL="${HANDOFF_DEATH_POLL_INTERVAL:-2}"
+  HANDOFF_ESCALATE_CTRLC_AT="${HANDOFF_ESCALATE_CTRLC_AT:-5}"
+  HANDOFF_ESCALATE_EXIT_AT="${HANDOFF_ESCALATE_EXIT_AT:-10}"
+  HANDOFF_ESCALATE_KILL_AT="${HANDOFF_ESCALATE_KILL_AT:-14}"
+  HANDOFF_LOAD_WAIT_POLLS="${HANDOFF_LOAD_WAIT_POLLS:-30}"
+  HANDOFF_LOAD_POLL_INTERVAL="${HANDOFF_LOAD_POLL_INTERVAL:-2}"
+  HANDOFF_READINESS_PATTERN="${HANDOFF_READINESS_PATTERN:-bypass permissions|permissions|Welcome|Tips}"
+  HANDOFF_SEED_SIZE_WARN="${HANDOFF_SEED_SIZE_WARN:-60000}"
+  PANE="$1"; CLAUDE_CMD="$2"; SEED_FILE="$3"; PROJECT="$4"; DLOG="$5"; DELAY="$6"; SIGNAL="$7"; HNAME="$8"; STATE_DIR="$9"; RLOCK="${10}"
 
   log() { echo "[$(date "+%H:%M:%S")] handoff-bg: $*" >> "$DLOG"; }
   write_result() {
     local status="$1" reason="${2:-}"
+    local result_dir="$STATE_DIR/harness-runtime/$HNAME"
+    mkdir -p "$result_dir"
     printf "{\"status\":\"%s\",\"reason\":\"%s\",\"ts\":\"%s\"}\n" "$status" "$reason" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      > "/tmp/handoff_result_${HNAME}"
+      > "$result_dir/handoff-result"
   }
 
   sleep "$DELAY"
@@ -251,9 +274,9 @@ nohup bash -c '
   sleep 1
   tmux send-keys -t "$PANE" "/quit" Enter
 
-  # ── Phase 2: Wait for death (up to 30s, escalating) ──
-  for i in $(seq 1 15); do
-    sleep 2
+  # ── Phase 2: Wait for death (escalating) ──
+  for i in $(seq 1 $HANDOFF_DEATH_WAIT_POLLS); do
+    sleep $HANDOFF_DEATH_POLL_INTERVAL
     PANE_PID=$(tmux list-panes -t "$PANE" -F "#{pane_pid}" 2>/dev/null || echo "")
     if [ -z "$PANE_PID" ]; then
       log "Pane gone — aborting"
@@ -263,9 +286,9 @@ nohup bash -c '
     fi
     pgrep -P "$PANE_PID" -f "claude" > /dev/null 2>&1 || { log "Claude exited after $((i*2))s"; break; }
     case "$i" in
-      5)  log "Escalating: Ctrl+C"; tmux send-keys -t "$PANE" C-c ;;
-      10) log "Escalating: exit";   tmux send-keys -t "$PANE" "exit" Enter ;;
-      14) CPID=$(pgrep -P "$PANE_PID" -f "claude" 2>/dev/null | head -1 || echo "")
+      $HANDOFF_ESCALATE_CTRLC_AT) log "Escalating: Ctrl+C"; tmux send-keys -t "$PANE" C-c ;;
+      $HANDOFF_ESCALATE_EXIT_AT)  log "Escalating: exit";   tmux send-keys -t "$PANE" "exit" Enter ;;
+      $HANDOFF_ESCALATE_KILL_AT)  CPID=$(pgrep -P "$PANE_PID" -f "claude" 2>/dev/null | head -1 || echo "")
           [ -n "$CPID" ] && { log "Last resort: kill $CPID"; kill "$CPID" 2>/dev/null || true; } ;;
     esac
   done
@@ -278,13 +301,13 @@ nohup bash -c '
   log "Launched: $CLAUDE_CMD"
 
   # ── Phase 4: Wait for Claude to load ──
-  for i in $(seq 1 30); do
-    sleep 2
-    tmux capture-pane -t "$PANE" -p 2>/dev/null | grep -qE "(bypass permissions|permissions|Welcome|Tips)" && {
+  for i in $(seq 1 $HANDOFF_LOAD_WAIT_POLLS); do
+    sleep $HANDOFF_LOAD_POLL_INTERVAL
+    tmux capture-pane -t "$PANE" -p 2>/dev/null | grep -qE "($HANDOFF_READINESS_PATTERN)" && {
       log "Claude loaded after $((i*2))s"; break
     }
-    if [ "$i" = "30" ]; then
-      log "WARN: Claude may not have loaded in 60s — aborting seed paste"
+    if [ "$i" = "$HANDOFF_LOAD_WAIT_POLLS" ]; then
+      log "WARN: Claude may not have loaded — aborting seed paste"
       write_result "failed" "claude_load_timeout_60s"
       rm -f "$SEED_FILE" "$SIGNAL"
       exit 1
@@ -303,8 +326,8 @@ nohup bash -c '
   # ── Phase 5: Paste seed prompt ──
   # Guard: check seed size (tmux paste-buffer silently truncates at ~64KB)
   SEED_SIZE=$(wc -c < "$SEED_FILE" | tr -d " ")
-  if [ "$SEED_SIZE" -gt 60000 ]; then
-    log "WARN: Seed is ${SEED_SIZE} bytes (>60KB) — may be truncated by tmux"
+  if [ "$SEED_SIZE" -gt "$HANDOFF_SEED_SIZE_WARN" ]; then
+    log "WARN: Seed is ${SEED_SIZE} bytes (>${HANDOFF_SEED_SIZE_WARN}) — may be truncated by tmux"
   fi
   tmux load-buffer "$SEED_FILE"
   tmux paste-buffer -t "$PANE"
@@ -317,8 +340,9 @@ nohup bash -c '
 
   # Cleanup
   rm -f "$SEED_FILE" "$SIGNAL"
+  rmdir "$RLOCK" 2>/dev/null || true
   log "=== Handoff complete ==="
-' _ "$TMUX_PANE" "$CLAUDE_CMD" "$SEED_FILE" "$PROJECT_ROOT" "$DEBUG_LOG" "$DELAY" "${SIGNAL_FILE:-}" "$HARNESS_FOR_RESULT" \
+' _ "$TMUX_PANE" "$CLAUDE_CMD" "$SEED_FILE" "$PROJECT_ROOT" "$DEBUG_LOG" "$DELAY" "${SIGNAL_FILE:-}" "$HARNESS_FOR_RESULT" "$HARNESS_STATE_DIR" "$ROTATION_LOCK" \
   >> "$DEBUG_LOG" 2>&1 &
 
 DAEMON_PID=$!
