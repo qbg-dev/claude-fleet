@@ -272,70 +272,71 @@ fi
 
 # ── Output ──
 cat <<EOF
-# ${HARNESS} — ${ROLE_DISPLAY}
+<context>
+harness=${HARNESS} | role=${ROLE_DISPLAY} | cycle=$((CYCLES + 1))
+mission: $MISSION
+progress: $DONE/$TOTAL done, $PENDING unblocked, in-progress: ${CURRENT:-none}
+last-cycle: $LAST_CYCLE$([ "$INBOX_COUNT" -gt 0 ] && echo "
+⚠ INBOX: $INBOX_COUNT unread messages — read inbox.jsonl FIRST before anything else")
+</context>
 
-**Mission**: $MISSION
-**Tasks**: $DONE/$TOTAL done, $PENDING unblocked, current: ${CURRENT:-orienting}
-**Cycles**: $CYCLES (last: $LAST_CYCLE)$([ "$INBOX_COUNT" -gt 0 ] && echo "
-**Inbox**: $INBOX_COUNT unread messages")
+<instructions>
 
-## Your Harness Files
+## Phase 1 — READ (mandatory before any action)
 
-Use the **Read tool** to read each of these files now, before doing anything else:
+Use the **Read tool** to read each file below, in order. Do not skip any.
 
 $FILE_LIST
 
-**Do this now**: Read each file above using the Read tool. Do not skip any.
+## Phase 2 — ACT
 
 $ROLE_SECTION
 
 $PARENT_LINE
 
-## Communication (Bus-Only)
-All inter-agent messaging goes through the event bus. **Never** write directly to another agent's inbox.jsonl.
+## Phase 3 — RECORD (required before stopping)
 
-\`\`\`bash
-# Send a message to another agent
-source ~/.claude-ops/lib/harness-jq.sh
-hq_send "${HARNESS}" "TARGET_AGENT" "TYPE" "Your message content"
-# Types: status, regression, directive, task, question
-\`\`\`
-
-Messages sent to you appear in your \`inbox.jsonl\`. You also receive context injections
-from the bus during tool calls (recent messages within 30 minutes are auto-surfaced).
-
-## Rules
-- **Zero mock data.** No placeholders, no hardcoded test data.
-- **Just stop when done.** The stop hook manages sleep + rotation.
-- **Bus-only messaging.** Use \`hq_send\` — never write to another agent's inbox.jsonl.
-- **No journal.md.** Write cycle learnings to MEMORY.md instead.
-- **Git: stage specific files only.** Never \`git add -A\` or \`git add .\`
-- **Git: never push or merge to main** without Warren's explicit approval.
-$ROLE_RULES
-
-## RECORD (end of each cycle)
-
-1. Update MEMORY.md — synthesize learnings; prune to ≤200 lines
-2. Bump cycle counter:
+1. **MEMORY.md** — add learnings; prune to ≤200 lines total
+2. **Bump cycle counter**:
    \`\`\`bash
    source ~/.claude-ops/lib/harness-jq.sh
    harness_bump_session .claude/harness/${HARNESS}/tasks.json
    \`\`\`
-3. Publish completions via bus (if any tasks completed):
+3. **Publish completions** (for each task finished this cycle):
    \`\`\`bash
    source ~/.claude-ops/lib/event-bus.sh
-   bus_publish "task.completed" '{"harness":"${HARNESS}","task_id":"TASK_ID","summary":"one line"}'
+   bus_publish "task.completed" '{"harness":"${HARNESS}","task_id":"T-N","summary":"one line"}'
    \`\`\`
-4. Generate wave report (after completing a wave or significant batch of tasks):
-   \`\`\`bash
-   # Copy the template and fill in your results
-   cp ~/.claude-ops/templates/wave-report.html.tmpl .claude/harness/${HARNESS}/wave-N.html
-   \`\`\`
-   Edit \`wave-N.html\`: fill in task entries with before/after/evidence, update the
-   bottom-line hook, and replace N with the wave number.
-5. Keep \`vision.html\` current — update task statuses (READY/IN PROGRESS/DONE/BLOCKED) as waves complete.
+4. **Wave report** (after completing a significant batch): copy \`~/.claude-ops/templates/wave-report.html.tmpl\` → \`.claude/harness/${HARNESS}/wave-N.html\`, fill entries with before/after/evidence.
+5. **vision.html** — update task statuses (READY / IN PROGRESS / DONE / BLOCKED).
 
-## Begin
+</instructions>
 
+<rules>
+These apply every cycle, no exceptions:
+- **Zero mock data.** No placeholders, no hardcoded test values — ever.
+- **Bus-only messaging.** Use \`hq_send\` — never write directly to another agent's inbox.jsonl.
+- **No journal.md.** Learnings go to MEMORY.md only.
+- **Git: stage specific files.** Never \`git add -A\` or \`git add .\` — name each file explicitly.
+- **Git: never merge to main or push** without Warren's explicit approval.
+- **Stop when done.** The stop hook manages sleep + rotation — do not busy-loop.
+$ROLE_RULES
+</rules>
+
+<communication>
+All inter-agent messaging goes through the event bus. Never write directly to inbox.jsonl.
+
+\`\`\`bash
+source ~/.claude-ops/lib/harness-jq.sh
+hq_send "${HARNESS}" "TARGET_AGENT" "TYPE" "message"
+# Types: status | regression | directive | task | question
+\`\`\`
+
+Your inbox.jsonl receives messages routed to you. Bus context from the last 30 min is
+auto-injected during tool calls — check it before assuming no new information exists.
+</communication>
+
+<begin>
 $BEGIN
+</begin>
 EOF
