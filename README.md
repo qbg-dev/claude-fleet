@@ -1,105 +1,162 @@
-# ~/.claude-ops — Agent Operations Infrastructure
+# boring — Agent Harness Infrastructure for Claude Code
 
-Shared, tested scripts for autonomous Claude Code agent sessions.
-**Every agent should source from here instead of copying scripts into project repos.**
+[![Tests](https://github.com/qbg-dev/boring/actions/workflows/ci.yml/badge.svg)](https://github.com/qbg-dev/boring/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-## Directory Structure
+**boring** is an infrastructure layer built on top of Claude Code that turns Claude sessions into persistent, recoverable agents. It uses Claude Code's native hooks, settings, and session model—no separate runtime.
 
-```
-~/.claude-ops/
-├── bin/                          # CLI tools
-│   ├── claude-mux.py             # Multi-agent multiplexer
-│   ├── codex-async.sh            # Async Codex launcher
-│   ├── daily-harness-audit.py    # Daily harness health audit
-│   └── report-issue.sh           # Structured issue reporting for agents
-├── harness/
-│   ├── manifests/{name}/         # Per-harness persistent registry
-│   │   └── manifest.json         # project_root, status, file paths
-│   └── templates/                # Scaffold templates (.tmpl)
-│       ├── start.sh.tmpl
-│       ├── seed.sh.tmpl
-│       ├── progress.json.tmpl
-│       ├── harness.md.tmpl
-│       └── best-practices.json.tmpl
-├── hooks/
-│   ├── admission/
-│   │   ├── deploy-mutator.sh     # Auto-inject deploy flags
-│   │   ├── context-injector.sh   # RAG-like context injection before tool calls
-│   │   └── task-readiness.sh     # Verification gate for task completion
-│   ├── operators/
-│   │   ├── progress-validator.sh # Validate progress.json + run checks.d/
-│   │   ├── activity-logger.sh    # Log all tool use to JSONL
-│   │   └── checks.d/
-│   │       ├── no-inline-styles.sh
-│   │       ├── no-mock-data.sh
-│   │       ├── no-hardcoded-ids.sh
-│   │       └── file-conflicts.sh
-│   ├── harness-dispatch.sh       # Main stop hook dispatcher
-│   └── stop-check.sh             # General code-review stop hook
-├── lib/
-│   ├── harness-jq.sh             # Task graph queries (source in scripts)
-│   ├── handoff.sh                # Session rotation/replacement
-│   ├── bead.sh                   # Cross-harness coordination
-│   ├── spawn-sweep-agent.sh      # Least-privilege sweep agent spawner
-│   ├── session-reader.sh         # Session transcript reader
-│   ├── sweep-config.sh           # Load sweep configuration
-│   └── harness-launch.sh         # Tmux launch orchestration
-├── scripts/
-│   ├── scaffold.sh               # Create new harness from templates
-│   ├── control-plane.sh          # K8s-inspired daemon
-│   ├── monitor-agent.sh          # Polling monitor + Claude session
-│   └── tmux-harness-summary.sh   # Tmux status bar summary
-├── sweeps.d/
-│   ├── 01-claude-md-cleanup.sh
-│   ├── 02-file-index.sh
-│   ├── 03-stale-cleanup.sh
-│   ├── 04-progress-reconcile.sh
-│   ├── 05-commit-reminder.sh
-│   ├── 07-dead-agent-detector.sh
-│   ├── 08-meta-reflect.sh
-│   └── permissions/              # Per-sweep RBAC manifests
-│       ├── 01-claude-md-cleanup.json
-│       ├── 02-file-index.json
-│       ├── 04-progress-reconcile.json
-│       └── 08-meta-reflect.json
-├── tests/
-│   ├── run-all.sh                # 163 tests, 10 suites
-│   ├── test-hooks.sh
-│   ├── test-harness-jq.sh
-│   ├── test-context-injector.sh
-│   ├── test-progress-validator.sh
-│   ├── test-scaffold.sh
-│   ├── test-registry.sh
-│   ├── test-sweeps.sh
-│   ├── test-monitor-reflect.sh
-│   ├── test-session-reader.sh
-│   ├── helpers.sh
-│   └── fixtures/
-├── plugins/                      # Migrated marketplace plugins
-│   └── claude-context-orchestrator/
-├── control-plane.conf            # Daemon config (re-sourced every tick)
-└── README.md
-```
+The design is simple: every agent is either a **coordinator** or a **worker**. Coordinators manage task graphs and delegate to workers. Workers claim tasks, execute them, and report back through an **event bus**. Every tool call flows through Claude Code hooks that log events, inject context, and keep agents on task. A **watchdog** respawns agents after graceful stops or crashes. You can interrupt at any point, steer the agent with a message, and it picks up where it left off.
 
 ## Quick Start
 
 ```bash
-# Scaffold a new harness
-bash ~/.claude-ops/scripts/scaffold.sh my-feature /path/to/project
+# 1. Install
+curl -fsSL https://raw.githubusercontent.com/qbg-dev/boring/main/install.sh | bash
 
-# Source shared libraries
-source ~/.claude-ops/lib/harness-jq.sh
-CURRENT=$(harness_current_task "$PROGRESS_FILE")
+# 2. Scaffold a harness in your project
+bash ~/.boring/scripts/scaffold.sh my-feature /path/to/project
 
-# Run tests
-bash ~/.claude-ops/tests/run-all.sh
+# 3. Edit the task graph
+$EDITOR /path/to/project/.claude/harness/my-feature/tasks.json
 
-# Start control plane
-nohup bash ~/.claude-ops/scripts/control-plane.sh --project /path/to/project &
+# 4. Generate a seed prompt and launch
+bash /path/to/project/.claude/scripts/my-feature-seed.sh > /tmp/seed.txt
+cat /tmp/seed.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6
+
+# 5. Check status
+bash ~/.boring/scripts/harness-watchdog.sh --status
 ```
 
-## Philosophy
+## Architecture
 
-Harnesses are disposable task graphs that agents evolve through.
-Infrastructure lives here (`~/.claude-ops/`). State lives in the project (`claude_files/`).
-See the agent-harness skill for the full protocol.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                          boring                             │
+│                                                             │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │
+│  │   Harness    │    │  Event Bus   │    │     Hooks    │  │
+│  │              │    │              │    │              │  │
+│  │ tasks.json   │◄──►│ stream.jsonl │◄───│ PreToolUse   │  │
+│  │ task graph   │    │ pub/sub      │    │ PostToolUse  │  │
+│  │ lifecycle    │    │ side-effects │    │ Stop         │  │
+│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘  │
+│         │                  │                   │           │
+│  ┌──────▼───────┐    ┌──────▼───────────────────▼───────┐  │
+│  │   Watchdog   │    │         Multi-Agent Layer        │  │
+│  │              │    │                                  │  │
+│  │ crash detect │    │  coordinator ──► worker-1        │  │
+│  │ auto-respawn │    │       │        ► worker-2        │  │
+│  │ stuck nudge  │    │  pane-registry, inbox/outbox     │  │
+│  └──────────────┘    └──────────────────────────────────┘  │
+│                                                             │
+│  All state: {project}/.claude/  +  ~/.boring/state/         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+The **Stop hook** is the core mechanism: when Claude tries to stop, the hook checks the task graph. If tasks remain, it blocks the stop and shows the current state—the agent reads this and keeps working. When all tasks are done, it lets the session end. For long-running agents, it writes a sentinel and the watchdog respawns after a configurable sleep window.
+
+The **PreToolUse hook** injects context at the moment of action—inbox messages from other agents, policy rules, phase state—so agents always have what they need without bloating the conversation.
+
+## Human Steering
+
+boring is designed for collaborative workflows where you stay in control:
+
+- **Interrupt any time**: type in the tmux pane; the agent reads and adapts
+- **Send a message**: `hq_send` delivers to the agent's inbox; PreToolUse injects it on the next tool call
+- **Edit the task graph**: plain JSON—add, remove, or reprioritize tasks mid-session
+- **Override the stop gate**: `touch ~/.boring/state/sessions/{id}/allow-stop`
+
+## Directory Structure
+
+```
+~/.boring/
+├── bin/                  # CLI tools (claude-mux, report-issue, ...)
+├── bus/                  # Event bus state (stream.jsonl, schema.json, cursors/)
+│   └── side-effects/     # Pluggable side-effect scripts
+├── harness/
+│   └── manifests/        # Per-harness registry (manifest.json)
+├── hooks/
+│   ├── dispatch/         # Stop hook modules
+│   ├── gates/            # Stop gate + tool policy enforcement
+│   ├── interceptors/     # PreToolUse context injection
+│   ├── operators/        # PostToolUse checks (no-mock-data, etc.)
+│   └── publishers/       # PostToolUse + prompt event publishers
+├── lib/                  # Shared libraries (harness-jq.sh, event-bus.sh, ...)
+├── scripts/              # CLI scripts (scaffold.sh, watchdog, monitor, ...)
+├── sweeps.d/             # Cron-style maintenance sweeps
+├── templates/            # Scaffold templates (.tmpl files)
+├── tests/                # Test suite (163 tests, 10 suites)
+└── wave-report-server/   # HTML report server for harness progress
+```
+
+## Manual Installation
+
+```bash
+git clone git@github.com:qbg-dev/boring.git ~/.boring
+```
+
+Add hooks to your Claude Code `settings.json` (`~/.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.boring/hooks/interceptors/pre-tool-context-injector.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.boring/hooks/publishers/post-tool-publisher.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.boring/hooks/gates/stop-harness-dispatch.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.boring/hooks/publishers/prompt-publisher.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+## Running Tests
+
+```bash
+bash ~/.boring/tests/run-all.sh
+```
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md) — install, scaffold first harness, launch first agent
+- [Architecture](docs/architecture.md) — 5-component deep dive, data flow, file ownership
+- [Event Bus](docs/event-bus.md) — `bus_publish` API, side-effects, schema reference
+- [Hooks](docs/hooks.md) — hook pipeline, context injection, policy enforcement
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE).

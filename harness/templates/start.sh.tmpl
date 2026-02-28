@@ -6,7 +6,7 @@ set -euo pipefail
 PROJECT_ROOT="{{PROJECT_ROOT}}"
 PROGRESS="$PROJECT_ROOT/claude_files/{{HARNESS}}-progress.json"
 HARNESS="$PROJECT_ROOT/claude_files/{{HARNESS}}-harness.md"
-source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || HARNESS_SESSION_REGISTRY="$HOME/.claude-ops/state/session-registry.json"
+source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || HARNESS_SESSION_REGISTRY="$HOME/.boring/state/session-registry.json"
 REGISTRY="$HARNESS_SESSION_REGISTRY"
 
 if [ ! -f "$PROGRESS" ]; then

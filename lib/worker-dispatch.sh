@@ -6,7 +6,7 @@
 #
 # Usage (source in sidecar scripts or bash):
 #   export SIDECAR_NAME="mod-customer" PROJECT_ROOT="/path/to/project"
-#   source ~/.claude-ops/lib/worker-dispatch.sh
+#   source ~/.boring/lib/worker-dispatch.sh
 #   worker_discover
 #   worker_launch "miniapp-ux-v2"
 #   worker_health "miniapp-ux-v2"
@@ -21,7 +21,7 @@
 #   SIDECAR_PANE   — auto-detected if not set
 
 # ── Source dependencies ────────────────────────────────────────
-source "$HOME/.claude-ops/lib/harness-jq.sh"
+source "$HOME/.boring/lib/harness-jq.sh"
 
 WORKER_LAUNCH_TIMEOUT_SEC="${WORKER_LAUNCH_TIMEOUT_SEC:-90}"
 WORKER_HEALTH_CAPTURE_LINES="${WORKER_HEALTH_CAPTURE_LINES:-10}"
@@ -232,7 +232,7 @@ worker_launch() {
   export CLAUDE_CMD="$claude_cmd"
 
   # Source harness-launch.sh and call
-  source "$HOME/.claude-ops/lib/harness-launch.sh"
+  source "$HOME/.boring/lib/harness-launch.sh"
 
   local launch_args=("$worker" "$project")
   [ "$with_monitor" = true ] && launch_args+=(--monitor)

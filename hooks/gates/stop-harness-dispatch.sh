@@ -15,18 +15,18 @@ GC_THROTTLE_SEC="${GC_THROTTLE_SEC:-60}"
 # ── Discovery configs ──
 AGENT_DISCOVERY_ENABLED="${AGENT_DISCOVERY_ENABLED:-true}"
 ROTATION_LOCK_CLEANUP_SEC="${ROTATION_LOCK_CLEANUP_SEC:-60}"
-source "$HOME/.claude-ops/lib/harness-jq.sh"
-source "$HOME/.claude-ops/lib/event-bus.sh" 2>/dev/null || true
+source "$HOME/.boring/lib/harness-jq.sh"
+source "$HOME/.boring/lib/event-bus.sh" 2>/dev/null || true
 
 # Source modules
-source "$HOME/.claude-ops/hooks/dispatch/harness-gates.sh"
-source "$HOME/.claude-ops/hooks/dispatch/harness-gc.sh"
-source "$HOME/.claude-ops/hooks/dispatch/harness-rotation.sh"
-source "$HOME/.claude-ops/hooks/dispatch/harness-discovery.sh"
-source "$HOME/.claude-ops/hooks/dispatch/harness-bg-tasks.sh"
+source "$HOME/.boring/hooks/dispatch/harness-gates.sh"
+source "$HOME/.boring/hooks/dispatch/harness-gc.sh"
+source "$HOME/.boring/hooks/dispatch/harness-rotation.sh"
+source "$HOME/.boring/hooks/dispatch/harness-discovery.sh"
+source "$HOME/.boring/hooks/dispatch/harness-bg-tasks.sh"
 
 # Lightweight stop-hook logger (separate from watchdog.log to avoid noise)
-_log_watchdog() { echo "[$(date -u +%FT%TZ)] stop-hook: $*" >> "${HOME}/.claude-ops/state/watchdog.log" 2>/dev/null || true; }
+_log_watchdog() { echo "[$(date -u +%FT%TZ)] stop-hook: $*" >> "${HOME}/.boring/state/watchdog.log" 2>/dev/null || true; }
 
 INPUT=$(cat)
 
@@ -130,7 +130,7 @@ block_generic() {
     local _CURRENT_TASK=$(harness_current_task "$PROGRESS")
     if [ "$_CURRENT_TASK" = "ALL_DONE" ]; then
       # Enforce MEMORY.md update + git checkpoint before stopping
-      hook_block "$(echo -e "## ${HNAME}: All tasks complete — before stopping:\n\n1. Update MEMORY.md with key learnings (patterns, gotchas, decisions)\n2. Run git checkpoint: \`source ~/.claude-ops/lib/event-bus.sh && bus_git_checkpoint \"auto: final — ${HNAME}\"\`\n\nThen stop — rotation handles session handoff if configured.\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+      hook_block "$(echo -e "## ${HNAME}: All tasks complete — before stopping:\n\n1. Update MEMORY.md with key learnings (patterns, gotchas, decisions)\n2. Run git checkpoint: \`source ~/.boring/lib/event-bus.sh && bus_git_checkpoint \"auto: final — ${HNAME}\"\`\n\nThen stop — rotation handles session handoff if configured.\nEscape: touch ${_SESSION_DIR}/allow-stop")"
       check_rotation "$HNAME" "$PROGRESS" "$CANONICAL" && exit 0 || true
     fi
     # Tasks not done → fall through to hook_block

@@ -13,7 +13,7 @@
 set -uo pipefail
 trap 'echo "{}"; exit 0' ERR
 
-source "$HOME/.claude-ops/lib/pane-resolve.sh"
+source "$HOME/.boring/lib/pane-resolve.sh"
 
 INPUT=$(cat)
 hook_parse_input "$INPUT"
@@ -27,7 +27,7 @@ resolve_pane_and_harness "$SESSION_ID"
 
 # Determine permissions.json path from pane registry
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-PANE_REG="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}/pane-registry.json"
+PANE_REG="${HARNESS_STATE_DIR:-$HOME/.boring/state}/pane-registry.json"
 
 AGENT_ROLE=$(jq -r --arg pid "$OWN_PANE_ID" '.[$pid].agent_role // "module-manager"' "$PANE_REG" 2>/dev/null || echo "module-manager")
 PARENT=$(jq -r --arg pid "$OWN_PANE_ID" '.[$pid].parent // ""' "$PANE_REG" 2>/dev/null || echo "")

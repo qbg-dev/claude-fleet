@@ -3,7 +3,7 @@
 set -euo pipefail
 
 source "$(dirname "$0")/helpers.sh"
-source "$HOME/.claude-ops/lib/harness-jq.sh"
+source "$HOME/.boring/lib/harness-jq.sh"
 
 FIXTURES="$(dirname "$0")/fixtures"
 # v2 functions take a path that resolvers use to find tasks.json/config.json/state.json
@@ -167,7 +167,7 @@ echo "── manifest functions ──"
 
 # harness_manifest
 RESULT=$(harness_manifest "test-manifest")
-assert "harness_manifest returns expected path" ".claude-ops/harness/manifests/test-manifest/manifest.json" "$RESULT"
+assert "harness_manifest returns expected path" ".boring/harness/manifests/test-manifest/manifest.json" "$RESULT"
 
 # harness_list_active (uses real manifests)
 RESULT=$(harness_list_active)

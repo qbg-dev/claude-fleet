@@ -3,14 +3,14 @@
 # harness-pane.sh — Shared pane discovery utilities
 # ══════════════════════════════════════════════════════════════════
 # Usage:
-#   source ~/.claude-ops/lib/harness-pane.sh
+#   source ~/.boring/lib/harness-pane.sh
 #
 # Requires:
 #   - tmux available
 #   - pane-registry.json (sole source of truth)
 # ══════════════════════════════════════════════════════════════════
 
-HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.boring/state}"
 PANE_REGISTRY="${PANE_REGISTRY:-$HARNESS_STATE_DIR/pane-registry.json}"
 
 # Find the worker pane for a harness.

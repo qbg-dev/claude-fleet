@@ -8,7 +8,7 @@ echo "── control-plane resilience tests ──"
 TMPDIR_TEST=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
-CP_SCRIPT="$HOME/.claude-ops/scripts/control-plane.sh"
+CP_SCRIPT="$HOME/.boring/scripts/control-plane.sh"
 
 # ── Test: script has no set -e (error containment) ──
 # The script should use set -uo pipefail (no -e)
@@ -81,7 +81,7 @@ assert_equals "dry-run exits successfully" "0" "$DRY_RUN_EXIT"
 assert "dry-run logs completion" "Dry run complete" "$DRY_RUN_OUTPUT"
 
 # ── Test: harness-pane.sh library exists and has all functions ──
-PANE_LIB="$HOME/.claude-ops/lib/harness-pane.sh"
+PANE_LIB="$HOME/.boring/lib/harness-pane.sh"
 assert_file_exists "harness-pane.sh library exists" "$PANE_LIB"
 assert_file_contains "has find_worker_pane" "$PANE_LIB" "find_worker_pane()"
 assert_file_contains "has find_monitor_pane" "$PANE_LIB" "find_monitor_pane()"
@@ -92,7 +92,7 @@ assert_file_contains "has is_claude_alive_in_pane" "$PANE_LIB" "is_claude_alive_
 # harness CLI tests
 # ══════════════════════════════════════════════════════════════════
 
-HARNESS_CLI="$HOME/.claude-ops/bin/harness.sh"
+HARNESS_CLI="$HOME/.boring/bin/harness.sh"
 
 # ── Test: harness CLI exists and is executable ──
 TOTAL=$((TOTAL + 1))

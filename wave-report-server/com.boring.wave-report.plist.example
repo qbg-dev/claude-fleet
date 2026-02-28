@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.claude-ops.wave-report</string>
+    <string>com.boring.wave-report</string>
     <key>ProgramArguments</key>
     <array>
         <string>$HOME/.bun/bin/bun</string>
         <string>run</string>
-        <string>$HOME/.claude-ops/wave-report-server/server.ts</string>
+        <string>$HOME/.boring/wave-report-server/server.ts</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>$HOME/.claude-ops/wave-report-server</string>
+    <string>$HOME/.boring/wave-report-server</string>
     <key>RunAtLoad</key>
     <false/>
     <key>KeepAlive</key>

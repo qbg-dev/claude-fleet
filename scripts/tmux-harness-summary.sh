@@ -10,13 +10,13 @@
 set -euo pipefail
 
 PROJECT_ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.boring/state}"
 OUT="$HARNESS_STATE_DIR/tmux_harness_summary"
 
 # Source harness-jq for task graph queries + canonical paths
-HARNESS_LIB="${HOME}/.claude-ops/lib/harness-jq.sh"
+HARNESS_LIB="${HOME}/.boring/lib/harness-jq.sh"
 [ -f "$HARNESS_LIB" ] && source "$HARNESS_LIB"
-REGISTRY="${HARNESS_SESSION_REGISTRY:-$HOME/.claude-ops/state/session-registry.json}"
+REGISTRY="${HARNESS_SESSION_REGISTRY:-$HOME/.boring/state/session-registry.json}"
 
 harness_count=0
 details=""

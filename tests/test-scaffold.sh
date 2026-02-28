@@ -4,7 +4,7 @@ set -euo pipefail
 
 source "$(dirname "$0")/helpers.sh"
 
-SCAFFOLD="$HOME/.claude-ops/scripts/scaffold.sh"
+SCAFFOLD="$HOME/.boring/scripts/scaffold.sh"
 HARNESS_NAME="test-scaffold-$$"
 
 # Setup temp project
@@ -15,11 +15,11 @@ MM_DIR="$HARNESS_DIR/agents/module-manager"
 
 cleanup() {
   rm -rf "$TMPDIR"
-  rm -rf "$HOME/.claude-ops/harness/manifests/$HARNESS_NAME"
-  rm -rf "$HOME/.claude-ops/harness/manifests/${HARNESS_NAME}-lr"
-  rm -rf "$HOME/.claude-ops/harness/manifests/${HARNESS_NAME}-desc"
-  rm -rf "$HOME/.claude-ops/harness/reports/$HARNESS_NAME"
-  rm -rf "$HOME/.claude-ops/state/playwright/$HARNESS_NAME"
+  rm -rf "$HOME/.boring/harness/manifests/$HARNESS_NAME"
+  rm -rf "$HOME/.boring/harness/manifests/${HARNESS_NAME}-lr"
+  rm -rf "$HOME/.boring/harness/manifests/${HARNESS_NAME}-desc"
+  rm -rf "$HOME/.boring/harness/reports/$HARNESS_NAME"
+  rm -rf "$HOME/.boring/state/playwright/$HARNESS_NAME"
 }
 trap cleanup EXIT
 
@@ -179,20 +179,20 @@ fi
 # ── Manifest ──────────────────────────────────────────────────────────
 
 # Test 22: Creates manifest
-assert_file_exists "creates manifest" "$HOME/.claude-ops/harness/manifests/$HARNESS_NAME/manifest.json"
+assert_file_exists "creates manifest" "$HOME/.boring/harness/manifests/$HARNESS_NAME/manifest.json"
 
 # Test 23: Manifest has correct harness name
-MANIFEST_NAME=$(jq -r '.harness' "$HOME/.claude-ops/harness/manifests/$HARNESS_NAME/manifest.json")
+MANIFEST_NAME=$(jq -r '.harness' "$HOME/.boring/harness/manifests/$HARNESS_NAME/manifest.json")
 assert_equals "manifest has correct harness name" "$HARNESS_NAME" "$MANIFEST_NAME"
 
 # Test 24: Manifest has correct project root
-MANIFEST_ROOT=$(jq -r '.project_root' "$HOME/.claude-ops/harness/manifests/$HARNESS_NAME/manifest.json")
+MANIFEST_ROOT=$(jq -r '.project_root' "$HOME/.boring/harness/manifests/$HARNESS_NAME/manifest.json")
 assert_equals "manifest has correct project root" "$TMPDIR" "$MANIFEST_ROOT"
 
 # Test 25: Manifest has type=module-manager (not sidecar)
 TOTAL=$((TOTAL + 1))
-MANIFEST_TYPE=$(jq -r '.type' "$HOME/.claude-ops/harness/manifests/$HARNESS_NAME/manifest.json")
-MANIFEST_STATUS=$(jq -r '.status' "$HOME/.claude-ops/harness/manifests/$HARNESS_NAME/manifest.json")
+MANIFEST_TYPE=$(jq -r '.type' "$HOME/.boring/harness/manifests/$HARNESS_NAME/manifest.json")
+MANIFEST_STATUS=$(jq -r '.status' "$HOME/.boring/harness/manifests/$HARNESS_NAME/manifest.json")
 if [ "$MANIFEST_TYPE" = "module-manager" ] && [ "$MANIFEST_STATUS" = "active" ]; then
   echo -e "  ${GREEN}PASS${RESET} manifest has type=module-manager and status=active"
   PASS=$((PASS + 1))

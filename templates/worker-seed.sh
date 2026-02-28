@@ -25,7 +25,7 @@ if [ -f "$WORKER_DIR/MEMORY.md" ]; then
   [ "$_mem_lines" -gt 1 ] && HAS_MEM="yes"
 fi
 
-HARNESS_JQ="$HOME/.claude-ops/lib/harness-jq.sh"
+HARNESS_JQ="$HOME/.boring/lib/harness-jq.sh"
 
 # Set tmux pane title to worker name (visible in the tiled layout)
 if [ -n "${TMUX:-}" ]; then
@@ -44,11 +44,11 @@ if [ -f "$HARNESS_JQ" ] && [ -n "${TMUX:-}" ]; then
 
   # Publish worker.started to bus
   bus_dir="$PROJECT_ROOT/.claude/bus"
-  if [ -d "$bus_dir" ] && [ -f "$HOME/.claude-ops/lib/event-bus.sh" ]; then
+  if [ -d "$bus_dir" ] && [ -f "$HOME/.boring/lib/event-bus.sh" ]; then
     _payload=$(jq -nc --arg m "$MODULE" --arg w "$WORKER_NAME" \
       '{module:$m,worker_name:$w}')
     PROJECT_ROOT="$PROJECT_ROOT" BUS_DIR="$bus_dir" \
-      bash -c "source '$HOME/.claude-ops/lib/event-bus.sh' && bus_publish 'worker.started' \"\$1\"" -- "$_payload" 2>/dev/null || true
+      bash -c "source '$HOME/.boring/lib/event-bus.sh' && bus_publish 'worker.started' \"\$1\"" -- "$_payload" 2>/dev/null || true
   fi
 fi
 
@@ -82,7 +82,7 @@ Find next task → implement → verify → repeat until done.
 
 ## Messaging (bus-only — never tmux-send other agents)
 \`\`\`bash
-source ~/.claude-ops/lib/harness-jq.sh
+source ~/.boring/lib/harness-jq.sh
 # Good: specific, actionable, one line
 hq_send "$MODULE/$WORKER_NAME" "$MODULE" "status" "T-3 done: added keepalive to adbpg-lifecycle.ts. Test passing. Starting T-4."
 # Bad: vague, no task reference
@@ -110,7 +110,7 @@ and starts an OS background sleep. When it expires, tmux wakes you. No flag file
   \`\`\`
 - **Escalate blockers** via \`hq_send ... "blocked" "..."\`. For critical issues (security, data loss), also notify the operator directly:
   \`\`\`bash
-  source ~/.claude-ops/lib/event-bus.sh
+  source ~/.boring/lib/event-bus.sh
   bus_publish "notification" '{"title":"ATTENTION — <topic>","message":"<detail>"}'
   \`\`\`
 - **Direct user input is forwarded automatically.** If the operator types into your pane, your module manager gets a \`worker-user-prompt\` in its inbox. Just respond normally.

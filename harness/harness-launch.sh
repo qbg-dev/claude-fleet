@@ -9,7 +9,7 @@ SEED_SCRIPT="${2:-}"
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 TMUX_SESSION="${TMUX_SESSION:-h}"
 
-_log() { echo "[$(date -u +%FT%TZ)] harness-launch: $*" >> "${HOME}/.claude-ops/state/watchdog.log" 2>/dev/null || true; }
+_log() { echo "[$(date -u +%FT%TZ)] harness-launch: $*" >> "${HOME}/.boring/state/watchdog.log" 2>/dev/null || true; }
 
 # Resolve seed script if not provided
 [ -z "$SEED_SCRIPT" ] && SEED_SCRIPT="$PROJECT_ROOT/.claude/scripts/${HARNESS}-seed.sh"
@@ -59,7 +59,7 @@ _log "Launching $HARNESS in $TMUX_SESSION:$WIN_IDX ($PANE_ID) model=$MODEL"
 tmux select-pane -T "${HARNESS}/module-manager" -t "$PANE_ID" 2>/dev/null || true
 
 # Register pane in pane-registry BEFORE injecting seed (harness-launch knows the exact pane ID)
-HARNESS_JQ="$HOME/.claude-ops/lib/harness-jq.sh"
+HARNESS_JQ="$HOME/.boring/lib/harness-jq.sh"
 if [ -f "$HARNESS_JQ" ]; then
   source "$HARNESS_JQ"
   _PANE_TARGET=$(tmux list-panes -t "$TMUX_SESSION:$WIN_IDX" -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' \

@@ -122,10 +122,10 @@ check_wave_gate() {
   WMSG="${WMSG}1. Re-read the mission. Does each task result serve it?\n"
   WMSG="${WMSG}2. Commit: \`feat(${HNAME}): wave ${WAVE_NUM} — <name>\`\n"
   WMSG="${WMSG}3. Deploy + inspect via Chrome + take screenshots\n"
-  WMSG="${WMSG}4. Copy starter: \`cp ~/.claude-ops/templates/wave-report-starter.html ${REPORT_PATH:-~/.claude-ops/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
+  WMSG="${WMSG}4. Copy starter: \`cp ~/.boring/templates/wave-report-starter.html ${REPORT_PATH:-~/.boring/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
   WMSG="${WMSG}5. Edit the report — replace placeholder comments with real content\n"
-  WMSG="${WMSG}6. Open: \`open ${REPORT_PATH:-~/.claude-ops/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
-  WMSG="${WMSG}7. Notify the operator: \`notify \"Wave ${WAVE_NUM} done\" \"${HNAME}\" \"${REPORT_PATH:-~/.claude-ops/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\"\`\n"
+  WMSG="${WMSG}6. Open: \`open ${REPORT_PATH:-~/.boring/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
+  WMSG="${WMSG}7. Notify the operator: \`notify \"Wave ${WAVE_NUM} done\" \"${HNAME}\" \"${REPORT_PATH:-~/.boring/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\"\`\n"
   [ -n "$ACTIONABLE_GATE" ] && WMSG="${WMSG}8. Mark gate \`${ACTIONABLE_GATE}\` completed in config.json\n"
 
   # Hard gate: block if report missing or lacks required sections

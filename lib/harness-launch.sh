@@ -9,7 +9,7 @@
 #   5. Optionally splits and launches a monitor in the right pane
 #
 # Usage (source then call):
-#   source ~/.claude-ops/lib/harness-launch.sh
+#   source ~/.boring/lib/harness-launch.sh
 #   harness_launch <harness-name> <project-root> [--monitor] [--model opus|sonnet|haiku] [--session h]
 #
 # Environment:
@@ -154,7 +154,7 @@ harness_launch() {
   # Pane-registry.json is the sole source of truth (Tier 0 for all hooks).
   # Session-registry.json is deprecated — no new writes.
   if [ -n "$WORKER_PANE_ID" ]; then
-    source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || true
+    source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || true
 
     # Primary: pane-registry.json (Tier 0 — all hooks read this)
     pane_registry_update "$WORKER_PANE_ID" "$harness" "launching" "0" "0" "${harness}: launching" "$WORKER_PANE"
@@ -177,7 +177,7 @@ harness_launch() {
   # The loop script reads CLAUDE_CMD, HARNESS, PROJECT_ROOT from env.
   # First iteration's seed is sent by us (Step 4 below); subsequent seeds
   # are injected by the loop script itself.
-  local loop_script="$HOME/.claude-ops/lib/harness-loop.sh"
+  local loop_script="$HOME/.boring/lib/harness-loop.sh"
   if [ -f "$loop_script" ]; then
     tmux send-keys -t "$WORKER_PANE" "CLAUDE_CMD='$CLAUDE_CMD' HARNESS='$harness' PROJECT_ROOT='$project_root' bash $loop_script" Enter
   else
@@ -232,7 +232,7 @@ harness_launch() {
 
     # Launch monitor agent with explicit --pane to avoid active-pane confusion
     tmux send-keys -t "$MONITOR_PANE" \
-      "bash ~/.claude-ops/scripts/monitor-agent.sh --pane $MONITOR_PANE $WORKER_PANE $MONITOR_INTERVAL '$harness orchestrator'" \
+      "bash ~/.boring/scripts/monitor-agent.sh --pane $MONITOR_PANE $WORKER_PANE $MONITOR_INTERVAL '$harness orchestrator'" \
       Enter
 
     echo "Monitor launched in $MONITOR_PANE targeting $WORKER_PANE (${MONITOR_INTERVAL}s interval)"

@@ -9,7 +9,7 @@ import { scan } from "./scanner";
 import type { Registry, RegistryEntry, ProgressData } from "./types";
 
 const PORT = parseInt(process.argv.find((_, i, a) => a[i - 1] === "--port") ?? "3847");
-const SERVER_DIR = join(process.env.HOME!, ".claude-ops/wave-report-server");
+const SERVER_DIR = join(process.env.HOME!, ".boring/wave-report-server");
 const REGISTRY_PATH = join(SERVER_DIR, "registry.json");
 
 // Initial scan on startup

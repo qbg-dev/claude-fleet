@@ -18,10 +18,10 @@
 # Requirements:
 #   - PROJECT_ROOT set (or auto-detected via git)
 #   - pane-registry.json populated by agents at startup
-#   - ~/.claude-ops/lib/harness-jq.sh + event-bus.sh available
+#   - ~/.boring/lib/harness-jq.sh + event-bus.sh available
 #
-# Crash-loop file: ~/.claude-ops/state/harness-runtime/{canonical}/crash-loop
-# Crash count file: ~/.claude-ops/state/harness-runtime/{canonical}/crash-count.json
+# Crash-loop file: ~/.boring/state/harness-runtime/{canonical}/crash-loop
+# Crash count file: ~/.boring/state/harness-runtime/{canonical}/crash-count.json
 
 set -euo pipefail
 
@@ -29,13 +29,13 @@ set -euo pipefail
 CHECK_INTERVAL="${WATCHDOG_CHECK_INTERVAL:-30}"
 STUCK_THRESHOLD_SEC="${WATCHDOG_STUCK_THRESHOLD:-600}"   # 10 min no tool calls = stuck
 MAX_CRASHES_PER_HR="${WATCHDOG_MAX_CRASHES:-3}"
-LOG_FILE="${WATCHDOG_LOG:-${HOME}/.claude-ops/state/watchdog.log}"
+LOG_FILE="${WATCHDOG_LOG:-${HOME}/.boring/state/watchdog.log}"
 
 # git rev-parse fails if cwd is not in a repo (e.g. watchdog started by launchd from /).
 # Hardcode the default project root; override via env if needed.
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-source "${HOME}/.claude-ops/lib/harness-jq.sh"
-source "${HOME}/.claude-ops/lib/event-bus.sh" 2>/dev/null || true
+source "${HOME}/.boring/lib/harness-jq.sh"
+source "${HOME}/.boring/lib/event-bus.sh" 2>/dev/null || true
 
 MODE="daemon"
 [ "${1:-}" = "--once" ]   && MODE="once"
@@ -222,7 +222,7 @@ _respawn_agent() {
   pane_registry_remove "$pane_id" 2>/dev/null || true
 
   # Launch new agent (harness-launch.sh handles pane creation + seed injection)
-  local launch_script="$HOME/.claude-ops/harness/harness-launch.sh"
+  local launch_script="$HOME/.boring/harness/harness-launch.sh"
   if [ -f "$launch_script" ]; then
     bash "$launch_script" "$harness_name" "$seed_script" &
     _log "RESPAWN: $canonical (reason=$reason) — launched via harness-launch.sh"

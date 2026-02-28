@@ -3,13 +3,13 @@
 set -euo pipefail
 
 source "$(dirname "$0")/helpers.sh"
-source "$HOME/.claude-ops/lib/harness-jq.sh"
+source "$HOME/.boring/lib/harness-jq.sh"
 
 echo "── manifest registry ──"
 
 # Test 1: Manifest directory exists
 TOTAL=$((TOTAL + 1))
-if [ -d "$HOME/.claude-ops/harness/manifests" ]; then
+if [ -d "$HOME/.boring/harness/manifests" ]; then
   echo -e "  ${GREEN}PASS${RESET} harnesses directory exists"
   PASS=$((PASS + 1))
 else
@@ -19,12 +19,12 @@ fi
 
 # Test 2: Active harnesses have manifests
 for h in eval-external eval-internal miniapp-chat bi-opt chatbot-agent td-redteam; do
-  assert_file_exists "manifest exists for $h" "$HOME/.claude-ops/harness/manifests/$h/manifest.json"
+  assert_file_exists "manifest exists for $h" "$HOME/.boring/harness/manifests/$h/manifest.json"
 done
 
 # Test 3: Manifest has required fields
 for h in eval-external miniapp-chat; do
-  MANIFEST="$HOME/.claude-ops/harness/manifests/$h/manifest.json"
+  MANIFEST="$HOME/.boring/harness/manifests/$h/manifest.json"
   TOTAL=$((TOTAL + 1))
   if jq -e '.harness and .project_root and .files.progress' "$MANIFEST" > /dev/null 2>&1; then
     echo -e "  ${GREEN}PASS${RESET} $h manifest has required fields"
@@ -89,7 +89,7 @@ assert "progress_path ends with tasks.json" "tasks.json" "$RESULT"
 
 # Test 9: harness_manifest returns expected path format
 RESULT=$(harness_manifest "my-test-harness")
-assert_equals "manifest path format" "$HOME/.claude-ops/harness/manifests/my-test-harness/manifest.json" "$RESULT"
+assert_equals "manifest path format" "$HOME/.boring/harness/manifests/my-test-harness/manifest.json" "$RESULT"
 
 # Test 10: harness_project_root for nonexistent harness returns empty
 RESULT=$(harness_project_root "nonexistent-harness-xyz")

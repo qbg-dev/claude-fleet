@@ -4,7 +4,7 @@ set -euo pipefail
 
 source "$(dirname "$0")/helpers.sh"
 
-HOOK="$HOME/.claude-ops/hooks/operators/progress-validator.sh"
+HOOK="$HOME/.boring/hooks/operators/progress-validator.sh"
 FIXTURES="$(dirname "$0")/fixtures"
 
 # Setup temp project

@@ -5,7 +5,7 @@ set -euo pipefail
 
 source "$(dirname "$0")/helpers.sh"
 
-SCAFFOLD="$HOME/.claude-ops/scripts/scaffold.sh"
+SCAFFOLD="$HOME/.boring/scripts/scaffold.sh"
 HARNESS_NAME="test-seed-$$"
 
 # Setup temp project
@@ -19,7 +19,7 @@ PROGRESS="$HARNESS_DIR/progress.json"
 bash "$SCAFFOLD" "$HARNESS_NAME" "$TMPDIR" > /dev/null 2>&1
 
 # Save pane registry so we don't pollute it
-PANE_REG="$HOME/.claude-ops/state/pane-registry.json"
+PANE_REG="$HOME/.boring/state/pane-registry.json"
 PANE_REG_BACKUP=""
 if [ -f "$PANE_REG" ]; then
   PANE_REG_BACKUP=$(mktemp)
@@ -28,9 +28,9 @@ fi
 
 cleanup() {
   rm -rf "$TMPDIR"
-  rm -rf "$HOME/.claude-ops/harness/manifests/$HARNESS_NAME"
-  rm -rf "$HOME/.claude-ops/harness/reports/$HARNESS_NAME"
-  rm -rf "$HOME/.claude-ops/state/playwright/$HARNESS_NAME"
+  rm -rf "$HOME/.boring/harness/manifests/$HARNESS_NAME"
+  rm -rf "$HOME/.boring/harness/reports/$HARNESS_NAME"
+  rm -rf "$HOME/.boring/state/playwright/$HARNESS_NAME"
   # Restore pane registry
   if [ -n "$PANE_REG_BACKUP" ] && [ -f "$PANE_REG_BACKUP" ]; then
     mv "$PANE_REG_BACKUP" "$PANE_REG"

@@ -7,8 +7,8 @@ import { existsSync } from "fs";
 import { join, resolve } from "path";
 import type { ManifestData, ProgressData, Registry, RegistryEntry } from "./types";
 
-const MANIFESTS_DIR = join(process.env.HOME!, ".claude-ops/harness/manifests");
-const SERVER_DIR = join(process.env.HOME!, ".claude-ops/wave-report-server");
+const MANIFESTS_DIR = join(process.env.HOME!, ".boring/harness/manifests");
+const SERVER_DIR = join(process.env.HOME!, ".boring/wave-report-server");
 const REGISTRY_PATH = join(SERVER_DIR, "registry.json");
 const ISSUES_DIR = join(SERVER_DIR, "issues");
 

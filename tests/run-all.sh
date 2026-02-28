@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run-all.sh — Run the full harness test suite.
-# Usage: bash ~/.claude-ops/tests/run-all.sh
+# Usage: bash ~/.boring/tests/run-all.sh
 set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"

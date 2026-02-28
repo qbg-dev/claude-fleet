@@ -37,10 +37,10 @@ CLAUDE_CMD=$(_resolve_claude_cmd "$CLAUDE_CMD")
 PROGRESS="$PROJECT_ROOT/.claude/harness/$HARNESS/progress.json"
 SEED_SCRIPT="$PROJECT_ROOT/.claude/scripts/${HARNESS}-seed.sh"
 RESUME_DELAY="${HARNESS_RESUME_DELAY:-1800}"  # 30 minutes
-STOP_FLAG="$HOME/.claude-ops/state/harness-runtime/$HARNESS/stop-flag"
+STOP_FLAG="$HOME/.boring/state/harness-runtime/$HARNESS/stop-flag"
 
 # Source shared library for hook_find_own_pane + hook_pane_target
-source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || true
+source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || true
 
 # Find own pane (this script runs IN the harness tmux pane)
 _OWN_PANE_ID=$(hook_find_own_pane 2>/dev/null || echo "")

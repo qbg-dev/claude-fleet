@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * harness-api — Local Bun server that serves harness state as JSON.
- * Run: bun run ~/.claude-ops/scripts/harness-api.ts
+ * Run: bun run ~/.boring/scripts/harness-api.ts
  * Listens on :7777 with CORS enabled for qbg.dev.
  */
 
@@ -11,12 +11,12 @@ import { homedir } from "os";
 
 const PORT = parseInt(process.env.HARNESS_API_PORT || "7777");
 const HOME = process.env.HOME || homedir();
-const MANIFESTS_DIR = join(HOME, ".claude-ops/harness/manifests");
-const STATE_DIR = join(HOME, ".claude-ops/state");
+const MANIFESTS_DIR = join(HOME, ".boring/harness/manifests");
+const STATE_DIR = join(HOME, ".boring/state");
 const HEALTH_FILE = process.env.HARNESS_HEALTH_FILE || join(STATE_DIR, "health.json");
 const METRICS_FILE = process.env.HARNESS_METRICS_FILE || join(STATE_DIR, "metrics.jsonl");
 // sweep-state.json removed — sweeps replaced by custom agent definitions
-const SESSION_REGISTRY = join(HOME, ".claude-ops/state/session-registry.json");
+const SESSION_REGISTRY = join(HOME, ".boring/state/session-registry.json");
 // control-plane.pid removed — daemon replaced by custom agent definitions
 
 function readJson(path: string, fallback: any = null): any {
@@ -581,7 +581,7 @@ Bun.serve({
       const reportMatch = rest.match(/^report\/(\d+)$/);
       if (reportMatch && req.method === "GET") {
         const wave = reportMatch[1];
-        const reportPath = join(HOME, `.claude-ops/harness/reports/${harnessName}/wave-${wave}.html`);
+        const reportPath = join(HOME, `.boring/harness/reports/${harnessName}/wave-${wave}.html`);
         if (!existsSync(reportPath)) return errorJson(`Report wave-${wave} not found for ${harnessName}`, 404);
         const html = readFileSync(reportPath, "utf-8");
         return cors(new Response(html, { headers: { "Content-Type": "text/html" } }));
@@ -652,7 +652,7 @@ Bun.serve({
     if (url.pathname === "/scaffold" && req.method === "POST") {
       const body = await req.json().catch(() => null);
       if (!body?.name || !body?.project_root) return errorJson("name and project_root required");
-      const args = [join(HOME, ".claude-ops/scripts/scaffold.sh"), body.name, body.project_root];
+      const args = [join(HOME, ".boring/scripts/scaffold.sh"), body.name, body.project_root];
       if (body.lifecycle === "long-running") args.splice(1, 0, "--long-running");
       const proc = Bun.spawnSync(["bash", ...args]);
       const stdout = proc.stdout.toString();
@@ -677,7 +677,7 @@ Bun.serve({
         const projectBus = join(root, ".claude/bus");
         if (existsSync(projectBus)) return projectBus;
       }
-      return join(HOME, ".claude-ops/bus");
+      return join(HOME, ".boring/bus");
     }
     const BUS_DIR = resolveBusDir();
     const BUS_TOPICS_DIR = join(BUS_DIR, "topics");

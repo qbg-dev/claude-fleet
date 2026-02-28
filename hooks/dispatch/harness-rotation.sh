@@ -25,7 +25,7 @@ check_rotation() {
   touch "$_SESSION_DIR/allow-stop"
   echo "{\"harness\":\"$CANONICAL\",\"session_id\":\"$SESSION_ID\"}" \
     > "$_SESSION_DIR/rotate-signal"
-  bash "$HOME/.claude-ops/lib/handoff.sh" --rotate "$SESSION_ID" &
+  bash "$HOME/.boring/lib/handoff.sh" --rotate "$SESSION_ID" &
   ( sleep "${ROTATION_LOCK_CLEANUP_SEC:-60}"; rmdir "$ROTATE_LOCK" 2>/dev/null || true ) &
   echo '{}'; exit 0
 }

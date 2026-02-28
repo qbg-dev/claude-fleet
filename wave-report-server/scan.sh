@@ -16,7 +16,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="$DIR/registry.json"
 ISSUES_DIR="$DIR/issues"
-MANIFESTS_DIR="$HOME/.claude-ops/harness/manifests"
+MANIFESTS_DIR="$HOME/.boring/harness/manifests"
 
 NOTIFY=false
 START=false
@@ -33,9 +33,9 @@ for arg in "$@"; do
   esac
 done
 
-PLIST_SRC="$DIR/com.claude-ops.wave-report.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/com.claude-ops.wave-report.plist"
-LABEL="com.claude-ops.wave-report"
+PLIST_SRC="$DIR/com.boring.wave-report.plist"
+PLIST_DST="$HOME/Library/LaunchAgents/com.boring.wave-report.plist"
+LABEL="com.boring.wave-report"
 
 # Handle --install
 if [ "$INSTALL" = true ]; then
@@ -99,7 +99,7 @@ if [ "$NOTIFY" = true ] && [ "$WITH_ISSUES" -gt 0 ]; then
     nexus-qbg-zhu send -r features "[wave-report-scanner] $WITH_ISSUES harness(es) have issues:
 $ISSUE_SUMMARY
 
-Agents: check /api/issues/{your-harness} on port 3847, or read ~/.claude-ops/wave-report-server/issues/{harness}.json" 2>/dev/null || true
+Agents: check /api/issues/{your-harness} on port 3847, or read ~/.boring/wave-report-server/issues/{harness}.json" 2>/dev/null || true
     echo "Posted to Nexus #features"
   fi
 

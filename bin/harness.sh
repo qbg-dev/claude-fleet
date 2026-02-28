@@ -20,12 +20,12 @@
 # ══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || true
-source "$HOME/.claude-ops/lib/harness-pane.sh" 2>/dev/null || true
-[ -f "$HOME/.claude-ops/control-plane.conf" ] && source "$HOME/.claude-ops/control-plane.conf"
+source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || true
+source "$HOME/.boring/lib/harness-pane.sh" 2>/dev/null || true
+[ -f "$HOME/.boring/control-plane.conf" ] && source "$HOME/.boring/control-plane.conf"
 
-REGISTRY="${HARNESS_SESSION_REGISTRY:-$HOME/.claude-ops/state/session-registry.json}"
-STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+REGISTRY="${HARNESS_SESSION_REGISTRY:-$HOME/.boring/state/session-registry.json}"
+STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.boring/state}"
 ACTIVITY_DIR="${HARNESS_ACTIVITY_DIR:-$STATE_DIR/activity}"
 HEALTH_FILE="${HARNESS_HEALTH_FILE:-$STATE_DIR/health.json}"
 METRICS_FILE="${HARNESS_METRICS_FILE:-$STATE_DIR/metrics.jsonl}"
@@ -974,17 +974,17 @@ cmd_dashboard() {
 
   # Create a temp script for the fzf preview
   local preview_script
-  local _state_tmp="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}/tmp"
+  local _state_tmp="${HARNESS_STATE_DIR:-$HOME/.boring/state}/tmp"
   mkdir -p "$_state_tmp" 2>/dev/null
   preview_script=$(mktemp "$_state_tmp/harness-dash-preview.XXXXXX")
   cat > "$preview_script" <<'PREVIEW_EOF'
 #!/usr/bin/env bash
 # Preview script for harness dashboard — receives the selected line as $1
-source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || true
-source "$HOME/.claude-ops/lib/harness-pane.sh" 2>/dev/null || true
-REGISTRY="${HARNESS_SESSION_REGISTRY:-$HOME/.claude-ops/state/session-registry.json}"
-ACTIVITY_DIR="${HARNESS_ACTIVITY_DIR:-$HOME/.claude-ops/state/activity}"
-HEALTH_FILE="${HARNESS_HEALTH_FILE:-$HOME/.claude-ops/state/health.json}"
+source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || true
+source "$HOME/.boring/lib/harness-pane.sh" 2>/dev/null || true
+REGISTRY="${HARNESS_SESSION_REGISTRY:-$HOME/.boring/state/session-registry.json}"
+ACTIVITY_DIR="${HARNESS_ACTIVITY_DIR:-$HOME/.boring/state/activity}"
+HEALTH_FILE="${HARNESS_HEALTH_FILE:-$HOME/.boring/state/health.json}"
 
 line="$1"
 hname=$(echo "$line" | awk '{print $2}')
@@ -1068,24 +1068,24 @@ PREVIEW_EOF
   cat > "$actions_script" <<'ACTIONS_EOF'
 #!/usr/bin/env bash
 # Actions submenu for a harness
-source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || true
-source "$HOME/.claude-ops/lib/harness-pane.sh" 2>/dev/null || true
-REGISTRY="${HARNESS_SESSION_REGISTRY:-$HOME/.claude-ops/state/session-registry.json}"
+source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || true
+source "$HOME/.boring/lib/harness-pane.sh" 2>/dev/null || true
+REGISTRY="${HARNESS_SESSION_REGISTRY:-$HOME/.boring/state/session-registry.json}"
 
 hname="$1"
 action=$(printf 'View status\nView logs (last 50)\nRegister session\nNudge worker\nStop harness\nForce stop (kill)\nRestart (rotate)\nFocus worker pane\n' | fzf --prompt="$hname > " --height=12 --reverse --no-multi)
 
 case "$action" in
   "View status")
-    bash "$HOME/.claude-ops/bin/harness.sh" status "$hname"
+    bash "$HOME/.boring/bin/harness.sh" status "$hname"
     read -rp "Press Enter to continue..."
     ;;
   "View logs (last 50)")
-    bash "$HOME/.claude-ops/bin/harness.sh" logs "$hname" --tail 50
+    bash "$HOME/.boring/bin/harness.sh" logs "$hname" --tail 50
     read -rp "Press Enter to continue..."
     ;;
   "Register session")
-    bash "$HOME/.claude-ops/bin/harness.sh" register
+    bash "$HOME/.boring/bin/harness.sh" register
     read -rp "Press Enter to continue..."
     ;;
   "Nudge worker")
@@ -1104,15 +1104,15 @@ case "$action" in
     read -rp "Press Enter to continue..."
     ;;
   "Stop harness")
-    bash "$HOME/.claude-ops/bin/harness.sh" stop "$hname"
+    bash "$HOME/.boring/bin/harness.sh" stop "$hname"
     read -rp "Press Enter to continue..."
     ;;
   "Force stop (kill)")
-    bash "$HOME/.claude-ops/bin/harness.sh" stop "$hname" --force
+    bash "$HOME/.boring/bin/harness.sh" stop "$hname" --force
     read -rp "Press Enter to continue..."
     ;;
   "Restart (rotate)")
-    bash "$HOME/.claude-ops/bin/harness.sh" restart "$hname"
+    bash "$HOME/.boring/bin/harness.sh" restart "$hname"
     read -rp "Press Enter to continue..."
     ;;
   "Focus worker pane")
@@ -1176,8 +1176,8 @@ ACTIONS_EOF
       --preview-window=right:55%:wrap \
       --height=90% \
       --reverse \
-      --bind="ctrl-r:execute(bash $HOME/.claude-ops/bin/harness.sh register)+reload(bash $HOME/.claude-ops/bin/harness.sh _dashboard_lines)" \
-      --bind="ctrl-a:execute(bash $HOME/.claude-ops/bin/harness.sh agents; read -rp 'Press Enter...')" \
+      --bind="ctrl-r:execute(bash $HOME/.boring/bin/harness.sh register)+reload(bash $HOME/.boring/bin/harness.sh _dashboard_lines)" \
+      --bind="ctrl-a:execute(bash $HOME/.boring/bin/harness.sh agents; read -rp 'Press Enter...')" \
       --expect=enter,ctrl-c,esc \
       --no-multi)
 
@@ -1251,7 +1251,7 @@ cmd_scaffold() {
   local scaffold_args=("$name" "$project")
   [ "$long_running" = "--long-running" ] && scaffold_args=("--long-running" "${scaffold_args[@]}")
 
-  bash "$HOME/.claude-ops/scripts/scaffold.sh" "${scaffold_args[@]}"
+  bash "$HOME/.boring/scripts/scaffold.sh" "${scaffold_args[@]}"
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -1272,7 +1272,7 @@ cmd_create() {
   local scaffold_args=("$name" "$project")
   [ "$long_running" = "--long-running" ] && scaffold_args=("--long-running" "${scaffold_args[@]}")
   [ -n "$description" ] && scaffold_args=("--from-description" "$description" "${scaffold_args[@]}")
-  bash "$HOME/.claude-ops/scripts/scaffold.sh" "${scaffold_args[@]}"
+  bash "$HOME/.boring/scripts/scaffold.sh" "${scaffold_args[@]}"
 
   echo ""
   echo -e "${BOLD}Next steps:${RESET}"
@@ -1297,7 +1297,7 @@ cmd_create() {
 # ══════════════════════════════════════════════════════════════════
 cmd_web() {
   local no_open="${1:-false}"
-  local api_script="$HOME/.claude-ops/scripts/harness-api.ts"
+  local api_script="$HOME/.boring/scripts/harness-api.ts"
   local port="${HARNESS_API_PORT:-7777}"
 
   if ! command -v bun &>/dev/null; then
@@ -1310,7 +1310,7 @@ cmd_web() {
     echo -e "${GREEN}API already running on :${port}${RESET}"
   else
     echo -e "Starting harness-api on :${port}..."
-    local _logs_dir="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}/logs"
+    local _logs_dir="${HARNESS_STATE_DIR:-$HOME/.boring/state}/logs"
     mkdir -p "$_logs_dir" 2>/dev/null
     nohup bun run "$api_script" >"$_logs_dir/harness-api.log" 2>&1 &
     local pid=$!

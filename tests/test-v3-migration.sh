@@ -13,8 +13,8 @@
 #   Phase 5:  _inject_bg_sleep removed
 #
 # Usage:
-#   bash ~/.claude-ops/tests/test-v3-migration.sh
-#   bash ~/.claude-ops/tests/test-v3-migration.sh --verbose
+#   bash ~/.boring/tests/test-v3-migration.sh
+#   bash ~/.boring/tests/test-v3-migration.sh --verbose
 #
 # Exit code: 0 = all pass, 1 = one or more failures
 
@@ -60,7 +60,7 @@ bash_syntax() {
 # ════════════════════════════════════════════════════════════════
 _section "Phase 1a: hook_pass() graceful-stop sentinel"
 
-HJQ="$HOME/.claude-ops/lib/harness-jq.sh"
+HJQ="$HOME/.boring/lib/harness-jq.sh"
 file_exists "$HJQ"
 bash_syntax "$HJQ"
 contains "$HJQ" "graceful-stop"
@@ -70,7 +70,7 @@ contains "$HJQ" "_SESSION_DIR/graceful-stop"
 # Functional test: actually call hook_pass and verify sentinel is written
 FAKE_SID="test-v3-migration-$$"
 export CLAUDE_SESSION_ID="$FAKE_SID"
-export CLAUDE_SESSION_DIR="$HOME/.claude-ops/state/sessions/$FAKE_SID"
+export CLAUDE_SESSION_DIR="$HOME/.boring/state/sessions/$FAKE_SID"
 SENTINEL="$CLAUDE_SESSION_DIR/graceful-stop"
 rm -f "$SENTINEL" 2>/dev/null || true
 
@@ -89,7 +89,7 @@ unset CLAUDE_SESSION_ID CLAUDE_SESSION_DIR
 # ════════════════════════════════════════════════════════════════
 _section "Phase 1b: EVENT_BUS_ENABLED default"
 
-EBUS="$HOME/.claude-ops/lib/event-bus.sh"
+EBUS="$HOME/.boring/lib/event-bus.sh"
 file_exists "$EBUS"
 bash_syntax "$EBUS"
 contains "$EBUS" 'EVENT_BUS_ENABLED="${EVENT_BUS_ENABLED:-true}"'
@@ -99,7 +99,7 @@ contains "$EBUS" 'EVENT_BUS_ENABLED="${EVENT_BUS_ENABLED:-true}"'
 # ════════════════════════════════════════════════════════════════
 _section "Phase 1c: update_tasks_json.sh"
 
-UTJS="$HOME/.claude-ops/bus/side-effects/update_tasks_json.sh"
+UTJS="$HOME/.boring/bus/side-effects/update_tasks_json.sh"
 file_exists "$UTJS"
 executable "$UTJS"
 bash_syntax "$UTJS"
@@ -228,7 +228,7 @@ file_absent "$PROJECT_ROOT/.claude/harness/red-team/progress.json"
 # ════════════════════════════════════════════════════════════════
 _section "Phase 3a: stop hook v3 compat"
 
-DISPATCH="$HOME/.claude-ops/hooks/gates/stop-harness-dispatch.sh"
+DISPATCH="$HOME/.boring/hooks/gates/stop-harness-dispatch.sh"
 file_exists "$DISPATCH"
 bash_syntax "$DISPATCH"
 contains "$DISPATCH" "_CONFIG="
@@ -245,8 +245,8 @@ contains "$DISPATCH" 'jq -r '"'"'.status // "active"'"'"' "$_STATE"'
 # ════════════════════════════════════════════════════════════════
 _section "Phase 4: watchdog daemon"
 
-WATCHDOG="$HOME/.claude-ops/scripts/harness-watchdog.sh"
-PLIST="$HOME/Library/LaunchAgents/com.claude-ops.harness-watchdog.plist"
+WATCHDOG="$HOME/.boring/scripts/harness-watchdog.sh"
+PLIST="$HOME/Library/LaunchAgents/com.boring.harness-watchdog.plist"
 
 file_exists "$WATCHDOG"
 executable "$WATCHDOG"
@@ -296,7 +296,7 @@ fi
 # ════════════════════════════════════════════════════════════════
 _section "Phase 5: _inject_bg_sleep removed"
 
-BGTASKS="$HOME/.claude-ops/hooks/dispatch/harness-bg-tasks.sh"
+BGTASKS="$HOME/.boring/hooks/dispatch/harness-bg-tasks.sh"
 file_exists "$BGTASKS"
 bash_syntax "$BGTASKS"
 not_contains "$BGTASKS" "_inject_bg_sleep()"

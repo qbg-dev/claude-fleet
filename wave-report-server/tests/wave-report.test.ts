@@ -1,5 +1,5 @@
 // wave-report.test.ts — Comprehensive tests for wave report server
-// Run: cd ~/.claude-ops/wave-report-server && bun test
+// Run: cd ~/.boring/wave-report-server && bun test
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtemp, writeFile, mkdir, rm, readFile } from "fs/promises";
@@ -568,8 +568,8 @@ describe("scanner", () => {
     projectFiles?: Record<string, string>;
   }) {
     const fakeHome = join(tmpDir, `home-${opts.harness}`);
-    const manifestDir = join(fakeHome, ".claude-ops/harness/manifests", opts.harness);
-    const serverDir = join(fakeHome, ".claude-ops/wave-report-server");
+    const manifestDir = join(fakeHome, ".boring/harness/manifests", opts.harness);
+    const serverDir = join(fakeHome, ".boring/wave-report-server");
     const projectRoot = join(fakeHome, "project");
 
     await mkdir(manifestDir, { recursive: true });
@@ -604,7 +604,7 @@ describe("scanner", () => {
     });
 
     // Patch manifest with correct project root
-    const mPath = join(fakeHome, ".claude-ops/harness/manifests/scan-test-1/manifest.json");
+    const mPath = join(fakeHome, ".boring/harness/manifests/scan-test-1/manifest.json");
     await writeFile(mPath, makeManifest("scan-test-1", projectRoot, "progress.json"));
 
     // The real scanner reads from HOME, so we test the components instead
@@ -620,7 +620,7 @@ describe("scanner", () => {
       manifestJson: makeManifest("scan-missing", "", "nonexistent.json"),
     });
 
-    const mPath = join(fakeHome, ".claude-ops/harness/manifests/scan-missing/manifest.json");
+    const mPath = join(fakeHome, ".boring/harness/manifests/scan-missing/manifest.json");
     await writeFile(mPath, makeManifest("scan-missing", projectRoot, "nonexistent.json"));
 
     const progressPath = join(projectRoot, "nonexistent.json");
