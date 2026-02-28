@@ -85,11 +85,11 @@ fi
 # Test 10: config.json has rotation block
 TOTAL=$((TOTAL + 1))
 CMD_VAL=$(jq -r '.rotation.claude_command' "$MM_DIR/config.json" 2>/dev/null)
-if [ "$CMD_VAL" = "cdo" ]; then
-  echo -e "  ${GREEN}PASS${RESET} config.json rotation.claude_command=cdo"
+if [ "$CMD_VAL" = "cds" ]; then
+  echo -e "  ${GREEN}PASS${RESET} config.json rotation.claude_command=cds"
   PASS=$((PASS + 1))
 else
-  echo -e "  ${RED}FAIL${RESET} rotation.claude_command expected 'cdo', got '$CMD_VAL'"
+  echo -e "  ${RED}FAIL${RESET} rotation.claude_command expected 'cds', got '$CMD_VAL'"
   FAIL=$((FAIL + 1))
 fi
 

@@ -25,6 +25,20 @@ for test in "$TESTS_DIR"/test-*.sh; do
   [ -f "$test" ] || continue
   NAME=$(basename "$test")
 
+  # Allow CI / callers to skip environment-specific suites
+  if [[ -n "${BORING_SKIP_SUITES:-}" ]]; then
+    BASENAME="${NAME%.sh}"
+    SKIP=false
+    for skip_name in $BORING_SKIP_SUITES; do
+      [[ "$BASENAME" == "$skip_name" ]] && SKIP=true && break
+    done
+    if [[ "$SKIP" == "true" ]]; then
+      echo "── $NAME ── [SKIPPED]"
+      echo ""
+      continue
+    fi
+  fi
+
   # Run the test and capture output + exit code
   OUTPUT=$(bash "$test" 2>&1) || true
   EXIT_CODE=$?
