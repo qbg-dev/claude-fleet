@@ -67,25 +67,42 @@ if [ -f "$HARNESS_JQ" ]; then
   _log "Registered $HARNESS pane $PANE_ID in pane-registry"
 fi
 
-# Build and start Claude command
-CLAUDE_CMD="claude --model $MODEL --dangerously-skip-permissions"
-[ -n "$DISALLOWED" ] && CLAUDE_CMD="$CLAUDE_CMD --disallowedTools \"$DISALLOWED\""
-CLAUDE_CMD="$CLAUDE_CMD --add-dir $PROJECT_ROOT/.claude/harness/$HARNESS"
+# ── Detect if Claude TUI is already running in this pane ──────────────────
+# If Claude is already at ❯ prompt (graceful-sleep wake), just inject the seed.
+# Sending 'cd' and 'claude' to a running Claude TUI treats them as user messages — wrong.
+PANE_PID=$(tmux list-panes -t "$TMUX_SESSION:$WIN_IDX" -F '#{pane_id} #{pane_pid}' \
+  | awk -v p="$PANE_ID" '$1==p{print $2}' || echo "")
+CHILD_CMD=""
+[ -n "$PANE_PID" ] && CHILD_CMD=$(pgrep -P "$PANE_PID" 2>/dev/null \
+  | xargs -I{} ps -o command= -p {} 2>/dev/null | grep "^claude" | head -1 || true)
 
-tmux send-keys -t "$PANE_ID" "cd $PROJECT_ROOT"
-tmux send-keys -t "$PANE_ID" -H 0d
-sleep 0.5
+CLAUDE_ALREADY_RUNNING=false
+if [ -n "$CHILD_CMD" ]; then
+  CLAUDE_ALREADY_RUNNING=true
+  _log "$HARNESS: Claude TUI already running — injecting seed directly (no startup needed)"
+fi
 
-tmux send-keys -t "$PANE_ID" "$CLAUDE_CMD"
-tmux send-keys -t "$PANE_ID" -H 0d
+if ! $CLAUDE_ALREADY_RUNNING; then
+  # Build and start Claude command
+  CLAUDE_CMD="claude --model $MODEL --dangerously-skip-permissions"
+  [ -n "$DISALLOWED" ] && CLAUDE_CMD="$CLAUDE_CMD --disallowedTools \"$DISALLOWED\""
+  CLAUDE_CMD="$CLAUDE_CMD --add-dir $PROJECT_ROOT/.claude/harness/$HARNESS"
 
-# Wait for Claude TUI to be ready (poll for ❯ prompt, max 60s)
-_WAIT=0
-until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -qE '❯|> $'; do
-  sleep 2; _WAIT=$((_WAIT+2))
-  [ "$_WAIT" -ge 60 ] && { _log "WARNING: TUI timeout after 60s for $HARNESS, proceeding anyway"; break; }
-done
-sleep 2  # extra settle time
+  tmux send-keys -t "$PANE_ID" "cd $PROJECT_ROOT"
+  tmux send-keys -t "$PANE_ID" -H 0d
+  sleep 0.5
+
+  tmux send-keys -t "$PANE_ID" "$CLAUDE_CMD"
+  tmux send-keys -t "$PANE_ID" -H 0d
+
+  # Wait for Claude TUI to be ready (poll for ❯ prompt, max 60s)
+  _WAIT=0
+  until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -qE '❯|> $'; do
+    sleep 2; _WAIT=$((_WAIT+2))
+    [ "$_WAIT" -ge 60 ] && { _log "WARNING: TUI timeout after 60s for $HARNESS, proceeding anyway"; break; }
+  done
+  sleep 2  # extra settle time
+fi
 
 # Generate seed prompt and inject it
 SEED_FILE="/tmp/${HARNESS}-launch-seed.txt"
