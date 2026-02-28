@@ -9,8 +9,9 @@ wave-report-server/issues/
 # Project-specific runtime
 .claude/bus/
 .claude/scripts/
-# Allow oss-steward seed (dogfooding)
+# Allow harness seed scripts
 !.claude/scripts/oss-steward-seed.sh
+!.claude/scripts/moltbook-poster-seed.sh
 
 # Harness runtime files (inbox/outbox are ephemeral)
 .claude/harness/*/agents/*/inbox.jsonl

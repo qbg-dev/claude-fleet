@@ -89,6 +89,7 @@ check_generalization_gate() {
 check_wave_gate() {
   local PROGRESS="$1" HNAME="$2" SPEC_FILE="$3"
   # Output goes to stdout, caller captures via $()
+  local WAVE_GATE_ENABLED="${WAVE_GATE_ENABLED:-true}"  # default ON when waves exist
   [ "$WAVE_GATE_ENABLED" != "true" ] && return
 
   local WAVE_BOUNDARY=$(harness_is_wave_boundary "$PROGRESS" 2>/dev/null || echo "false")
@@ -119,14 +120,17 @@ check_wave_gate() {
 
   local WMSG="\n**WAVE ${WAVE_NUM} COMPLETE**${WAVE_NAME:+ (${WAVE_NAME})}\n"
   [ -n "$SPEC_FILE" ] && WMSG="${WMSG}**Spec check**: Re-read \`${SPEC_FILE}\` — did you miss anything? Document deviations.\n"
-  WMSG="${WMSG}1. Re-read the mission. Does each task result serve it?\n"
-  WMSG="${WMSG}2. Commit: \`feat(${HNAME}): wave ${WAVE_NUM} — <name>\`\n"
-  WMSG="${WMSG}3. Deploy + inspect via Chrome + take screenshots\n"
-  WMSG="${WMSG}4. Copy starter: \`cp ~/.boring/templates/wave-report-starter.html ${REPORT_PATH:-~/.boring/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
-  WMSG="${WMSG}5. Edit the report — replace placeholder comments with real content\n"
-  WMSG="${WMSG}6. Open: \`open ${REPORT_PATH:-~/.boring/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
-  WMSG="${WMSG}7. Notify the operator: \`notify \"Wave ${WAVE_NUM} done\" \"${HNAME}\" \"${REPORT_PATH:-~/.boring/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\"\`\n"
-  [ -n "$ACTIONABLE_GATE" ] && WMSG="${WMSG}8. Mark gate \`${ACTIONABLE_GATE}\` completed in config.json\n"
+  WMSG="${WMSG}\nWrite the wave report — evidence-backed, per-task. This is the verification + communication layer.\n\n"
+  WMSG="${WMSG}1. **Copy template**: \`cp ~/.boring/templates/wave-report.html.tmpl ${REPORT_PATH:-~/.boring/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
+  WMSG="${WMSG}2. **Fill every task section** — for each task completed this wave:\n"
+  WMSG="${WMSG}   - **Before**: what existed / what was broken\n"
+  WMSG="${WMSG}   - **After**: what you built / what changed\n"
+  WMSG="${WMSG}   - **E2E Verification**: the test you ran, curl output, screenshot. *\"Deployed and verified\" is NOT evidence.*\n"
+  WMSG="${WMSG}3. **Mission check**: Does each completed task serve the mission stated in harness.md?\n"
+  WMSG="${WMSG}4. **Open + inspect**: \`open ${REPORT_PATH:-~/.boring/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
+  WMSG="${WMSG}5. **Commit**: \`feat(${HNAME}): wave ${WAVE_NUM} — <brief summary>\`\n"
+  WMSG="${WMSG}6. **Notify**: \`notify \"Wave ${WAVE_NUM} done\" \"${HNAME}\" \"${REPORT_PATH:-~/.boring/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\"\`\n"
+  [ -n "$ACTIONABLE_GATE" ] && WMSG="${WMSG}7. Mark gate \`${ACTIONABLE_GATE}\` completed in config.json\n"
 
   # Hard gate: block if report missing or lacks required sections
   if [ -n "$REPORT_PATH" ] && [ ! -f "$REPORT_PATH" ]; then

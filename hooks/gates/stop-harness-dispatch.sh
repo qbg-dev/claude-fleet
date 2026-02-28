@@ -166,9 +166,16 @@ block_generic() {
     [ -n "$WOULD_UNBLOCK" ] && MSG="${MSG}**Completing ${CURRENT} unblocks:** ${WOULD_UNBLOCK}\n"
   fi
 
-  # Wave progress (display only — gates are task dependencies in tasks.json)
+  # Wave progress display
   local WAVE_INFO=$(harness_wave_progress "$PROGRESS" 2>/dev/null || echo "")
   [ -n "$WAVE_INFO" ] && MSG="${MSG}**Wave:** ${WAVE_INFO}\n"
+
+  # Wave gate — fires at wave boundary, injects evidence-backed report instructions
+  local _SPEC_FILE=""
+  [ -f "$PROJECT_ROOT/.claude/harness/${CANONICAL}/spec.md" ] && _SPEC_FILE=".claude/harness/${CANONICAL}/spec.md"
+  local WAVE_GATE_MSG
+  WAVE_GATE_MSG=$(check_wave_gate "$PROGRESS" "$HNAME" "$_SPEC_FILE" 2>/dev/null || echo "")
+  [ -n "$WAVE_GATE_MSG" ] && MSG="${MSG}${WAVE_GATE_MSG}"
 
   # Blocked tasks
   local BLOCKED_INFO=$(jq -r '
