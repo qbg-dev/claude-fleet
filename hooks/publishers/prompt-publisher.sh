@@ -2,7 +2,9 @@
 # prompt-publisher.sh — UserPromptSubmit publisher hook.
 # Publishes prompt events to the event bus. Side-effects handle persistence.
 # Always returns {} (never blocks).
-set -euo pipefail
+set -uo pipefail
+# Always return {} on stdout, even on error — exit 0 ensures no TUI "hook error" noise
+trap 'echo "{}"; exit 0' ERR
 
 source "$HOME/.claude-ops/lib/pane-resolve.sh"
 source "$HOME/.claude-ops/lib/event-bus.sh"
