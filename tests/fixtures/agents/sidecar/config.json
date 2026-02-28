@@ -1,0 +1,10 @@
+{
+  "name": "test-harness",
+  "mission": "Test mission for unit tests",
+  "model": "sonnet",
+  "lifecycle": "bounded",
+  "rotation": {
+    "mode": "none"
+  },
+  "waves": []
+}

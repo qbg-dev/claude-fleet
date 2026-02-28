@@ -23,7 +23,8 @@
 # ─────────────────────────────────────────────────────────────
 session_find() {
   local harness="$1"
-  local activity_log="/tmp/claude_activity_${harness}.jsonl"
+  local _state_dir="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+  local activity_log="${_state_dir}/activity/claude_activity_${harness}.jsonl"
   local projects_dir="$HOME/.claude/projects"
 
   # Strategy 1: Get session ID from activity log

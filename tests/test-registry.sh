@@ -82,10 +82,10 @@ RESULT=$(harness_project_root "eval-external")
 assert_not_empty "project_root for eval-external is non-empty" "$RESULT"
 assert "project_root contains Wechat" "Wechat" "$RESULT"
 
-# Test 8: harness_progress_path resolves to absolute path
+# Test 8: harness_progress_path resolves to absolute path (v2: returns tasks.json)
 RESULT=$(harness_progress_path "eval-external")
 assert "progress_path is absolute" "/" "$RESULT"
-assert "progress_path ends with progress.json" "progress.json" "$RESULT"
+assert "progress_path ends with tasks.json" "tasks.json" "$RESULT"
 
 # Test 9: harness_manifest returns expected path format
 RESULT=$(harness_manifest "my-test-harness")

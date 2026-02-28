@@ -72,7 +72,7 @@ check_generalization_gate() {
   MSG="${MSG}the seed waypoints. Follow the Phase 0.5 instructions from your seed prompt.\n"
   if [ ! -f "$GEN_FILE" ]; then
     MSG="${MSG}1. Write to \`${GEN_REL}\`\n"
-    MSG="${MSG}2. Open for review + notify Warren\n"
+    MSG="${MSG}2. Open for review + notify the operator\n"
     MSG="${MSG}3. Wait for approval, then set \`\"generalization_approved\": true\`\n"
   else
     MSG="${MSG}File exists: \`${GEN_REL}\`\n"
@@ -125,7 +125,7 @@ check_wave_gate() {
   WMSG="${WMSG}4. Copy starter: \`cp ~/.claude-ops/templates/wave-report-starter.html ${REPORT_PATH:-~/.claude-ops/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
   WMSG="${WMSG}5. Edit the report — replace placeholder comments with real content\n"
   WMSG="${WMSG}6. Open: \`open ${REPORT_PATH:-~/.claude-ops/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\`\n"
-  WMSG="${WMSG}7. Notify Warren: \`notify \"Wave ${WAVE_NUM} done\" \"${HNAME}\" \"${REPORT_PATH:-~/.claude-ops/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\"\`\n"
+  WMSG="${WMSG}7. Notify the operator: \`notify \"Wave ${WAVE_NUM} done\" \"${HNAME}\" \"${REPORT_PATH:-~/.claude-ops/harness/reports/${HNAME}/wave-${WAVE_NUM}.html}\"\`\n"
   [ -n "$ACTIONABLE_GATE" ] && WMSG="${WMSG}8. Mark gate \`${ACTIONABLE_GATE}\` completed in config.json\n"
 
   # Hard gate: block if report missing or lacks required sections

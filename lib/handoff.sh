@@ -136,7 +136,7 @@ if [ -n "$HARNESS" ]; then
   if [ -f "$_perms_json" ]; then
     _perm_mode=$(jq -r '.permission_mode // "bypassPermissions"' "$_perms_json")
     _perm_allowed=$(jq -r '(.allowedTools // []) | join(",")' "$_perms_json")
-    _perm_disallowed=$(jq -r '(.disallowedTools // []) | join(",")' "$_perms_json")
+    # disallowedTools enforced by tool-policy-gate.sh PreToolUse hook
     _perm_tools=$(jq -r '(.tools // []) | join(",")' "$_perms_json")
     _perm_dirs=$(jq -r '(.addDirs // []) | join(",")' "$_perms_json")
     # Apply mode (overrides SKIP_PERMISSIONS)
@@ -148,7 +148,7 @@ if [ -n "$HARNESS" ]; then
       default)           ;;  # no flag
     esac
     [ -n "$_perm_allowed" ]    && CLAUDE_CMD="$CLAUDE_CMD --allowedTools $_perm_allowed"
-    [ -n "$_perm_disallowed" ] && CLAUDE_CMD="$CLAUDE_CMD --disallowedTools $_perm_disallowed"
+    # disallowedTools is now enforced by tool-policy-gate.sh PreToolUse hook — no CLI flag needed
     [ -n "$_perm_tools" ]      && CLAUDE_CMD="$CLAUDE_CMD --tools $_perm_tools"
     [ -n "$_perm_dirs" ]       && CLAUDE_CMD="$CLAUDE_CMD --add-dir $_perm_dirs"
   elif [ "$SKIP_PERMISSIONS" = true ]; then

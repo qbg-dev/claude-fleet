@@ -53,7 +53,7 @@ find_tmpl() {
 }
 
 replace() {
-  sed "s|{{HARNESS}}|$HARNESS|g; s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g" "$1"
+  sed "s|{{HARNESS}}|$HARNESS|g; s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g; s|{{TITLE}}|$HARNESS|g" "$1"
 }
 
 echo "Scaffolding harness: $HARNESS"
@@ -66,8 +66,8 @@ if [ ! -f "$HARNESS_DIR/tasks.json" ]; then
   echo "  created tasks.json"
 fi
 
-# harness.md, policy.json, acceptance.md — from templates if available
-for pair in "harness.md.tmpl:harness.md" "policy.json.tmpl:policy.json" "acceptance.md.tmpl:acceptance.md"; do
+# harness.md, policy.json, acceptance.md, vision.html — from templates if available
+for pair in "harness.md.tmpl:harness.md" "policy.json.tmpl:policy.json" "acceptance.md.tmpl:acceptance.md" "vision.html.tmpl:vision.html"; do
   tmpl_name="${pair%%:*}"
   out_name="${pair#*:}"
   if [ ! -f "$HARNESS_DIR/$out_name" ]; then
@@ -80,6 +80,15 @@ for pair in "harness.md.tmpl:harness.md" "policy.json.tmpl:policy.json" "accepta
     fi
   fi
 done
+
+# report.css — shared stylesheet for wave reports and vision docs
+if [ ! -f "$HARNESS_DIR/report.css" ]; then
+  _css_tmpl=$(find_tmpl "report.css")
+  if [ -n "$_css_tmpl" ]; then
+    cp "$_css_tmpl" "$HARNESS_DIR/report.css"
+    echo "  created report.css"
+  fi
+fi
 
 # spec.md — requirements stub
 if [ ! -f "$HARNESS_DIR/spec.md" ]; then
@@ -115,7 +124,7 @@ if [ ! -f "$MM_DIR/config.json" ]; then
       model: "sonnet",
       lifecycle: $lifecycle,
       sleep_duration: 900,
-      rotation: {max_rounds: 20, claude_command: "cdo", mode: "new_session"},
+      rotation: {max_rounds: 20, claude_command: "cds", mode: "new_session"},
       scope_tags: [],
       created_at: $ts
     }' > "$MM_DIR/config.json"
@@ -124,7 +133,7 @@ fi
 
 # state.json
 if [ ! -f "$MM_DIR/state.json" ]; then
-  echo '{"status":"active","cycles_completed":0,"last_cycle_at":null,"session_count":0}' \
+  jq -n '{status:"active",cycles_completed:0,last_cycle_at:null,session_count:0,sleep_duration:900,phase:"phase-now"}' \
     > "$MM_DIR/state.json"
   echo "  created agents/module-manager/state.json"
 fi
@@ -155,7 +164,8 @@ if [ ! -f "$MM_DIR/permissions.json" ]; then
     "Bash(git reset --hard*)",
     "Bash(git clean*)",
     "Bash(rm -rf*)",
-    "Bash(sudo *)"
+    "Bash(sudo *)",
+    "Bash(sshpass*)"
   ]
 }
 PERMEOF
@@ -176,7 +186,7 @@ ${MISSION:-[Describe what this coordinator should accomplish]}
 ## Constraints
 - Read the relevant code before modifying it
 - Stage specific files only — never \`git add -A\` or \`git add .\`
-- Never push or merge to main without Warren approval
+- Never push or merge to main without operator approval
 - Bus-only messaging — never write directly to another agent's inbox.jsonl
 MEOF
   echo "  created agents/module-manager/mission.md"

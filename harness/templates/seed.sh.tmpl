@@ -30,7 +30,7 @@ LEARNINGS=$(jq -r '.learnings[-5:] | if length > 0 then "Recent learnings:\n" + 
 if [[ "$CURRENT" == "ALL_DONE" ]]; then
   cat <<DONE
 {{HARNESS}} HARNESS — ALL TASKS DONE. Time to evolve!
-Add new tasks or deactivate: jq '.status = "done"' progress.json > /tmp/p.json && mv /tmp/p.json progress.json
+Add new tasks or deactivate: Use locked_jq_write or jq '.status = "done"' progress.json | sponge progress.json
 Completed: [${COMPLETED}]
 Session count: $SESSION_COUNT
 DONE

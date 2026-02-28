@@ -41,6 +41,13 @@ TOOL_INPUT="$_HOOK_TOOL_INPUT"
 resolve_pane_and_harness "$SESSION_ID"
 [ -z "$HARNESS" ] && { hook_pass; exit 0; }
 
+# ── Cancel graceful-stop sentinel on any tool activity ──────────────────
+# If the stop hook fired but the agent is still making tool calls, it means
+# the agent resumed (operator typed, bus message arrived). Remove the sentinel
+# so the watchdog does NOT rotate this agent.
+_GS_FILE="$HOME/.claude-ops/state/sessions/$SESSION_ID/graceful-stop"
+[ -f "$_GS_FILE" ] && rm -f "$_GS_FILE" 2>/dev/null || true
+
 # Resolve injections file (policy.json -> context-injections.json, new path -> legacy)
 INJECTIONS=$(harness_inject_file "$HARNESS" "$PROJECT_ROOT")
 

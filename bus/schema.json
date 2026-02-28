@@ -1,0 +1,129 @@
+{
+  "version": 3,
+  "event_types": {
+    "cell-message": {
+      "side_effects": ["notify_assignee", "notify_tmux_if_urgent", "inject_directive_if_flagged"],
+      "description": "Direct message between agents. Writes to recipient inbox, tmux notify if urgent."
+    },
+    "announcement": {
+      "side_effects": ["notify_assignee", "inject_directive_if_flagged", "notify_tmux_if_urgent"],
+      "description": "Broadcast-style message to agent or group."
+    },
+    "worker.started": {
+      "side_effects": ["notify_assignee"],
+      "description": "Worker agent launched and registered."
+    },
+    "worker.loop": {
+      "side_effects": [],
+      "description": "Worker completed one loop iteration."
+    },
+    "worker.transition": {
+      "side_effects": ["notify_assignee", "notify_tmux_if_urgent"],
+      "description": "Worker changed lifecycle type (execution→optimization→monitoring)."
+    },
+    "worker.regression": {
+      "side_effects": ["notify_assignee", "notify_tmux_if_urgent"],
+      "description": "Monitoring worker detected a regression."
+    },
+    "task.started": {
+      "side_effects": ["update_tasks_json"],
+      "description": "Worker started an assigned task. Payload: {harness, worker, task_id}."
+    },
+    "task.completed": {
+      "side_effects": ["update_tasks_json", "notify_assignee"],
+      "description": "Worker completed an assigned task. Payload: {harness, worker, task_id, summary}."
+    },
+    "sidecar.proposal": {
+      "side_effects": ["notify_assignee"],
+      "description": "Sidecar proposes a new worker for operator approval."
+    },
+    "sidecar.cycle": {
+      "side_effects": [],
+      "description": "Sidecar completed a cycle phase."
+    },
+    "prompt": {
+      "side_effects": ["sync_harness_inbox", "worker-prompt-notify"],
+      "description": "User prompt event. worker-prompt-notify fires when harness is a worker (canonical contains /)."
+    },
+    "file-edit": {
+      "side_effects": ["append_outbox"],
+      "description": "File was edited by an agent."
+    },
+    "tool-call": {
+      "side_effects": [],
+      "description": "Tool was invoked by an agent."
+    },
+    "deploy": {
+      "side_effects": ["notify_human_agent"],
+      "description": "Deployment event."
+    },
+    "error": {
+      "side_effects": ["dlq_if_critical"],
+      "description": "Error event from agent."
+    },
+    "config-change": {
+      "side_effects": ["notify_human_agent"],
+      "description": "Configuration file was changed."
+    },
+    "session.start": {
+      "side_effects": [],
+      "description": "Agent session started."
+    },
+    "session.end": {
+      "side_effects": [],
+      "description": "Agent session ended."
+    },
+    "agent.stopped": {
+      "side_effects": [],
+      "description": "Agent stopped gracefully (hook_pass fired, graceful-stop sentinel written)."
+    },
+    "agent.respawned": {
+      "side_effects": ["notify_tmux_if_urgent"],
+      "description": "Watchdog respawned agent after graceful sleep window elapsed."
+    },
+    "agent.crash": {
+      "side_effects": ["notify_assignee"],
+      "description": "Pane or process died without graceful-stop sentinel — likely a crash."
+    },
+    "agent.stuck": {
+      "side_effects": ["notify_assignee"],
+      "description": "Agent process alive but no tool calls for >10 min."
+    },
+    "agent.nudged": {
+      "side_effects": [],
+      "description": "Watchdog sent a wake prompt to a stuck agent."
+    },
+    "agent.crash-loop": {
+      "side_effects": ["notify_assignee", "notify_tmux_if_urgent"],
+      "description": ">3 crashes per hour for same canonical — watchdog stopped retrying."
+    },
+    "agent.state-changed": {
+      "side_effects": [],
+      "description": "Observability event for agent state.json mutations."
+    },
+    "agent.memory-updated": {
+      "side_effects": [],
+      "description": "Observability event for agent MEMORY.md edits."
+    },
+    "agent.policy-appended": {
+      "side_effects": ["append_outbox"],
+      "description": "Audit trail for policy.json context injections."
+    },
+    "agent.issue-filed": {
+      "side_effects": ["notify_human_agent"],
+      "description": "Agent filed a GitHub issue via report-issue --github. Payload: {id, github_url, title, reporter}."
+    },
+    "notification": {
+      "side_effects": ["notify_human_agent"],
+      "description": "Operator notification request. Payload: {message, title?, url?}. Side-effect calls terminal-notifier."
+    }
+  },
+  "filters": {
+    "messages": "cell-message|worker\\.|sidecar\\.|announcement",
+    "telemetry": "file-edit|tool-call|deploy|error|prompt|config-change",
+    "workers": "worker\\.",
+    "lifecycle": "session\\.",
+    "tasks": "task\\.",
+    "agent-state": "agent\\.state-changed|agent\\.memory-updated|agent\\.policy-appended|agent\\.issue-filed"
+  }
+}

@@ -41,6 +41,14 @@ fi
 mkdir -p "$DEDUP_DIR"
 echo "$DEDUP_HASH" > "$DEDUP_FILE"
 
+# ── Cancel graceful-stop sentinel if activity resumes ──────────────────
+# If the stop hook fired but the agent gets new input (operator typing, bus message),
+# remove the sentinel so the watchdog does NOT rotate this agent.
+_GS_FILE="$HOME/.claude-ops/state/sessions/$SESSION_ID/graceful-stop"
+if [ -f "$_GS_FILE" ]; then
+  rm -f "$_GS_FILE" 2>/dev/null || true
+fi
+
 # ── Publish session.start on first prompt ──────────────────────────────
 SESSION_STARTED_MARKER="$HOME/.claude-ops/state/sessions/$SESSION_ID/session-started"
 if [ ! -f "$SESSION_STARTED_MARKER" ]; then

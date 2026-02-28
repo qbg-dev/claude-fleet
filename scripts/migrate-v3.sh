@@ -102,7 +102,8 @@ for harness_dir in "$HARNESS_ROOT"/*/; do
     "Bash(git reset --hard*)",
     "Bash(git clean*)",
     "Bash(rm -rf*)",
-    "Bash(sudo *)"
+    "Bash(sudo *)",
+    "Bash(sshpass*)"
   ]
 }
 PERMEOF

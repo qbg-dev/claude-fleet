@@ -10,18 +10,17 @@ Shared, tested scripts for autonomous Claude Code agent sessions.
 ├── bin/                          # CLI tools
 │   ├── claude-mux.py             # Multi-agent multiplexer
 │   ├── codex-async.sh            # Async Codex launcher
-│   └── daily-harness-audit.py    # Daily harness health audit
+│   ├── daily-harness-audit.py    # Daily harness health audit
+│   └── report-issue.sh           # Structured issue reporting for agents
 ├── harness/
 │   ├── manifests/{name}/         # Per-harness persistent registry
 │   │   └── manifest.json         # project_root, status, file paths
 │   └── templates/                # Scaffold templates (.tmpl)
 │       ├── start.sh.tmpl
 │       ├── seed.sh.tmpl
-│       ├── continue.sh.tmpl
 │       ├── progress.json.tmpl
 │       ├── harness.md.tmpl
-│       ├── best-practices.json.tmpl
-│       └── goal.md.tmpl
+│       └── best-practices.json.tmpl
 ├── hooks/
 │   ├── admission/
 │   │   ├── deploy-mutator.sh     # Auto-inject deploy flags
@@ -31,9 +30,10 @@ Shared, tested scripts for autonomous Claude Code agent sessions.
 │   │   ├── progress-validator.sh # Validate progress.json + run checks.d/
 │   │   ├── activity-logger.sh    # Log all tool use to JSONL
 │   │   └── checks.d/
-│   │       ├── 01-no-inline-styles.sh
-│   │       ├── 02-no-mock-data.sh
-│   │       └── 03-no-hardcoded-ids.sh
+│   │       ├── no-inline-styles.sh
+│   │       ├── no-mock-data.sh
+│   │       ├── no-hardcoded-ids.sh
+│   │       └── file-conflicts.sh
 │   ├── harness-dispatch.sh       # Main stop hook dispatcher
 │   └── stop-check.sh             # General code-review stop hook
 ├── lib/
@@ -41,7 +41,9 @@ Shared, tested scripts for autonomous Claude Code agent sessions.
 │   ├── handoff.sh                # Session rotation/replacement
 │   ├── bead.sh                   # Cross-harness coordination
 │   ├── spawn-sweep-agent.sh      # Least-privilege sweep agent spawner
-│   └── session-reader.sh         # Session transcript reader
+│   ├── session-reader.sh         # Session transcript reader
+│   ├── sweep-config.sh           # Load sweep configuration
+│   └── harness-launch.sh         # Tmux launch orchestration
 ├── scripts/
 │   ├── scaffold.sh               # Create new harness from templates
 │   ├── control-plane.sh          # K8s-inspired daemon
@@ -61,7 +63,7 @@ Shared, tested scripts for autonomous Claude Code agent sessions.
 │       ├── 04-progress-reconcile.json
 │       └── 08-meta-reflect.json
 ├── tests/
-│   ├── run-all.sh                # 168 tests, 9 suites
+│   ├── run-all.sh                # 163 tests, 10 suites
 │   ├── test-hooks.sh
 │   ├── test-harness-jq.sh
 │   ├── test-context-injector.sh

@@ -11,7 +11,7 @@ msg="${1:?Usage: notify \"message\" [\"title\"] [\"url\"]}"
 title="${2:-🔔 Claude}"
 url="${3:-}"
 
-# ── Publish to event bus (side-effect fires notify_warren.sh) ──────────────
+# ── Publish to event bus (side-effect fires notify_human_agent.sh) ──────────────
 # Find PROJECT_ROOT for bus publishing
 _PROJECT_ROOT="${PROJECT_ROOT:-}"
 if [ -z "$_PROJECT_ROOT" ] && command -v git >/dev/null 2>&1; then

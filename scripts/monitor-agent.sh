@@ -29,6 +29,10 @@
 
 set -euo pipefail
 
+# --- State directory base ---
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+MONITORS_DIR="$HARNESS_STATE_DIR/monitors"
+
 # --- Stop mode ---
 if [ "${1:-}" = "--stop" ]; then
   TARGET="${2:?Usage: monitor-agent.sh --stop <target-pane>}"
@@ -37,30 +41,38 @@ if [ "${1:-}" = "--stop" ]; then
   if [[ "$TARGET" == %* ]]; then
     # Direct pane_id
     SLUG="pid${TARGET#%}"
-    DIR="/tmp/monitor-agent-${SLUG}"
+    DIR="$MONITORS_DIR/${SLUG}"
   else
     # Target string — resolve to pane_id if pane exists
     PANE_ID=$(tmux display-message -t "$TARGET" -p '#{pane_id}' 2>/dev/null || echo "")
     if [ -n "$PANE_ID" ]; then
       SLUG="pid${PANE_ID#%}"
-      DIR="/tmp/monitor-agent-${SLUG}"
+      DIR="$MONITORS_DIR/${SLUG}"
     else
       # Pane gone — scan state dirs for matching worker-target
       DIR=""
-      for wt in /tmp/monitor-agent-pid*/worker-target; do
+      for wt in "$MONITORS_DIR"/pid*/worker-target; do
         [ -f "$wt" ] || continue
         if [ "$(cat "$wt")" = "$TARGET" ]; then
           DIR=$(dirname "$wt"); break
         fi
       done
       # Last resort: old slug format (migration period)
-      [ -z "$DIR" ] && DIR="/tmp/monitor-agent-$(echo "$TARGET" | tr ':.' '-')"
+      [ -z "$DIR" ] && DIR="$MONITORS_DIR/$(echo "$TARGET" | tr ':.' '-')"
     fi
   fi
 
   if [ -f "$DIR/daemon.pid" ]; then
     DPID=$(cat "$DIR/daemon.pid")
     kill "$DPID" 2>/dev/null && echo "Daemon stopped (PID $DPID)" || echo "Daemon already gone"
+  fi
+  # Archive reflection receipt before cleanup
+  if [ -f "$DIR/harness-name" ] && [ -f "$DIR/reflect-receipt.json" ]; then
+    source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || true
+    _HNAME=$(cat "$DIR/harness-name" 2>/dev/null || echo "")
+    if [ -n "$_HNAME" ]; then
+      harness_archive_reflection "$_HNAME" "$DIR/reflect-receipt.json" 2>/dev/null || true
+    fi
   fi
   if [ -f "$DIR/monitor-pane" ]; then
     MPANE=$(cat "$DIR/monitor-pane")
@@ -92,14 +104,14 @@ fi
 
 # --- Args ---
 TARGET_PANE="${1:?Usage: monitor-agent.sh [--pane <pane-id>] <target-pane> [interval] [mission]}"
-INTERVAL="${2:-180}"
+INTERVAL="${2:-300}"
 MISSION="${3:-Watch the target agent and nudge it if it goes off track or gets stuck.}"
 
 # --- State directory (keyed by stable pane_id, not target) ---
 WORKER_PANE_ID=$(tmux display-message -t "$TARGET_PANE" -p '#{pane_id}' 2>/dev/null || echo "")
 [ -z "$WORKER_PANE_ID" ] && { echo "ERROR: Cannot resolve pane_id for $TARGET_PANE" >&2; exit 1; }
 TARGET_SLUG="pid${WORKER_PANE_ID#%}"
-STATE_DIR="/tmp/monitor-agent-${TARGET_SLUG}"
+STATE_DIR="$MONITORS_DIR/${TARGET_SLUG}"
 mkdir -p "$STATE_DIR"
 echo "$WORKER_PANE_ID" > "$STATE_DIR/worker-pane-id"
 echo "$TARGET_PANE" > "$STATE_DIR/worker-target"
@@ -194,7 +206,7 @@ JOURNAL_PATH=""
 source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || HARNESS_SESSION_REGISTRY="$HOME/.claude-ops/state/session-registry.json"
 if [ -f "$HARNESS_SESSION_REGISTRY" ]; then
   # Try to find harness for the target pane's session
-  local search_root="${PROJECT_ROOT:-/Users/wz/Desktop/zPersonalProjects/Wechat}"
+  search_root="${PROJECT_ROOT:-/Users/wz/Desktop/zPersonalProjects/Wechat}"
   while IFS= read -r pf; do
     [ -f "$pf" ] || continue
     h=$(jq -r '.harness // ""' "$pf" 2>/dev/null || true)
@@ -205,7 +217,7 @@ if [ -f "$HARNESS_SESSION_REGISTRY" ]; then
         HARNESS_NAME="$h"
         PROGRESS_PATH="$pf"
         # Journal: same dir for new convention, same prefix for legacy
-        local pf_dir=$(dirname "$pf")
+        pf_dir=$(dirname "$pf")
         if [ "$(basename "$pf")" = "progress.json" ]; then
           JOURNAL_PATH="$pf_dir/journal.md"
         else
@@ -216,6 +228,9 @@ if [ -f "$HARNESS_SESSION_REGISTRY" ]; then
     fi
   done < <(harness_all_progress_files "$search_root")
 fi
+
+# Store harness name in state dir for --stop handler
+[ -n "$HARNESS_NAME" ] && echo "$HARNESS_NAME" > "$STATE_DIR/harness-name"
 
 # --- Session transcript discovery ---
 SESSION_JSONL_PATH=""
@@ -264,20 +279,27 @@ ${HARNESS_PATHS_BLOCK}
 
 ---
 
-## Role 1: Guardian — Keeper of Mission
+## Role 1: Guardian — Mission Advancer
 
-Your default stance is **silence**. The agent is usually fine. On every event:
+Your stance is **proactive silence**: quiet when the agent is productive, but ACTIVE when it's idle.
+
+On every event:
 
 1. Read progress.json — is the agent on the right task?
 2. Does the approach align with the mission spirit (not just letter)?
-3. **Only intervene when:**
-   - IDLE at prompt >5min with no progress
+3. **Intervene when:**
+   - **IDLE at prompt** — this is your PRIMARY trigger. Read the mission, check pending tasks,
+     and nudge with a SPECIFIC next action: "Start task X" or "The mission says Y but we haven't
+     addressed Z — investigate that." Don't just say "continue" — tell it WHAT to do.
    - Working on wrong task (not the current one in progress.json)
    - Same error repeated 3+ times (stuck in a loop)
    - Deploying without testing
    - Skipping a wave gate (see Role 2)
+4. **When agent completes a task** — check if there are unblocked pending tasks and nudge it
+   to pick up the next one. Don't let it sit idle between tasks.
 
-**If none of these apply, say "on track" and wait.** Do NOT nudge for velocity.
+**If the agent is THINKING or EXECUTING, stay silent.** But if it's IDLE, always check if
+there's mission-advancing work it could be doing.
 
 ## Role 2: Wave Enforcer — Protocol Compliance
 
@@ -285,9 +307,9 @@ Events include wave state (wave_progress, is_wave_boundary, current_task). Check
 
 1. **Wave gate tasks (\`wave-N-report\`)** — these are structural gates in progress.json with \`metadata.wave_gate: true\`. They block the next wave's tasks via \`blockedBy\`.
 2. If agent is working on wave N+1 tasks while \`wave-N-report\` is still pending → **INTERVENE IMMEDIATELY**. Send: "STOP — wave-N-report gate is pending. Complete the gate steps before proceeding."
-3. Gate steps: commit, deploy, inspect Chrome, screenshot, report HTML, open, notify, wait for Warren.
+3. Gate steps: commit, deploy, inspect Chrome, screenshot, report HTML, open, notify, wait for the operator.
 4. Report file location: \`~/.claude-ops/harness/reports/${HARNESS_NAME:-unknown}/wave-{N}.html\`
-5. Only after the report exists AND Warren confirms → gate can be marked completed.
+5. Only after the report exists AND the operator confirms → gate can be marked completed.
 
 ## Role 3: Evolver — Harness Maintenance
 
@@ -347,7 +369,7 @@ tmux send-keys -t ${STABLE_TARGET} "\$SIGNATURE nudge" && tmux send-keys -t ${ST
 
 ## Completion Detection + Notification
 
-On every event, check progress for milestones. Notify Warren exactly ONCE per milestone:
+On every event, check progress for milestones. Notify the operator exactly ONCE per milestone:
 
 \`\`\`bash
 NOTIFIED_FILE="${STATE_DIR}/notified_milestones"
@@ -404,7 +426,7 @@ Do NOT write just \`{"reflected_at": "...", "capture_count": N}\`.
   agent has been doing. If you can't find patterns, say "Agent idle/blocked — no activity to analyze."
 - **\`assessment\`** is MANDATORY — read the harness mission and compare to current progress.
 - **\`context_injection\`** — if you discover knowledge the agent should receive before certain
-  tool calls, write it here. It feeds the context-injector.
+  tool calls, write it here. It feeds the pre-tool-context-injector.
 - **\`best_practice_update\`** — if you notice a threshold or rule that should be tuned,
   write the jq path and new value here.
 
@@ -428,7 +450,7 @@ emit_metric() {
   local harness_name="${HARNESS_NAME:-unknown}"
   printf '{"ts":"%s","type":"%s","agent":"%s","harness":"%s"%s}\n' \
     "$ts" "$type" "$TARGET_PANE" "$harness_name" "$extra" \
-    >> /tmp/harness_metrics.jsonl 2>/dev/null || true
+    >> "${HARNESS_METRICS_FILE:-$HOME/.claude-ops/state/metrics.jsonl}" 2>/dev/null || true
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -497,6 +519,10 @@ tmux send-keys -t "$MONITOR_PANE" -H 0d
   daemon_log "DAEMON_START: worker=$TARGET_PANE ($WORKER_PANE_ID) monitor=$MONITOR_PANE ($MONITOR_PANE_ID) interval=$INTERVAL state=$STATE_DIR"
   daemon_log "STATE_FILES: monitor-pane=$(cat "$STATE_DIR/monitor-pane" 2>/dev/null) monitor-pane-id=$(cat "$STATE_DIR/monitor-pane-id" 2>/dev/null)"
 
+  # Track consecutive ALL_DONE IDLE captures for auto-shutdown
+  ALL_DONE_IDLE_COUNT_FILE="$STATE_DIR/all-done-idle-count"
+  echo 0 > "$ALL_DONE_IDLE_COUNT_FILE"
+
   sleep 30  # Let first check from prompt complete
 
   while true; do
@@ -551,8 +577,9 @@ tmux send-keys -t "$MONITOR_PANE" -H 0d
     # --- Get session digest for event enrichment ---
     session_digest=$(get_session_digest 2>/dev/null || true)
 
-    # --- Wave state enrichment (appended to every event) ---
+    # --- Mission + task enrichment (appended to every event) ---
     wave_state=""
+    mission_context=""
     if [ -n "${HARNESS_NAME:-}" ] && [ -n "${PROGRESS_PATH:-}" ] && [ -f "${PROGRESS_PATH}" ]; then
       wp=$(harness_wave_progress "$PROGRESS_PATH" 2>/dev/null || echo "")
       wb=$(harness_is_wave_boundary "$PROGRESS_PATH" 2>/dev/null || echo "false")
@@ -560,25 +587,76 @@ tmux send-keys -t "$MONITOR_PANE" -H 0d
       tc=$(harness_total_count "$PROGRESS_PATH" 2>/dev/null || echo "0")
       ct=$(harness_current_task "$PROGRESS_PATH" 2>/dev/null || echo "unknown")
       wave_state=" | wave_progress: ${wp:-none} | is_wave_boundary: ${wb} | progress: ${dc}/${tc} | current_task: ${ct}"
+
+      # Extract mission + pending tasks for proactive nudging
+      _mission=$(jq -r '.mission // ""' "$PROGRESS_PATH" 2>/dev/null | head -c 200 || true)
+      _pending=$(jq -r '[.tasks | to_entries[] | select(.value.status == "pending") | .key] | join(", ")' "$PROGRESS_PATH" 2>/dev/null | head -c 200 || true)
+      _in_progress=$(jq -r '[.tasks | to_entries[] | select(.value.status == "in_progress") | .key] | join(", ")' "$PROGRESS_PATH" 2>/dev/null | head -c 200 || true)
+      [ -n "$_mission" ] && mission_context=" | mission: ${_mission}"
+      [ -n "$_pending" ] && mission_context="${mission_context} | pending_tasks: ${_pending}"
+      [ -n "$_in_progress" ] && mission_context="${mission_context} | in_progress: ${_in_progress}"
+
+      # --- AUTO-SHUTDOWN: detect 5 consecutive ALL_DONE IDLE captures ---
+      all_done_idle_count=$(cat "$ALL_DONE_IDLE_COUNT_FILE" 2>/dev/null || echo 0)
+      if [ "$dc" != "0" ] && [ "$dc" = "$tc" ] && [ "$tui_state" = "IDLE(at-prompt)" ]; then
+        # All tasks done AND agent is idle
+        all_done_idle_count=$((all_done_idle_count + 1))
+        daemon_log "ALL_DONE_IDLE: count=$all_done_idle_count (capture #$capture_count, tui=$tui_state, progress=$dc/$tc)"
+        echo "$all_done_idle_count" > "$ALL_DONE_IDLE_COUNT_FILE"
+
+        # After 5 consecutive ALL_DONE IDLE captures, notify the operator and exit
+        if [ "$all_done_idle_count" -ge 5 ]; then
+          notify "${HARNESS_NAME:-unknown} harness completed (${dc}/${tc} tasks done). Monitor auto-shutdown after 5 consecutive idle captures." "Monitor Complete"
+          daemon_log "AUTO_SHUTDOWN: harness complete, monitor exiting after 5 consecutive ALL_DONE IDLE captures"
+          emit_metric "auto_shutdown" ",\"harness\":\"${HARNESS_NAME}\",\"total_captures\":$capture_count,\"all_done_idle_count\":$all_done_idle_count"
+          rm -f "$STATE_DIR/daemon.pid"
+          exit 0
+        fi
+      else
+        # Reset counter if not in ALL_DONE IDLE state
+        if [ "$all_done_idle_count" -gt 0 ]; then
+          daemon_log "ALL_DONE_IDLE_RESET: was $all_done_idle_count, now resetting (tui=$tui_state, progress=$dc/$tc)"
+        fi
+        echo 0 > "$ALL_DONE_IDLE_COUNT_FILE"
+      fi
     fi
 
     # --- REFLECT event every 6 captures ---
     if [ $((capture_count % 6)) -eq 0 ] && [ "$capture_count" -gt 0 ]; then
-      reflect_context="[REFLECT] Capture #${capture_count}. TUI state: ${tui_state}.${wave_state}"
+      reflect_context="[REFLECT] Capture #${capture_count}. TUI state: ${tui_state}.${wave_state}${mission_context}"
       [ -n "$session_digest" ] && reflect_context="${reflect_context} session_digest: ${session_digest}"
-      reflect_context="${reflect_context} — Write receipt to ${STATE_DIR}/reflect-receipt.json with patterns + assessment."
+      reflect_context="${reflect_context} — Read the mission, compare to progress. Is the agent advancing? If idle, what specific task could move the mission forward? Write receipt to ${STATE_DIR}/reflect-receipt.json with patterns + assessment + actionable next step."
       send_to_monitor "REFLECT" "$reflect_context"
       emit_metric "reflect" ",\"capture_count\":$capture_count"
     fi
 
+    # --- Archive new reflection receipts (check after REFLECT events) ---
+    if [ $((capture_count % 6)) -eq 1 ] && [ "$capture_count" -gt 1 ] && [ -n "${HARNESS_NAME:-}" ]; then
+      receipt="$STATE_DIR/reflect-receipt.json"
+      last_mtime_file="$STATE_DIR/.last-archived-receipt-mtime"
+      if [ -f "$receipt" ]; then
+        receipt_mtime=$(_file_mtime "$receipt" 2>/dev/null || echo 0)
+        last_archived=$(cat "$last_mtime_file" 2>/dev/null || echo 0)
+        if [ "$receipt_mtime" -gt "$last_archived" ]; then
+          harness_archive_reflection "$HARNESS_NAME" "$receipt" 2>/dev/null || true
+          echo "$receipt_mtime" > "$last_mtime_file"
+          daemon_log "ARCHIVED reflection receipt (mtime=$receipt_mtime)"
+        fi
+      fi
+    fi
+
     # --- Decide event type: POLL vs IDLE ---
     if [ "$current" = "$prev" ]; then
-      idle_context="Pane ${TARGET_PANE} unchanged for ${INTERVAL}s. TUI state: ${tui_state}.${wave_state}"
+      idle_context="Pane ${TARGET_PANE} unchanged for ${INTERVAL}s. TUI state: ${tui_state}.${wave_state}${mission_context}"
       [ -n "$session_digest" ] && idle_context="${idle_context} session_digest: ${session_digest}"
+      # If agent is idle at prompt, add mission-advancing guidance
+      if [ "$tui_state" = "IDLE(at-prompt)" ]; then
+        idle_context="${idle_context} — Agent is IDLE. Check if there are pending tasks it could start, or if the mission has unaddressed gaps. If so, nudge with a specific next action."
+      fi
       send_to_monitor "IDLE" "$idle_context"
       emit_metric "poll" ",\"tui_state\":\"${tui_state}\",\"changed\":false"
     else
-      poll_context="Pane ${TARGET_PANE} check (${INTERVAL}s). TUI state: ${tui_state}. Capture #${capture_count}.${wave_state}"
+      poll_context="Pane ${TARGET_PANE} check (${INTERVAL}s). TUI state: ${tui_state}. Capture #${capture_count}.${wave_state}${mission_context}"
       [ -n "$session_digest" ] && poll_context="${poll_context} session_digest: ${session_digest}"
       send_to_monitor "POLL" "$poll_context"
       emit_metric "poll" ",\"tui_state\":\"${tui_state}\",\"changed\":true,\"capture_count\":$capture_count"

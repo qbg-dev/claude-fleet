@@ -12,20 +12,13 @@ TMPDIR=$(mktemp -d)
 mkdir -p "$TMPDIR/claude_files"
 cp "$FIXTURES/sample-context-injections.json" "$TMPDIR/claude_files/test-ctx-context-injections.json"
 
-# Mock registry with test-ctx harness
-source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || HARNESS_SESSION_REGISTRY="$HOME/.claude-ops/state/session-registry.json"
-REGISTRY_PATH="$HARNESS_SESSION_REGISTRY"
-ORIG_REGISTRY=""
-[ -f "$REGISTRY_PATH" ] && ORIG_REGISTRY=$(cat "$REGISTRY_PATH")
+# Mock registry — use ISOLATED temp file to avoid control plane race conditions
+MOCK_REGISTRY="$TMPDIR/test-registry.json"
 MOCK_SESSION="test-ctx-$$"
-echo "{\"$MOCK_SESSION\":\"test-ctx\"}" > "$REGISTRY_PATH"
+echo "{\"$MOCK_SESSION\":\"test-ctx\"}" > "$MOCK_REGISTRY"
+export HARNESS_SESSION_REGISTRY="$MOCK_REGISTRY"
 
 cleanup() {
-  if [ -n "$ORIG_REGISTRY" ]; then
-    echo "$ORIG_REGISTRY" > "$REGISTRY_PATH"
-  else
-    rm -f "$REGISTRY_PATH"
-  fi
   rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
@@ -62,10 +55,10 @@ RESULT=$(echo "{\"session_id\":\"$MOCK_SESSION\",\"tool_name\":\"Read\",\"tool_i
   | PROJECT_ROOT="/tmp/nonexistent" bash "$HOOK" 2>/dev/null)
 assert_empty "no injection when file missing" "$RESULT"
 
-# Test 7: No injection for non-matching file
+# Test 7: Non-matching file still gets always-inject tool_context items
 RESULT=$(echo "{\"session_id\":\"$MOCK_SESSION\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/tmp/unrelated-file.md\"}}" \
   | PROJECT_ROOT="$TMPDIR" bash "$HOOK" 2>/dev/null)
-assert_empty "no injection for non-matching file" "$RESULT"
+assert "always-inject fires even for non-matching file" "Write tool injection" "$RESULT"
 
 # Test 8: CSS file_context with string value (not object)
 RESULT=$(echo "{\"session_id\":\"$MOCK_SESSION\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$TMPDIR/styles/main.css\",\"old_string\":\"a\",\"new_string\":\"b\"}}" \
@@ -78,10 +71,10 @@ RESULT=$(echo "{\"session_id\":\"$MOCK_SESSION\",\"tool_name\":\"Edit\",\"tool_i
 # The output should have bar.ts injection before Write injection (if Write also matches)
 assert "high priority injection present" "bar.ts context injection" "$RESULT"
 
-# Test 10: No crash on empty tool_input
+# Test 10: Empty tool_input still gets always-inject items
 RESULT=$(echo "{\"session_id\":\"$MOCK_SESSION\",\"tool_name\":\"Bash\",\"tool_input\":{}}" \
   | PROJECT_ROOT="$TMPDIR" bash "$HOOK" 2>/dev/null)
-assert_empty "handles empty tool_input gracefully" "$RESULT"
+assert "always-inject fires with empty tool_input" "Write tool injection" "$RESULT"
 
 # Test 11: Returns additionalContext key in JSON
 RESULT=$(echo "{\"session_id\":\"$MOCK_SESSION\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"deploy-prod --fast\"}}" \

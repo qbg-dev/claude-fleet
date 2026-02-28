@@ -203,7 +203,7 @@ _resolve_state_file() {
 # Usage: worker_scaffold MODULE WORKER_NAME TYPE MISSION ACCEPTANCE [APPROVED_BY] [PROJECT_ROOT]
 worker_scaffold() {
   local module="${1:?}" worker_name="${2:?}" type="${3:?}" mission="${4:?}" acceptance="${5:?}"
-  local approved_by="${6:-warren}" project_root="${7:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+  local approved_by="${6:-operator}" project_root="${7:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 
   local worker_dir="$project_root/.claude/harness/$module/agents/worker/$worker_name"
   mkdir -p "$worker_dir/memory/ref" "$worker_dir/memory/notes" "$worker_dir/memory/scripts"
@@ -1027,8 +1027,8 @@ harness_inject_wave_gates() {
 6. Edit the report — replace placeholder comments with real content
 7. Generate wave report HTML at ~/.claude-ops/harness/reports/${HNAME}/wave-${WAVE_ID}.html
 8. Open the report: open ~/.claude-ops/harness/reports/${HNAME}/wave-${WAVE_ID}.html
-9. Notify Warren: notify \"${HNAME} wave ${WAVE_ID} complete — report ready for review\"
-10. WAIT for Warren's confirmation before proceeding to the next wave"
+9. Notify the operator: notify \"${HNAME} wave ${WAVE_ID} complete — report ready for review\"
+10. WAIT for the operator's confirmation before proceeding to the next wave"
 
     # Inject gate task into tasks file
     local lock_name="tasks-$(basename "$(dirname "$tasks")")"

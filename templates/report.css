@@ -1,0 +1,104 @@
+/* report.css — shared stylesheet for harness reports & vision docs.
+   Design: qbg.dev monospace-minimal. Dark mode. Collapsibles. Dense.
+   Journey: Hook → Context → Deliverables → Evidence → Action. */
+
+:root {
+  --ink: #1c1917; --bg: #fafaf9; --accent: #f97316;
+  --muted: #78716c; --border: #e7e5e4; --card: #fff;
+  --success: #16a34a; --danger: #dc2626; --info: #2563eb;
+  --code-bg: #f5f5f4;
+}
+[data-theme="dark"] {
+  --ink: #e7e5e4; --bg: #0c0a09; --accent: #fb923c;
+  --muted: #a8a29e; --border: #292524; --card: #1c1917;
+  --success: #4ade80; --danger: #f87171; --info: #60a5fa;
+  --code-bg: #1c1917;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Source Code Pro', 'SF Mono', 'Menlo', monospace; font-weight: 500; background: var(--bg); color: var(--ink); line-height: 1.5; font-size: 13px; }
+main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+/* Typography */
+h1 { font-size: 2.25rem; font-weight: 900; letter-spacing: -0.03em; margin-bottom: 6px; line-height: 1.15; }
+h2 { font-size: 1.25rem; font-weight: 700; margin: 32px 0 12px; border-left: 4px solid var(--accent); padding-left: 10px; }
+h3 { font-size: 1rem; font-weight: 700; margin: 16px 0 6px; }
+h4 { font-size: 0.85rem; font-weight: 700; margin: 12px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+p, li { font-size: 0.85rem; margin-bottom: 6px; line-height: 1.6; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.muted { font-size: 0.8rem; }
+
+/* Layout */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+@media (max-width: 640px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+
+/* Card */
+.card { background: var(--card); border: 1px solid var(--border); padding: 10px; margin-bottom: 8px; }
+
+/* Hook — always-visible takeaway at top */
+.hook { background: var(--card); border: 2px solid var(--accent); padding: 16px 20px; margin: 16px 0; }
+.hook h2 { margin-top: 0; border-left: none; padding-left: 0; color: var(--accent); font-size: 1.1rem; }
+
+/* Action — priority next-steps at bottom */
+.action { background: var(--card); border: 2px solid var(--accent); border-left-width: 4px; padding: 16px 20px; margin: 24px 0; }
+.action h2 { margin-top: 0; border-left: none; padding-left: 0; }
+
+/* Metric */
+.metric { text-align: center; padding: 12px 8px; }
+.metric .value { font-size: 1.75rem; font-weight: 900; color: var(--accent); }
+.metric .label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }
+
+/* Status badges */
+.status { display: inline-block; padding: 1px 6px; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.status-ok { color: var(--success); }
+.status-fail { color: var(--danger); }
+.status-info { color: var(--info); }
+
+/* Dense list */
+.dense-list { list-style: none; padding: 0; margin-left: 4px; }
+.dense-list li { padding: 2px 0 2px 12px; position: relative; font-size: 0.8rem; }
+.dense-list li:before { content: "\25B8"; position: absolute; left: 0; color: var(--accent); font-size: 9px; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 0.75rem; margin: 8px 0; }
+th { text-align: left; padding: 4px 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid var(--border); font-size: 0.65rem; }
+td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+
+/* Code */
+code { font-family: inherit; font-size: 0.75rem; background: var(--code-bg); padding: 1px 4px; border: 1px solid var(--border); }
+pre { background: var(--code-bg); border: 1px solid var(--border); padding: 8px; margin: 8px 0; overflow-x: auto; font-size: 0.75rem; line-height: 1.4; }
+pre code { background: none; border: none; padding: 0; }
+
+/* Collapsibles — evidence sections */
+.collapsible { margin: 8px 0; }
+.collapsible-header { cursor: pointer; padding: 8px 10px; border-left: 3px solid var(--border); display: flex; align-items: center; justify-content: space-between; user-select: none; font-size: 0.9rem; font-weight: 700; }
+.collapsible-header:hover { border-left-color: var(--accent); }
+.collapsible-header .arrow { transition: transform 0.2s; color: var(--accent); font-size: 10px; }
+.collapsible.open .arrow { transform: rotate(90deg); }
+.collapsible-content { max-height: 0; overflow: hidden; transition: max-height 0.3s; padding: 0 10px; }
+.collapsible.open .collapsible-content { max-height: 10000px; padding: 10px 10px 10px 14px; }
+
+/* Comparison grid */
+.compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.compare-col { background: var(--card); border: 1px solid var(--border); padding: 10px; }
+.compare-col h3 { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+.compare-col.before h3 { color: var(--danger); }
+.compare-col.after h3 { color: var(--success); }
+@media (max-width: 640px) { .compare-grid { grid-template-columns: 1fr; } }
+
+/* Screenshot evidence */
+.screenshot { width: 100%; border: 1px solid var(--border); margin: 6px 0; display: block; }
+.screenshot-placeholder { width: 100%; padding: 24px; border: 2px dashed var(--border); text-align: center; font-size: 0.75rem; margin: 6px 0; }
+
+/* Mermaid diagrams */
+.diagram-container { background: var(--card); border: 1px solid var(--border); padding: 16px; margin: 12px 0; }
+.mermaid { padding: 12px; }
+
+/* Footer */
+footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 0.75rem; font-weight: 600; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+
+/* Theme toggle */
+.theme-toggle { position: fixed; top: 8px; right: 8px; z-index: 100; background: var(--card); color: var(--ink); border: 1px solid var(--border); padding: 3px 8px; cursor: pointer; font-family: inherit; font-size: 0.7rem; font-weight: 700; }

@@ -10,7 +10,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="${1:-/Users/wz/Desktop/zPersonalProjects/Wechat}"
-OUT="/tmp/tmux_harness_summary"
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+OUT="$HARNESS_STATE_DIR/tmux_harness_summary"
 
 # Source harness-jq for task graph queries + canonical paths
 HARNESS_LIB="${HOME}/.claude-ops/lib/harness-jq.sh"
@@ -20,7 +21,7 @@ REGISTRY="${HARNESS_SESSION_REGISTRY:-$HOME/.claude-ops/state/session-registry.j
 harness_count=0
 details=""
 
-for pfile in "$PROJECT_ROOT"/claude_files/*-progress.json; do
+while IFS= read -r pfile; do
   [ -f "$pfile" ] || continue
   status=$(jq -r '.status // "unknown"' "$pfile" 2>/dev/null)
   [ "$status" != "active" ] && continue
@@ -51,7 +52,7 @@ for pfile in "$PROJECT_ROOT"/claude_files/*-progress.json; do
   else
     details="${details}${name} ${done}/${total} "
   fi
-done
+done < <(harness_all_progress_files "$PROJECT_ROOT")
 
 # Trim trailing space
 details=$(echo -n "$details" | sed 's/ $//')

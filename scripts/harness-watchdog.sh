@@ -8,7 +8,7 @@
 #   3. Classify: graceful_sleep | awake | stuck | crashed
 #   4. Publish agent.* bus events
 #   5. Respawn crashed agents via harness-launch.sh
-#   6. Crash-loop guard: max MAX_CRASHES_PER_HR crashes → stop retrying, notify Warren
+#   6. Crash-loop guard: max MAX_CRASHES_PER_HR crashes → stop retrying, notify operator
 #
 # Usage:
 #   bash harness-watchdog.sh              # daemon mode (loops forever)
@@ -31,6 +31,8 @@ STUCK_THRESHOLD_SEC="${WATCHDOG_STUCK_THRESHOLD:-600}"   # 10 min no tool calls 
 MAX_CRASHES_PER_HR="${WATCHDOG_MAX_CRASHES:-3}"
 LOG_FILE="${WATCHDOG_LOG:-${HOME}/.claude-ops/state/watchdog.log}"
 
+# git rev-parse fails if cwd is not in a repo (e.g. watchdog started by launchd from /).
+# Hardcode the default project root; override via env if needed.
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 source "${HOME}/.claude-ops/lib/harness-jq.sh"
 source "${HOME}/.claude-ops/lib/event-bus.sh" 2>/dev/null || true
@@ -176,9 +178,11 @@ check_agent() {
     if [ "$idle_sec" -gt "$STUCK_THRESHOLD_SEC" ]; then
       _log "STUCK: $canonical (pane $pane_id) — ${idle_sec}s since last tool call"
       _publish_agent_event "agent.stuck" "$canonical" "Alive but ${idle_sec}s since last tool call"
-      tmux send-keys -t "$pane_id" "Continue your current task." 2>/dev/null || true
-      tmux send-keys -t "$pane_id" -H 0d 2>/dev/null || true
-      _publish_agent_event "agent.nudged" "$canonical" "Sent nudge after ${idle_sec}s idle"
+      # Nudge via bus (never tmux send-keys — all communication through the bus)
+      if type hq_send &>/dev/null; then
+        hq_send "watchdog" "$canonical" "nudge" "You have been idle for ${idle_sec}s. Continue your current task." "urgent" 2>/dev/null || true
+      fi
+      _publish_agent_event "agent.nudged" "$canonical" "Sent bus nudge after ${idle_sec}s idle"
     fi
     # else: agent is awake and working — no action needed
 

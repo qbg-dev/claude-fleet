@@ -20,13 +20,14 @@ if [ ! -f "$SEED_SCRIPT" ]; then
   exit 1
 fi
 
-# Read permissions from module-manager permissions.json
+# Read model from config.json (authoritative), fallback to permissions.json (legacy)
+CONFIG="$PROJECT_ROOT/.claude/harness/$HARNESS/agents/module-manager/config.json"
 PERMS="$PROJECT_ROOT/.claude/harness/$HARNESS/agents/module-manager/permissions.json"
 MODEL="sonnet"
-DISALLOWED=""
-if [ -f "$PERMS" ]; then
+if [ -f "$CONFIG" ]; then
+  MODEL=$(jq -r '.model // "sonnet"' "$CONFIG" 2>/dev/null || echo "sonnet")
+elif [ -f "$PERMS" ]; then
   MODEL=$(jq -r '.model // "sonnet"' "$PERMS" 2>/dev/null || echo "sonnet")
-  DISALLOWED=$(jq -r '(.disallowedTools // []) | join(",")' "$PERMS" 2>/dev/null || echo "")
 fi
 
 # Create a new tmux window named after the harness (-d = don't switch focus)
@@ -67,42 +68,42 @@ if [ -f "$HARNESS_JQ" ]; then
   _log "Registered $HARNESS pane $PANE_ID in pane-registry"
 fi
 
-# ── Detect if Claude TUI is already running in this pane ──────────────────
-# If Claude is already at ❯ prompt (graceful-sleep wake), just inject the seed.
-# Sending 'cd' and 'claude' to a running Claude TUI treats them as user messages — wrong.
+# ── Kill any existing Claude process in this pane ──────────────────
+# Always start fresh — never inject a seed into a stale session.
+# Stale sessions have old context, wrong model, outdated tool policies.
 PANE_PID=$(tmux list-panes -t "$TMUX_SESSION:$WIN_IDX" -F '#{pane_id} #{pane_pid}' \
   | awk -v p="$PANE_ID" '$1==p{print $2}' || echo "")
-CHILD_CMD=""
-[ -n "$PANE_PID" ] && CHILD_CMD=$(pgrep -P "$PANE_PID" 2>/dev/null \
-  | xargs -I{} ps -o command= -p {} 2>/dev/null | grep "^claude" | head -1 || true)
-
-CLAUDE_ALREADY_RUNNING=false
-if [ -n "$CHILD_CMD" ]; then
-  CLAUDE_ALREADY_RUNNING=true
-  _log "$HARNESS: Claude TUI already running — injecting seed directly (no startup needed)"
+if [ -n "$PANE_PID" ]; then
+  CHILD_PID=$(pgrep -P "$PANE_PID" 2>/dev/null | head -1 || true)
+  if [ -n "$CHILD_PID" ]; then
+    CHILD_CMD=$(ps -o command= -p "$CHILD_PID" 2>/dev/null | head -c 40 || true)
+    _log "$HARNESS: killing existing process ($CHILD_CMD) in pane before fresh launch"
+    kill "$CHILD_PID" 2>/dev/null || true
+    sleep 3
+    # Force kill if still alive
+    kill -0 "$CHILD_PID" 2>/dev/null && kill -9 "$CHILD_PID" 2>/dev/null || true
+    sleep 1
+  fi
 fi
 
-if ! $CLAUDE_ALREADY_RUNNING; then
-  # Build and start Claude command
-  CLAUDE_CMD="claude --model $MODEL --dangerously-skip-permissions"
-  [ -n "$DISALLOWED" ] && CLAUDE_CMD="$CLAUDE_CMD --disallowedTools \"$DISALLOWED\""
-  CLAUDE_CMD="$CLAUDE_CMD --add-dir $PROJECT_ROOT/.claude/harness/$HARNESS"
+# ── Start fresh Claude session ──────────────────
+CLAUDE_CMD="claude --model $MODEL --dangerously-skip-permissions"
+CLAUDE_CMD="$CLAUDE_CMD --add-dir $PROJECT_ROOT/.claude/harness/$HARNESS"
 
-  tmux send-keys -t "$PANE_ID" "cd $PROJECT_ROOT"
-  tmux send-keys -t "$PANE_ID" -H 0d
-  sleep 0.5
+tmux send-keys -t "$PANE_ID" "cd $PROJECT_ROOT"
+tmux send-keys -t "$PANE_ID" -H 0d
+sleep 0.5
 
-  tmux send-keys -t "$PANE_ID" "$CLAUDE_CMD"
-  tmux send-keys -t "$PANE_ID" -H 0d
+tmux send-keys -t "$PANE_ID" "$CLAUDE_CMD"
+tmux send-keys -t "$PANE_ID" -H 0d
 
-  # Wait for Claude TUI to be ready (poll for ❯ prompt, max 60s)
-  _WAIT=0
-  until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -qE '❯|> $'; do
-    sleep 2; _WAIT=$((_WAIT+2))
-    [ "$_WAIT" -ge 60 ] && { _log "WARNING: TUI timeout after 60s for $HARNESS, proceeding anyway"; break; }
-  done
-  sleep 2  # extra settle time
-fi
+# Wait for Claude TUI to be ready (poll for ❯ prompt, max 60s)
+_WAIT=0
+until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -qE '❯|> $'; do
+  sleep 2; _WAIT=$((_WAIT+2))
+  [ "$_WAIT" -ge 60 ] && { _log "WARNING: TUI timeout after 60s for $HARNESS, proceeding anyway"; break; }
+done
+sleep 2  # extra settle time
 
 # Generate seed prompt and inject it
 SEED_FILE="/tmp/${HARNESS}-launch-seed.txt"

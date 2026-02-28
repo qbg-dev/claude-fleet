@@ -2,8 +2,8 @@
 # {{HARNESS}}-start.sh — Launch or resume the {{HARNESS}} harness.
 #
 # Usage:
-#   bash .claude/scripts/{{HARNESS}}-start.sh                  # launch worker
-#   bash .claude/scripts/{{HARNESS}}-start.sh --monitor        # launch worker + monitor
+#   bash .claude/scripts/{{HARNESS}}-start.sh                  # launch worker + monitor (default)
+#   bash .claude/scripts/{{HARNESS}}-start.sh --no-monitor     # launch worker only
 #   bash .claude/scripts/{{HARNESS}}-start.sh --task <name>    # start from specific task
 #   bash .claude/scripts/{{HARNESS}}-start.sh --status         # check status
 #   bash .claude/scripts/{{HARNESS}}-start.sh --seed-only      # print seed prompt (no tmux)
@@ -18,10 +18,14 @@ set -euo pipefail
 
 HARNESS="{{HARNESS}}"
 PROJECT_ROOT="{{PROJECT_ROOT}}"
-PROGRESS="$PROJECT_ROOT/claude_files/${HARNESS}-progress.json"
+PROGRESS="$PROJECT_ROOT/.claude/harness/${HARNESS}/progress.json"
+# Legacy fallback — support old claude_files/ convention
+if [ ! -f "$PROGRESS" ] && [ -f "$PROJECT_ROOT/claude_files/${HARNESS}-progress.json" ]; then
+  PROGRESS="$PROJECT_ROOT/claude_files/${HARNESS}-progress.json"
+fi
 
 # ── Parse args ──────────────────────────────────────────────────
-WITH_MONITOR=false
+WITH_MONITOR=true
 SEED_ONLY=false
 STATUS_ONLY=false
 TASK=""
@@ -29,6 +33,7 @@ TASK=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --monitor)    WITH_MONITOR=true; shift ;;
+    --no-monitor) WITH_MONITOR=false; shift ;;
     --task)       TASK="$2"; shift 2 ;;
     --seed-only)  SEED_ONLY=true; shift ;;
     --status)     STATUS_ONLY=true; shift ;;
@@ -47,6 +52,25 @@ fi
 # ── Seed-only mode (for piping into existing session) ───────────
 if [ "$SEED_ONLY" = true ]; then
   exec bash "$PROJECT_ROOT/.claude/scripts/${HARNESS}-seed.sh"
+fi
+
+# ── Verify manifest exists ─────────────────────────────────────
+MANIFEST="$HOME/.claude-ops/harness/manifests/$HARNESS/manifest.json"
+if [ ! -f "$MANIFEST" ]; then
+  echo "WARNING: No manifest at $MANIFEST" >&2
+  echo "  Creating one now (stop hooks need this to enforce harness behavior)..." >&2
+  mkdir -p "$(dirname "$MANIFEST")"
+  cat > "$MANIFEST" << MEOF
+{
+  "name": "$HARNESS",
+  "project": "$PROJECT_ROOT",
+  "status": "active",
+  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "lifecycle": "bounded",
+  "description": "Auto-created by start script"
+}
+MEOF
+  echo "  Created: $MANIFEST" >&2
 fi
 
 # ── Update progress.json ────────────────────────────────────────

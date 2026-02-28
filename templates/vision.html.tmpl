@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{HARNESS}} — Vision</title>
+<style>
+/* qbg.dev monospace-minimal. Dark mode. Dense. Journey: Hook → Context → Deliverables → Evidence → Action. */
+:root {
+  --ink: #1c1917; --bg: #fafaf9; --accent: #f97316;
+  --muted: #78716c; --border: #e7e5e4; --card: #fff;
+  --success: #16a34a; --danger: #dc2626; --info: #2563eb; --warn: #d97706;
+  --code-bg: #f5f5f4;
+}
+[data-theme="dark"] {
+  --ink: #e7e5e4; --bg: #0c0a09; --accent: #fb923c;
+  --muted: #a8a29e; --border: #292524; --card: #1c1917;
+  --success: #4ade80; --danger: #f87171; --info: #60a5fa; --warn: #fbbf24;
+  --code-bg: #1c1917;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Source Code Pro','SF Mono','Menlo',monospace; font-weight: 500; background: var(--bg); color: var(--ink); line-height: 1.5; font-size: 13px; }
+main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+/* Typography */
+h1 { font-size: 2.25rem; font-weight: 900; letter-spacing: -0.03em; margin-bottom: 4px; line-height: 1.15; }
+h1 .harness-tag { font-size: 1rem; font-weight: 500; color: var(--muted); display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.08em; }
+h2 { font-size: 1.1rem; font-weight: 700; margin: 28px 0 10px; border-left: 3px solid var(--accent); padding-left: 10px; }
+h3 { font-size: 0.9rem; font-weight: 700; margin: 14px 0 6px; }
+h4 { font-size: 0.75rem; font-weight: 700; margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+p, li { font-size: 0.82rem; margin-bottom: 5px; line-height: 1.6; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.muted { color: var(--muted); font-size: 0.78rem; }
+.subtitle { color: var(--muted); font-size: 0.8rem; margin-bottom: 20px; }
+
+/* Layout */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+@media(max-width:640px){ .grid-2,.grid-3,.grid-4{ grid-template-columns:1fr; } }
+
+/* Card */
+.card { background: var(--card); border: 1px solid var(--border); padding: 10px; margin-bottom: 8px; }
+
+/* Hook — always-visible takeaway at top */
+.hook { background: var(--card); border: 2px solid var(--accent); padding: 14px 18px; margin: 14px 0; }
+.hook h2 { margin-top: 0; border-left: none; padding-left: 0; color: var(--accent); font-size: 1rem; }
+
+/* Action — priority next-steps at bottom */
+.action { background: var(--card); border: 2px solid var(--accent); border-left-width: 4px; padding: 14px 18px; margin: 20px 0; }
+.action h2 { margin-top: 0; border-left: none; padding-left: 0; }
+
+/* Metric */
+.metric { text-align: center; padding: 10px 6px; }
+.metric .value { font-size: 1.75rem; font-weight: 900; color: var(--accent); }
+.metric .label { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 3px; color: var(--muted); }
+
+/* Status badges */
+.badge { display: inline-block; padding: 1px 6px; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid; }
+.badge-ok { color: var(--success); border-color: var(--success); }
+.badge-fail { color: var(--danger); border-color: var(--danger); }
+.badge-warn { color: var(--warn); border-color: var(--warn); }
+.badge-info { color: var(--info); border-color: var(--info); }
+/* Inline status dot */
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+.dot-ok { background: var(--success); }
+.dot-fail { background: var(--danger); }
+.dot-warn { background: var(--warn); }
+
+/* Dense list */
+.dense-list { list-style: none; padding: 0; margin-left: 2px; }
+.dense-list li { padding: 2px 0 2px 12px; position: relative; font-size: 0.78rem; }
+.dense-list li:before { content: "\25B8"; position: absolute; left: 0; color: var(--accent); font-size: 9px; top: 4px; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 0.75rem; margin: 8px 0; }
+th { text-align: left; padding: 4px 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid var(--border); font-size: 0.65rem; }
+td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+
+/* Code */
+code { font-family: inherit; font-size: 0.73rem; background: var(--code-bg); padding: 1px 4px; border: 1px solid var(--border); }
+pre { background: var(--code-bg); border: 1px solid var(--border); padding: 8px; margin: 6px 0; overflow-x: auto; font-size: 0.73rem; line-height: 1.4; }
+pre code { background: none; border: none; padding: 0; }
+
+/* Collapsibles */
+.collapsible { margin: 6px 0; }
+.collapsible-header { cursor: pointer; padding: 7px 10px; border-left: 3px solid var(--border); display: flex; align-items: center; justify-content: space-between; user-select: none; font-size: 0.82rem; font-weight: 700; }
+.collapsible-header:hover { border-left-color: var(--accent); }
+.collapsible-header .arrow { transition: transform 0.2s; color: var(--accent); font-size: 9px; }
+.collapsible.open .arrow { transform: rotate(90deg); }
+.collapsible-content { max-height: 0; overflow: hidden; transition: max-height 0.3s; padding: 0 10px; }
+.collapsible.open .collapsible-content { max-height: 10000px; padding: 8px 10px 10px 14px; }
+
+/* Compare grid */
+.compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.compare-col { background: var(--card); border: 1px solid var(--border); padding: 10px; }
+.compare-col h3 { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+.compare-col.before h3 { color: var(--danger); }
+.compare-col.after h3 { color: var(--success); }
+@media(max-width:640px){ .compare-grid { grid-template-columns: 1fr; } }
+
+/* Wave / task graph */
+.wave { margin: 10px 0; border-left: 2px solid var(--border); padding-left: 12px; }
+.wave-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; }
+.task-row { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.task-row:last-child { border-bottom: none; }
+.task-id { font-size: 0.7rem; color: var(--muted); min-width: 120px; flex-shrink: 0; }
+.task-desc { flex: 1; font-size: 0.78rem; }
+.task-worker { font-size: 0.65rem; color: var(--info); margin-top: 2px; }
+
+/* Risk / insight callouts */
+.callout { border-left: 3px solid; padding: 8px 12px; margin: 6px 0; font-size: 0.8rem; }
+.callout-danger { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.callout-warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.callout-info { border-color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); }
+.callout-success { border-color: var(--success); background: color-mix(in srgb, var(--success) 8%, transparent); }
+.callout strong { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+.callout-danger strong { color: var(--danger); }
+.callout-warn strong { color: var(--warn); }
+.callout-info strong { color: var(--info); }
+.callout-success strong { color: var(--success); }
+
+/* Mermaid */
+.diagram-container { background: var(--card); border: 1px solid var(--border); padding: 12px; margin: 10px 0; }
+.mermaid { padding: 8px; }
+
+/* Screenshot */
+.screenshot { width: 100%; border: 1px solid var(--border); margin: 6px 0; display: block; }
+
+/* Footer */
+footer { margin-top: 28px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 0.72rem; font-weight: 600; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; color: var(--muted); }
+
+/* Theme toggle */
+.theme-toggle { position: fixed; top: 8px; right: 8px; z-index: 100; background: var(--card); color: var(--ink); border: 1px solid var(--border); padding: 3px 8px; cursor: pointer; font-family: inherit; font-size: 0.68rem; font-weight: 700; }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="theme-toggle">Dark</button>
+<main>
+
+  <span class="harness-tag">{{HARNESS}}</span>
+  <h1>{{TITLE}}</h1>
+  <p class="subtitle">Vision — [DATE] · Gate: Warren Approval Required</p>
+
+  <!-- ═══ 1. HOOK — always visible, the bottom line ═══ -->
+  <div class="hook">
+    <h2>⚡ Bottom Line</h2>
+    <p><strong>[One sentence: what changes when this is done?]</strong></p>
+    <ul class="dense-list">
+      <li><strong>Why now:</strong> [Urgency / cost of waiting]</li>
+      <li><strong>Scope:</strong> [N workers, N tasks, N sessions estimated]</li>
+    </ul>
+  </div>
+
+  <!-- ═══ 2. CONTEXT — the world before ═══ -->
+  <h2>Current State</h2>
+  <div class="compare-grid">
+    <div class="compare-col before">
+      <h3>Pain Points</h3>
+      <ul class="dense-list">
+        <li>[Pain 1]</li>
+        <li>[Pain 2]</li>
+        <li>[Pain 3]</li>
+      </ul>
+    </div>
+    <div class="compare-col after">
+      <h3>After This Work</h3>
+      <ul class="dense-list">
+        <li>[Outcome 1]</li>
+        <li>[Outcome 2]</li>
+        <li>[Outcome 3]</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ═══ 3. INSIGHT — key metrics, one diagram ═══ -->
+  <h2>Key Metrics</h2>
+  <div class="grid-4">
+    <div class="card metric">
+      <div class="value">[N]</div>
+      <div class="label">[Metric A]</div>
+    </div>
+    <div class="card metric">
+      <div class="value">[N]</div>
+      <div class="label">[Metric B]</div>
+    </div>
+    <div class="card metric">
+      <div class="value">[N]</div>
+      <div class="label">[Metric C]</div>
+    </div>
+    <div class="card metric">
+      <div class="value">[N]</div>
+      <div class="label">[Metric D]</div>
+    </div>
+  </div>
+
+  <!-- Optional: ONE diagram. Delete if not needed. -->
+  <!--
+  <div class="diagram-container">
+    <div class="mermaid">
+flowchart LR
+    A[Input] --&#45;&#45;&gt; B[Process] --&#45;&#45;&gt; C[Output]
+    </div>
+  </div>
+  -->
+
+  <!-- ═══ 4. DELIVERABLES — task graph ═══ -->
+  <h2>Task Graph</h2>
+
+  <div class="wave">
+    <div class="wave-title">Wave 0 — Gate: Warren Approval</div>
+    <div class="task-row">
+      <div class="task-id">w0-vision</div>
+      <div>
+        <div class="task-desc">[This document]</div>
+        <div class="task-worker">all workers</div>
+      </div>
+      <div><span class="badge badge-warn">GATE</span></div>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-title">Wave 1 — [Theme]</div>
+    <div class="task-row">
+      <div class="task-id">w1-[task]</div>
+      <div>
+        <div class="task-desc">[Description. ~N lines.]</div>
+        <div class="task-worker">[worker-name]</div>
+      </div>
+      <div><span class="badge badge-info">READY</span></div>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-title">Wave 2 — [Theme]</div>
+    <div class="task-row">
+      <div class="task-id">w2-[task]</div>
+      <div>
+        <div class="task-desc">[Description]</div>
+        <div class="task-worker">[worker-name]</div>
+      </div>
+      <div><span class="badge badge-fail">BLOCKED on w1</span></div>
+    </div>
+  </div>
+
+  <!-- ═══ EVIDENCE — risks, details (collapsed) ═══ -->
+  <div class="collapsible" data-collapsible="closed">
+    <div class="collapsible-header">
+      <span>⚠ Risks &amp; Constraints</span>
+      <span class="arrow">▶</span>
+    </div>
+    <div class="collapsible-content">
+      <div class="callout callout-danger">
+        <strong>High</strong>
+        [Risk description and mitigation]
+      </div>
+      <div class="callout callout-warn">
+        <strong>Medium</strong>
+        [Risk description and mitigation]
+      </div>
+    </div>
+  </div>
+
+  <div class="collapsible" data-collapsible="closed">
+    <div class="collapsible-header">
+      <span>📋 Success Criteria (Full)</span>
+      <span class="arrow">▶</span>
+    </div>
+    <div class="collapsible-content">
+      <table>
+        <thead><tr><th>#</th><th>Criterion</th><th>How to Verify</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>[Concrete observable outcome]</td><td>[URL / command / metric]</td></tr>
+          <tr><td>2</td><td>[Concrete observable outcome]</td><td>[URL / command / metric]</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══ 5. ACTION — what Warren should approve ═══ -->
+  <div class="action">
+    <h2>📋 Awaiting Approval</h2>
+    <ul class="dense-list">
+      <li><strong>Scope:</strong> [N tasks across N waves]</li>
+      <li><strong>Workers:</strong> [list workers]</li>
+      <li><strong>Decision needed:</strong> [specific question — e.g. "Approve wave sequence? Any descope?"]</li>
+    </ul>
+  </div>
+
+  <footer>
+    <span>{{HARNESS}} — vision sketch</span>
+    <span>[DATE]</span>
+  </footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var t = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', t);
+  var btn = document.getElementById('theme-toggle');
+  if (btn) {
+    btn.textContent = t === 'dark' ? 'Light' : 'Dark';
+    btn.onclick = function() {
+      var c = document.documentElement.getAttribute('data-theme');
+      var n = c === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', n);
+      localStorage.setItem('theme', n);
+      btn.textContent = n === 'dark' ? 'Light' : 'Dark';
+      mermaid.initialize({ startOnLoad: false, theme: n === 'dark' ? 'dark' : 'default' });
+    };
+  }
+  mermaid.initialize({ startOnLoad: true, theme: t === 'dark' ? 'dark' : 'default' });
+  document.querySelectorAll('[data-collapsible]').forEach(function(s) {
+    s.classList.add('collapsible');
+    if (s.getAttribute('data-collapsible') === 'open') s.classList.add('open');
+  });
+  document.querySelectorAll('.collapsible-header').forEach(function(h) {
+    h.onclick = function() { this.closest('.collapsible').classList.toggle('open'); };
+  });
+});
+</script>
+</body>
+</html>

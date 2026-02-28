@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{HARNESS}} — Wave Report</title>
+<link rel="stylesheet" href="report.css">
+</head>
+<body>
+<button class="theme-toggle" id="theme-toggle">Dark</button>
+<main>
+  <h1>{{HARNESS}} — Wave Report</h1>
+  <p class="muted">[DATE] · [N] features · [STATUS]</p>
+
+  <!-- ═══ HOOK: What this wave achieved in one sentence ═══ -->
+  <div class="hook">
+    <h2>Bottom Line</h2>
+    <p>[One sentence: what changed and why it matters.]</p>
+    <div class="grid-4">
+      <div class="metric"><div class="value">[N/N]</div><div class="label">Tasks</div></div>
+      <div class="metric"><div class="value">[N]</div><div class="label">Files</div></div>
+      <div class="metric"><div class="value">[Xs]</div><div class="label">Deploy</div></div>
+      <div class="metric"><div class="value">[N]</div><div class="label">Regressions</div></div>
+    </div>
+  </div>
+
+  <!-- ═══ OPTIONAL: Architecture / flow diagram ═══
+       Use Mermaid if it helps explain what changed.
+  <div class="diagram-container">
+    <div class="mermaid">
+flowchart LR
+    A[User] --> B[Filter] --> C[API] --> D[StarRocks]
+    </div>
+  </div>
+  -->
+
+  <!-- ═══ TASKS: One collapsible per task ═══
+       Every task gets its own section with:
+       - What was done (before/after)
+       - What was learned
+       - E2E verification (MANDATORY — actual proof, not "deployed and verified")
+
+       "Deployed and verified" is NOT evidence.
+       Show: the URL you opened, the curl you ran, the screenshot you took,
+       the test log, the API response. If you can't prove it, it's not done. -->
+
+  <h2>Tasks</h2>
+
+  <div class="collapsible" data-collapsible="open">
+    <div class="collapsible-header">
+      <span><strong>[task-id]</strong> — [Task Title]</span>
+      <span class="arrow">▸</span>
+    </div>
+    <div class="collapsible-content">
+      <h4>What changed</h4>
+      <p><strong>Before:</strong> [old behavior]</p>
+      <p><strong>After:</strong> [new behavior]</p>
+      <p class="muted">Files: <code>[path]</code>, <code>[path]</code></p>
+
+      <h4>What was learned</h4>
+      <p>[Patterns discovered, gotchas hit, decisions made. Skip if trivial.]</p>
+
+      <h4>E2E Verification</h4>
+      <p><strong>Test:</strong> [What you did — URL opened, command run, API called]</p>
+      <p><strong>Result:</strong> [What you observed — status code, UI state, log output]</p>
+      <!-- <img class="screenshot" src="screenshots/[name].png" alt="[description]"> -->
+      <!-- <pre><code>[curl output or test log]</code></pre> -->
+    </div>
+  </div>
+
+  <!-- Duplicate the collapsible above for each task in this wave -->
+
+  <!-- ═══ GAPS (optional — delete if none) ═══ -->
+  <!--
+  <h2>Gaps</h2>
+  <div class="card">
+    <h3>[Gap title]</h3>
+    <p>[What's missing and why it matters]</p>
+  </div>
+  -->
+
+  <!-- ═══ ACTION: What should happen next ═══ -->
+  <div class="action">
+    <h2>Next</h2>
+    <ul class="dense-list">
+      <li>[Next wave proposal or gap to address]</li>
+      <li>[Blocking issue if any]</li>
+    </ul>
+  </div>
+
+  <footer>
+    <span>{{HARNESS}}</span>
+    <span>[N] features, wave [N]</span>
+    <span>[DATE]</span>
+  </footer>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var t = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', t);
+  var btn = document.getElementById('theme-toggle');
+  if (btn) {
+    btn.textContent = t === 'dark' ? 'Light' : 'Dark';
+    btn.onclick = function() {
+      var c = document.documentElement.getAttribute('data-theme');
+      var n = c === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', n);
+      localStorage.setItem('theme', n);
+      btn.textContent = n === 'dark' ? 'Light' : 'Dark';
+    };
+  }
+  mermaid.initialize({ startOnLoad: true, theme: t === 'dark' ? 'dark' : 'default' });
+  document.querySelectorAll('[data-collapsible]').forEach(function(s) {
+    s.classList.add('collapsible');
+    if (s.getAttribute('data-collapsible') === 'open') s.classList.add('open');
+  });
+  document.querySelectorAll('.collapsible-header').forEach(function(h) {
+    h.onclick = function() { this.closest('.collapsible').classList.toggle('open'); };
+  });
+});
+</script>
+</body>
+</html>

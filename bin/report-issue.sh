@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════
-# report-issue.sh — Structured issue reporting for agents
+# report-issue.sh — Structured issue & feature request reporting
 # ══════════════════════════════════════════════════════════════════
 # Any agent (sweep, harness worker, monitor) can call this to file
-# a structured issue. Issues are stored in claude_files/agent-issues.jsonl
-# and a wisp is emitted to harness-beads.json for visibility.
+# a structured issue or feature request.
 #
-# Usage:
+# Bug reports: stored in claude_files/agent-issues.jsonl (per-project)
+# Feature requests: stored in ~/.claude-ops/state/feature-requests.jsonl (global)
+#
+# Usage (bug report — default):
 #   report-issue --title "Short description" \
 #     --severity "medium" \
 #     --category "permissions" \
@@ -15,78 +17,85 @@
 #     [--file "/path/if/relevant"] \
 #     [--project "/path/to/project"]
 #
-# Categories: permissions, config, bug, infra, suggestion
-# Severities: low, medium, high, critical
+# Usage (feature request):
+#   report-issue --type feature \
+#     --title "Short description" \
+#     --description "Detailed description" \
+#     [--priority "high"] \
+#     [--category "infra"] \
+#     [--harness "name"]
 #
-# Good issue writing:
-#   - Title: what happened (not what you expected)
-#   - Description: what you were doing, what went wrong, what you expected
-#   - Include the exact error message or behavior
-#   - Include the file path / command that failed
-#   - Suggest a fix if you have one
+# Bug categories: permissions, config, bug, infra, suggestion
+# Bug severities: low, medium, high, critical
+# Feature priorities: low, medium, high
 # ══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 # ── Defaults ───────────────────────────────────────────────────
+REPORT_TYPE="bug"
 TITLE=""
 SEVERITY=""
+PRIORITY=""
 CATEGORY=""
 DESCRIPTION=""
 HARNESS=""
 FILE_PATH=""
 PROJECT_ROOT=""
+GITHUB=false
+DRY_RUN=false
+GITHUB_REPO="${CLAUDE_OPS_GITHUB_REPO:-qbg-dev/claude-ops}"
 
 # ── CLI parsing ────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
   case "$1" in
+    --type)        REPORT_TYPE="$2"; shift 2 ;;
     --title)       TITLE="$2"; shift 2 ;;
     --severity)    SEVERITY="$2"; shift 2 ;;
+    --priority)    PRIORITY="$2"; shift 2 ;;
     --category)    CATEGORY="$2"; shift 2 ;;
     --description) DESCRIPTION="$2"; shift 2 ;;
     --harness)     HARNESS="$2"; shift 2 ;;
     --file)        FILE_PATH="$2"; shift 2 ;;
     --project)     PROJECT_ROOT="$2"; shift 2 ;;
+    --github)      GITHUB=true; shift ;;
+    --dry-run)     DRY_RUN=true; shift ;;
+    --repo)        GITHUB_REPO="$2"; shift 2 ;;
     --help|-h)
       cat <<'HELP'
-report-issue — Structured issue reporting for agents
+report-issue — Structured issue & feature request reporting
 
-Usage:
+Usage (bug report — default):
   report-issue --title "Short description" \
     --severity "medium" \
     --category "permissions" \
     --description "Detailed description" \
-    [--harness "name"] \
-    [--file "/path/if/relevant"] \
-    [--project "/path/to/project"]
+    [--harness "name"] [--file "/path"] [--project "/path"]
 
-Required:
-  --title        What happened (short, descriptive)
-  --severity     low | medium | high | critical
-  --category     permissions | config | bug | infra | suggestion
-  --description  Detailed context: what you were doing, what went wrong,
-                 exact error message, file/command that failed, suggested fix
+Usage (feature request):
+  report-issue --type feature \
+    --title "Short description" \
+    --description "Detailed description" \
+    [--priority "high"] [--category "infra"] [--harness "name"]
 
-Optional:
-  --harness      Which harness encountered the issue
-  --file         File path relevant to the issue
-  --project      Project root (default: auto-detect from manifests)
+Bug required:  --title, --severity, --category, --description
+Feature required: --title, --description
+Feature optional: --priority (default: medium), --category
 
-Good issue writing:
-  - Title: what happened (not what you expected)
-  - Description: what you were doing, what went wrong, what you expected
-  - Include the exact error message or behavior
-  - Include the file path / command that failed
-  - Suggest a fix if you have one
+Categories: permissions, config, bug, infra, suggestion
+Severities: low, medium, high, critical
+Priorities: low, medium, high
 
 Examples:
+  # Bug report
   report-issue --title "Permission denied writing reflections" \
     --severity medium --category permissions \
-    --description "Write(**/claude_files/*-reflections.jsonl) pattern doesn't match new file creation"
+    --description "Write pattern doesn't match new file creation"
 
-  report-issue --title "Bastion SSH timeout during meta-reflect" \
-    --severity low --category infra \
-    --harness meta-reflect \
-    --description "SSH to bastion hung for 30s during context gathering. Workaround: skipped MySQL check."
+  # Feature request
+  report-issue --type feature \
+    --title "Add --dry-run to all sweeps" \
+    --description "Each sweep should support --dry-run" \
+    --priority high
 HELP
       exit 0
       ;;
@@ -94,12 +103,21 @@ HELP
   esac
 done
 
-# ── Validate required fields ──────────────────────────────────
+# ── Validate type ────────────────────────────────────────────
+case "$REPORT_TYPE" in
+  bug|feature) ;;
+  *) echo "ERROR: Invalid type '$REPORT_TYPE'. Must be: bug|feature" >&2; exit 1 ;;
+esac
+
+# ── Validate required fields (depends on type) ──────────────
 missing=()
 [ -z "$TITLE" ] && missing+=("--title")
-[ -z "$SEVERITY" ] && missing+=("--severity")
-[ -z "$CATEGORY" ] && missing+=("--category")
 [ -z "$DESCRIPTION" ] && missing+=("--description")
+
+if [ "$REPORT_TYPE" = "bug" ]; then
+  [ -z "$SEVERITY" ] && missing+=("--severity")
+  [ -z "$CATEGORY" ] && missing+=("--category")
+fi
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo "ERROR: Missing required arguments: ${missing[*]}" >&2
@@ -108,47 +126,64 @@ if [ ${#missing[@]} -gt 0 ]; then
 fi
 
 # ── Validate enum values ──────────────────────────────────────
-case "$SEVERITY" in
-  low|medium|high|critical) ;;
-  *) echo "ERROR: Invalid severity '$SEVERITY'. Must be: low|medium|high|critical" >&2; exit 1 ;;
-esac
+if [ "$REPORT_TYPE" = "bug" ]; then
+  case "$SEVERITY" in
+    low|medium|high|critical) ;;
+    *) echo "ERROR: Invalid severity '$SEVERITY'. Must be: low|medium|high|critical" >&2; exit 1 ;;
+  esac
 
-case "$CATEGORY" in
-  permissions|config|bug|infra|suggestion) ;;
-  *) echo "ERROR: Invalid category '$CATEGORY'. Must be: permissions|config|bug|infra|suggestion" >&2; exit 1 ;;
-esac
+  case "$CATEGORY" in
+    permissions|config|bug|infra|suggestion) ;;
+    *) echo "ERROR: Invalid category '$CATEGORY'. Must be: permissions|config|bug|infra|suggestion" >&2; exit 1 ;;
+  esac
+fi
 
-# ── Resolve project root ──────────────────────────────────────
-if [ -z "$PROJECT_ROOT" ]; then
-  # Try to find from active harness manifests
+if [ "$REPORT_TYPE" = "feature" ]; then
+  [ -z "$PRIORITY" ] && PRIORITY="medium"
+  case "$PRIORITY" in
+    low|medium|high) ;;
+    *) echo "ERROR: Invalid priority '$PRIORITY'. Must be: low|medium|high" >&2; exit 1 ;;
+  esac
+  # Category is optional for features
+  if [ -n "$CATEGORY" ]; then
+    case "$CATEGORY" in
+      permissions|config|bug|infra|suggestion) ;;
+      *) echo "ERROR: Invalid category '$CATEGORY'. Must be: permissions|config|bug|infra|suggestion" >&2; exit 1 ;;
+    esac
+  fi
+fi
+
+# ── Resolve project root (bugs only — features are global) ───
+if [ "$REPORT_TYPE" = "bug" ] && [ -z "$PROJECT_ROOT" ]; then
   source "$HOME/.claude-ops/lib/harness-jq.sh" 2>/dev/null || true
   if command -v harness_list_active &>/dev/null; then
-    # harness_list_active returns "name|root|progress" per line
     first_active=$(harness_list_active 2>/dev/null | head -1 || true)
     if [ -n "$first_active" ]; then
       first_name=$(echo "$first_active" | cut -d'|' -f1)
       PROJECT_ROOT=$(harness_project_root "$first_name" 2>/dev/null) || true
     fi
   fi
-  # Fallback to Wechat project
-  [ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="/Users/wz/Desktop/zPersonalProjects/Wechat"
+  [ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 fi
 
-# ── Generate issue ID ─────────────────────────────────────────
+# ── Generate ID ──────────────────────────────────────────────
 TIMESTAMP=$(date +%s)
 RANDOM_SUFFIX=$(xxd -l 4 -p /dev/urandom | cut -c1-4)
-ISSUE_ID="issue-${TIMESTAMP}-${RANDOM_SUFFIX}"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+if [ "$REPORT_TYPE" = "feature" ]; then
+  RECORD_ID="feat-${TIMESTAMP}-${RANDOM_SUFFIX}"
+else
+  RECORD_ID="issue-${TIMESTAMP}-${RANDOM_SUFFIX}"
+fi
 
 # ── Detect reporter identity ──────────────────────────────────
 REPORTER=""
-# Check if we're in a sweep context
 if [ -n "${SWEEP_NAME:-}" ]; then
   REPORTER="sweep:${SWEEP_NAME}"
 elif [ -n "$HARNESS" ]; then
   REPORTER="harness:${HARNESS}"
 else
-  # Try to detect from tmux pane (walk process tree, not display-message which returns focused pane)
   _find_own_pane() {
     local search_pid=$$
     local pane_map=$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)
@@ -166,14 +201,13 @@ else
   }
   PANE_ID=$(_find_own_pane 2>/dev/null || echo "")
   if [ -n "$PANE_ID" ]; then
-    META_FILE="/tmp/tmux_pane_meta_${PANE_ID}"
-    if [ -f "$META_FILE" ]; then
-      harness_from_meta=$(jq -r '.harness // empty' "$META_FILE" 2>/dev/null)
+    _PANE_REGISTRY="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}/pane-registry.json"
+    if [ -f "$_PANE_REGISTRY" ]; then
+      harness_from_meta=$(jq -r --arg pid "$PANE_ID" '.[$pid].harness // empty' "$_PANE_REGISTRY" 2>/dev/null)
       if [ -n "$harness_from_meta" ]; then
         REPORTER="harness:${harness_from_meta}"
       fi
     fi
-    # Fallback: use pane coordinates
     if [ -z "$REPORTER" ]; then
       PANE_TARGET=$(_pane_id_to_target "$PANE_ID" 2>/dev/null || echo "unknown")
       REPORTER="agent:${PANE_TARGET}"
@@ -182,50 +216,152 @@ else
 fi
 [ -z "$REPORTER" ] && REPORTER="unknown"
 
-# ── Build context object ──────────────────────────────────────
+# ── Build context ─────────────────────────────────────────────
 PANE_TARGET=$(_pane_id_to_target "${PANE_ID:-}" 2>/dev/null || echo "")
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
 
-# ── Write issue to JSONL ──────────────────────────────────────
-ISSUES_FILE="$PROJECT_ROOT/claude_files/agent-issues.jsonl"
-mkdir -p "$(dirname "$ISSUES_FILE")"
+# ── Write record ─────────────────────────────────────────────
+if [ "$REPORT_TYPE" = "feature" ]; then
+  # Feature requests go to global state file
+  OUTPUT_FILE="$HOME/.claude-ops/state/feature-requests.jsonl"
+  mkdir -p "$(dirname "$OUTPUT_FILE")"
 
-jq -n -c \
-  --arg id "$ISSUE_ID" \
-  --arg ts "$TS" \
-  --arg reporter "$REPORTER" \
-  --arg title "$TITLE" \
-  --arg severity "$SEVERITY" \
-  --arg category "$CATEGORY" \
-  --arg description "$DESCRIPTION" \
-  --arg harness "$HARNESS" \
-  --arg pane "$PANE_TARGET" \
-  --arg session_id "$SESSION_ID" \
-  --arg file "$FILE_PATH" \
-  '{
-    id: $id,
-    ts: $ts,
-    reporter: $reporter,
-    title: $title,
-    severity: $severity,
-    category: $category,
-    description: $description,
-    harness: (if $harness != "" then $harness else null end),
-    context: {
-      pane: (if $pane != "" then $pane else null end),
-      session_id: (if $session_id != "" then $session_id else null end),
-      file: (if $file != "" then $file else null end)
-    },
-    status: "open",
-    resolution: null
-  }' >> "$ISSUES_FILE"
+  jq -n -c \
+    --arg id "$RECORD_ID" \
+    --arg ts "$TS" \
+    --arg type "feature-request" \
+    --arg reporter "$REPORTER" \
+    --arg title "$TITLE" \
+    --arg description "$DESCRIPTION" \
+    --arg priority "$PRIORITY" \
+    --arg category "$CATEGORY" \
+    --arg harness "$HARNESS" \
+    '{
+      id: $id,
+      ts: $ts,
+      type: $type,
+      reporter: $reporter,
+      title: $title,
+      description: $description,
+      priority: $priority,
+      category: (if $category != "" then $category else null end),
+      harness: (if $harness != "" then $harness else null end),
+      status: "open",
+      resolution: null
+    }' >> "$OUTPUT_FILE"
+else
+  # Bug reports go to per-project issues file
+  OUTPUT_FILE="$PROJECT_ROOT/claude_files/agent-issues.jsonl"
+  mkdir -p "$(dirname "$OUTPUT_FILE")"
 
-# ── Emit wisp ─────────────────────────────────────────────────
-BEAD_SCRIPT="$HOME/.claude-ops/lib/bead.sh"
-if [ -f "$BEAD_SCRIPT" ]; then
-  WISP_MSG="[${SEVERITY}] ${CATEGORY}: ${TITLE}"
-  bash "$BEAD_SCRIPT" wisp "$REPORTER" "$WISP_MSG" "issue-triage" 2>/dev/null || true
+  jq -n -c \
+    --arg id "$RECORD_ID" \
+    --arg ts "$TS" \
+    --arg reporter "$REPORTER" \
+    --arg title "$TITLE" \
+    --arg severity "$SEVERITY" \
+    --arg category "$CATEGORY" \
+    --arg description "$DESCRIPTION" \
+    --arg harness "$HARNESS" \
+    --arg pane "$PANE_TARGET" \
+    --arg session_id "$SESSION_ID" \
+    --arg file "$FILE_PATH" \
+    '{
+      id: $id,
+      ts: $ts,
+      reporter: $reporter,
+      title: $title,
+      severity: $severity,
+      category: $category,
+      description: $description,
+      harness: (if $harness != "" then $harness else null end),
+      context: {
+        pane: (if $pane != "" then $pane else null end),
+        session_id: (if $session_id != "" then $session_id else null end),
+        file: (if $file != "" then $file else null end)
+      },
+      status: "open",
+      resolution: null
+    }' >> "$OUTPUT_FILE"
+fi
+
+# ── GitHub issue creation ─────────────────────────────────────
+if [ "$GITHUB" = "true" ]; then
+  if ! command -v gh &>/dev/null; then
+    echo "WARN: gh CLI not found — skipping GitHub issue creation" >&2
+  else
+    # Map severity/priority to GitHub labels
+    GH_LABELS=""
+    if [ "$REPORT_TYPE" = "bug" ]; then
+      case "$SEVERITY" in
+        critical) GH_LABELS="bug,priority:critical" ;;
+        high)     GH_LABELS="bug,priority:high" ;;
+        medium)   GH_LABELS="bug" ;;
+        low)      GH_LABELS="bug,priority:low" ;;
+      esac
+      [ -n "$CATEGORY" ] && [ "$CATEGORY" != "bug" ] && GH_LABELS="${GH_LABELS},${CATEGORY}"
+    else
+      case "$PRIORITY" in
+        high)   GH_LABELS="enhancement,priority:high" ;;
+        medium) GH_LABELS="enhancement" ;;
+        low)    GH_LABELS="enhancement,priority:low" ;;
+      esac
+    fi
+
+    # Build structured body
+    _TYPE_LABEL="Bug"
+    [ "$REPORT_TYPE" = "feature" ] && _TYPE_LABEL="Feature"
+    GH_BODY="## ${_TYPE_LABEL} Report
+
+**Reporter:** ${REPORTER}
+**Harness:** ${HARNESS:-n/a}
+**Session:** ${SESSION_ID:-n/a}
+**Local ID:** ${RECORD_ID}
+
+### Description
+
+${DESCRIPTION}"
+    [ -n "$FILE_PATH" ] && GH_BODY="${GH_BODY}
+
+**File:** \`${FILE_PATH}\`"
+    [ "$REPORT_TYPE" = "bug" ] && GH_BODY="${GH_BODY}
+
+**Severity:** ${SEVERITY}
+**Category:** ${CATEGORY}"
+    [ "$REPORT_TYPE" = "feature" ] && GH_BODY="${GH_BODY}
+
+**Priority:** ${PRIORITY}"
+    GH_BODY="${GH_BODY}
+
+---
+*Filed automatically by claude-ops agent*"
+
+    if [ "$DRY_RUN" = "true" ]; then
+      echo "DRY-RUN: Would create GitHub issue on ${GITHUB_REPO}:" >&2
+      echo "  Title: ${TITLE}" >&2
+      echo "  Labels: ${GH_LABELS}" >&2
+      echo "  Body length: ${#GH_BODY} chars" >&2
+    else
+      GH_URL=$(gh issue create \
+        --repo "$GITHUB_REPO" \
+        --title "$TITLE" \
+        --body "$GH_BODY" \
+        --label "$GH_LABELS" \
+        2>/dev/null || echo "")
+      if [ -n "$GH_URL" ]; then
+        echo "GitHub: $GH_URL" >&2
+        # Publish bus event for observability
+        if command -v bus_publish &>/dev/null; then
+          bus_publish "agent.issue-filed" \
+            "$(jq -nc --arg id "$RECORD_ID" --arg url "$GH_URL" --arg title "$TITLE" --arg reporter "$REPORTER" \
+              '{id:$id,github_url:$url,title:$title,reporter:$reporter}')" 2>/dev/null || true
+        fi
+      else
+        echo "WARN: Failed to create GitHub issue" >&2
+      fi
+    fi
+  fi
 fi
 
 # ── Output ────────────────────────────────────────────────────
-echo "$ISSUE_ID"
+echo "$RECORD_ID"

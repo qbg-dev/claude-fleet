@@ -1,5 +1,0 @@
-{
-  "description": "Liveness probe — detect dead agents and auto-restart",
-  "interval": 240,
-  "scope": "per-harness"
-}

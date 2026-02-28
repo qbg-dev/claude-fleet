@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# google-auth.sh — Shared Google OAuth token refresh for gmail, drive, calendar.
+# Usage: source ~/.claude-ops/lib/google-auth.sh && TOKEN=$(google_auth gmail)
+#
+# To set up:
+# 1. Create a Google Cloud project and enable the Gmail/Drive/Calendar APIs
+# 2. Create OAuth 2.0 credentials (Desktop app type)
+# 3. Fill in your client ID and secret below
+# 4. Run the auth flow once to generate refresh tokens
+# 5. Copy this file to google-auth.sh (which is gitignored)
+
+_GOOGLE_CLIENT_ID="YOUR_CLIENT_ID.apps.googleusercontent.com"
+_GOOGLE_CLIENT_SECRET="YOUR_CLIENT_SECRET"
+
+google_auth() {
+  local service="$1"
+  local token_file refresh_token access_token expiry now margin=60
+
+  case "$service" in
+    gmail)   token_file="$HOME/.claude-ops/state/tokens/gmail.json" ;;
+    drive)   token_file="$HOME/.claude-ops/state/tokens/drive.json" ;;
+    calendar) token_file="$HOME/.claude-ops/state/tokens/calendar.json" ;;
+    *) echo "Unknown service: $service" >&2; return 1 ;;
+  esac
+
+  # Check for cached token
+  if [ -f "$token_file" ]; then
+    expiry=$(jq -r '.expiry // 0' "$token_file" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    if [ "$((expiry - margin))" -gt "$now" ]; then
+      jq -r '.access_token' "$token_file"
+      return 0
+    fi
+  fi
+
+  # Refresh token
+  refresh_token=$(jq -r '.refresh_token' "$token_file" 2>/dev/null || echo "")
+  if [ -z "$refresh_token" ] || [ "$refresh_token" = "null" ]; then
+    echo "No refresh token found for $service. Run initial auth flow first." >&2
+    return 1
+  fi
+
+  local response
+  response=$(curl -s -X POST "https://oauth2.googleapis.com/token" \
+    -d "client_id=$_GOOGLE_CLIENT_ID" \
+    -d "client_secret=$_GOOGLE_CLIENT_SECRET" \
+    -d "refresh_token=$refresh_token" \
+    -d "grant_type=refresh_token")
+
+  access_token=$(echo "$response" | jq -r '.access_token // empty')
+  if [ -z "$access_token" ]; then
+    echo "Failed to refresh token for $service" >&2
+    return 1
+  fi
+
+  local expires_in
+  expires_in=$(echo "$response" | jq -r '.expires_in // 3600')
+  now=$(date +%s)
+
+  mkdir -p "$(dirname "$token_file")"
+  jq -n --arg at "$access_token" --arg rt "$refresh_token" --argjson exp "$((now + expires_in))" \
+    '{access_token: $at, refresh_token: $rt, expiry: $exp}' > "$token_file"
+
+  echo "$access_token"
+}

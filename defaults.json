@@ -1,0 +1,15 @@
+{
+  "human_agent": "warren",
+  "bus": {
+    "enabled": true,
+    "side_effects_dir": "bus/side-effects"
+  },
+  "watchdog": {
+    "check_interval": 30,
+    "stuck_threshold_sec": 600,
+    "max_crashes_per_hr": 3
+  },
+  "harness_api": {
+    "port": 7777
+  }
+}

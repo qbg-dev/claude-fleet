@@ -1,0 +1,32 @@
+# Runtime state (agent-specific, not portable)
+state/
+harness/manifests/
+harness/reports/
+harness/data/
+wave-report-server/registry.json
+wave-report-server/issues/
+
+# Project-specific runtime (.claude/ in project repos, not this repo)
+.claude/bus/
+.claude/harness/
+
+# Event bus runtime data
+bus/stream.jsonl
+bus/seq.json
+bus/cursors/
+bus/dlq/
+bus/topics/
+
+# Credentials (contains OAuth secrets)
+lib/google-auth.sh
+
+# Plugins (user-specific)
+plugins/
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~

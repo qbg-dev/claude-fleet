@@ -1,0 +1,36 @@
+{
+  "_meta": {
+    "version": 1,
+    "updated_at": null,
+    "updated_by": "scaffold",
+    "purpose": "Unified harness policy: rules (verification, deploy, code quality) + context injections.",
+    "changelog": ["v1: Initial policy"]
+  },
+  "rules": {
+    "deploy": {
+      "required_flags": ["--fast", "--skip-langfuse"],
+      "min_timeout": 480000,
+      "prefer_service": "Prefer --service static for UI-only changes (~20s vs ~90s)"
+    },
+    "verification": {
+      "require_artifact": true,
+      "artifact_dir": "claude_files/{{HARNESS}}-verify",
+      "required_sections": ["## Evidence", "## Result"],
+      "min_evidence_chars": 50
+    },
+    "code_quality": {
+      "no_inline_styles": true,
+      "no_mock_data": true,
+      "no_hardcoded_ids": true
+    },
+    "rotation": {
+      "max_rounds_per_session": 25,
+      "rotate_on_context_pressure": true
+    }
+  },
+  "inject": {
+    "file_context": {},
+    "command_context": {},
+    "tool_context": {}
+  }
+}
