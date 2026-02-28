@@ -44,43 +44,8 @@ This creates the manifest, progress.json (from template), harness.md, start/seed
 
 ### Running tests
 ```bash
-# All infrastructure tests (163 tests, 10 suites)
 bash ~/.boring/tests/run-all.sh
-
-# Wave report server tests (72 tests)
-cd ~/.boring/wave-report-server && bun test
 ```
-
-### Wave Report Server
-Compiles progress.json files into rendered HTML reports. No agent tokens spent — agents just write progress.json (which they already do), and the server handles rendering.
-
-```bash
-# Scan + start (recommended)
-bash ~/.boring/wave-report-server/scan.sh --start
-
-# Scan only (validates all harnesses, writes registry + issues)
-bash ~/.boring/wave-report-server/scan.sh
-
-# Scan + notify agents about issues via Nexus
-bash ~/.boring/wave-report-server/scan.sh --notify
-
-# Server only (if registry.json already exists)
-bun run ~/.boring/wave-report-server/server.ts
-```
-
-**Routes:**
-| Route | Purpose |
-|-------|---------|
-| `GET /` | Index — lists all harnesses with status/progress |
-| `GET /report/{harness}` | Compiled HTML report for that harness |
-| `GET /screenshots/{harness}/{path}` | Serves screenshot images |
-| `POST /api/scan` | Re-scan all manifests |
-| `GET /api/registry` | Raw registry JSON |
-| `GET /api/issues/{harness}` | Issues for a specific harness (agents poll this) |
-
-**Agent integration:** The scanner writes `~/.boring/wave-report-server/issues/{harness}.json` when it finds problems (missing progress file, broken JSON, orphaned screenshot references, wave→task mismatches). Agents can check this file or poll the API endpoint.
-
-**Screenshots convention:** Place screenshots at `{project_root}/claude_files/screenshots/{harness}/` or set `task.metadata.screenshot` to a relative path. The server tries multiple resolution strategies.
 
 ### Control Plane
 K8s-inspired daemon that monitors agent health, runs sweeps, and reconciles state.
@@ -99,8 +64,7 @@ bash ~/.boring/scripts/monitor-agent.sh --pane <monitor-pane> <target-pane> [int
 ## Code Conventions
 
 - **Shell scripts**: Source `lib/harness-jq.sh` for task graph queries. Use `locked_jq_write` for atomic JSON updates.
-- **TypeScript** (wave-report-server): Pure Bun, no bundler, no React. String template compilation only.
-- **Tests**: Shell tests in `tests/` use `helpers.sh` for fixtures. TS tests use `bun:test`.
+- **Tests**: Shell tests in `tests/` use `helpers.sh` for fixtures.
 - **Hooks**: Admission hooks run before tool calls, operator hooks run after. Both live in `hooks/`.
 - **Sweeps**: Modular cron scripts in `sweeps.d/`, each with its own interval and RBAC manifest in `sweeps.d/permissions/`.
 
@@ -115,5 +79,3 @@ bash ~/.boring/scripts/monitor-agent.sh --pane <monitor-pane> <target-pane> [int
 | `~/.boring/state/harness-runtime/` | Per-harness runtime flags | Until harness deregistered |
 | `~/.boring/state/pane-registry.json` | Consolidated pane metadata | Pruned when panes die |
 | `~/.boring/harness/manifests/` | Harness registry | Until deregistered |
-| `~/.boring/wave-report-server/registry.json` | Scanner output | Until next scan |
-| `~/.boring/wave-report-server/issues/` | Per-harness issues | Until resolved + rescanned |

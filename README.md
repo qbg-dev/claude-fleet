@@ -101,7 +101,7 @@ boring is designed for collaborative workflows where you stay in control:
 ├── sweeps.d/             # Cron-style maintenance sweeps
 ├── templates/            # Scaffold templates (.tmpl files)
 ├── tests/                # Test suite
-└── wave-report-server/   # HTML report server for harness progress
+
 ```
 
 ## Manual Installation
