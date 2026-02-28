@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# notify — Publish a notification event to the event bus (side-effect shows macOS alert).
+# Also calls terminal-notifier directly as fallback for sessions without a project bus.
+# Usage: notify "message"
+#        notify "message" "Custom Title"
+#        notify "message" "Custom Title" "https://example.com"
+#        notify "message" "" "https://example.com"        # default title + URL
+#        notify "message" "" "/path/to/file.html"         # local file (auto file:// prefix)
+
+msg="${1:?Usage: notify \"message\" [\"title\"] [\"url\"]}"
+title="${2:-🔔 Claude}"
+url="${3:-}"
+
+# ── Publish to event bus (side-effect fires notify_warren.sh) ──────────────
+# Find PROJECT_ROOT for bus publishing
+_PROJECT_ROOT="${PROJECT_ROOT:-}"
+if [ -z "$_PROJECT_ROOT" ] && command -v git >/dev/null 2>&1; then
+  _PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+fi
+# Fallback to common project paths
+[ -z "$_PROJECT_ROOT" ] && _PROJECT_ROOT="/Users/wz/Desktop/zPersonalProjects/Wechat"
+
+BUS_STREAM="$_PROJECT_ROOT/.claude/bus/stream.jsonl"
+if [ -f "$BUS_STREAM" ] || [ -d "$(dirname "$BUS_STREAM")" ]; then
+  EVENT_BUS_LIB="$HOME/.claude-ops/lib/event-bus.sh"
+  if [ -f "$EVENT_BUS_LIB" ]; then
+    # shellcheck source=/dev/null
+    source "$EVENT_BUS_LIB" 2>/dev/null
+    PAYLOAD=$(jq -nc \
+      --arg message "$msg" \
+      --arg title "$title" \
+      --arg url "$url" \
+      '{"message":$message,"title":$title,"url":(if $url == "" then null else $url end)}' 2>/dev/null || true)
+    [ -n "$PAYLOAD" ] && bus_publish "notification" "$PAYLOAD" 2>/dev/null || true
+  fi
+fi
+
+# ── Direct macOS notification (fallback — always fires) ───────────────────
+click_args=()
+if [ -n "$url" ]; then
+  [[ "$url" == /* ]] && url="file://$url"
+  click_args+=(-open "$url")
+elif [ -n "$TMUX" ] && [ -n "$TMUX_PANE" ]; then
+  socket="$(echo "$TMUX" | cut -d, -f1)"
+  tmux_bin="/opt/homebrew/bin/tmux"
+  exec_cmd="$tmux_bin -S $socket select-window -t $TMUX_PANE && $tmux_bin -S $socket select-pane -t $TMUX_PANE && $tmux_bin -S $socket resize-pane -Z -t $TMUX_PANE"
+  click_args+=(-execute "$exec_cmd")
+fi
+
+terminal-notifier -title "$title" -message "$msg" -sound default "${click_args[@]}"
