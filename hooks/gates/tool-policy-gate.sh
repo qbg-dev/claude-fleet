@@ -29,14 +29,16 @@ resolve_pane_and_harness "$SESSION_ID"
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 PANE_REG="${HARNESS_STATE_DIR:-$HOME/.boring/state}/pane-registry.json"
 
-AGENT_ROLE=$(jq -r --arg pid "$OWN_PANE_ID" '.[$pid].agent_role // "module-manager"' "$PANE_REG" 2>/dev/null || echo "module-manager")
-PARENT=$(jq -r --arg pid "$OWN_PANE_ID" '.[$pid].parent // ""' "$PANE_REG" 2>/dev/null || echo "")
-
-if [ "$AGENT_ROLE" = "worker" ] || [ "$AGENT_ROLE" = "module-manager" ] && [ -n "$PARENT" ] && [ "$PARENT" != "$HARNESS" ]; then
-  # Worker: permissions at .claude/harness/{parent}/agents/worker/{name}/permissions.json
-  PERMS="$PROJECT_ROOT/.claude/harness/$PARENT/agents/worker/$HARNESS/permissions.json"
+# Derive parent + worker name from harness path.
+# Workers are registered as "mod-ops/wo-fullchain" (parent/name), MMs as "mod-ops".
+# The .parent field is never written by pane_registry_update, so derive from slash.
+if [[ "$HARNESS" == */* ]]; then
+  # Worker: "parent/worker-name" → permissions at parent/agents/worker/worker-name/permissions.json
+  _PARENT="${HARNESS%/*}"
+  _WORKER="${HARNESS##*/}"
+  PERMS="$PROJECT_ROOT/.claude/harness/$_PARENT/agents/worker/$_WORKER/permissions.json"
 else
-  # Module manager: permissions at .claude/harness/{name}/agents/module-manager/permissions.json
+  # Module manager: permissions at harness/agents/module-manager/permissions.json
   PERMS="$PROJECT_ROOT/.claude/harness/$HARNESS/agents/module-manager/permissions.json"
 fi
 

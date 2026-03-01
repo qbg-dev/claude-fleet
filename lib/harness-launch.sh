@@ -150,14 +150,14 @@ harness_launch() {
   WORKER_PANE_ID=$(tmux display-message -t "$WORKER_PANE" -p '#{pane_id}' 2>/dev/null || echo "")
   echo "Worker pane: $WORKER_PANE ($WORKER_PANE_ID)"
 
-  # ── Register worker pane in pane-registry ─────────────────────
-  # Pane-registry.json is the sole source of truth (Tier 0 for all hooks).
-  # Session-registry.json is deprecated — no new writes.
+  # ── Register pane in pane-registry (spawner-side, before Claude starts) ──────
+  # Registering here (not in the seed) ensures hooks work from the very first tool call.
+  # Seeds must NOT self-register — spawner owns registration using the exact pane_id.
   if [ -n "$WORKER_PANE_ID" ]; then
     source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || true
 
-    # Primary: pane-registry.json (Tier 0 — all hooks read this)
-    pane_registry_update "$WORKER_PANE_ID" "$harness" "launching" "0" "0" "${harness}: launching" "$WORKER_PANE"
+    # Use pane_registry_update for module-managers (no parent — harness IS the name)
+    pane_registry_update "$WORKER_PANE_ID" "$harness" "launching" "0" "0" "${harness}: launching" "$WORKER_PANE" "module-manager"
   fi
 
   # ── Step 2: Update progress.json directly ─────────────────────

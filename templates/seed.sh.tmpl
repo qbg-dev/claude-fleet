@@ -135,17 +135,48 @@ case "$ROLE" in
   worker)
     ROLE_SECTION='## Role: Worker
 Execute tasks from tasks.json. Report to module manager.
-Find next unblocked task → implement → mark completed → check inbox → repeat.
+Find next unblocked task → implement → verify → report → repeat.
 
 ### Git Discipline (mandatory)
 - **Stage only specific files**: `git add src/foo.ts src/bar.ts` — NEVER `git add -A` or `git add .`
 - **Stay on your worktree branch** — NEVER `git checkout main`, `git merge`, or `git push`
-- **Report when done** via hq_send (not direct inbox writes):
+
+### Deploy Protocol (mandatory — read carefully)
+- **Deploy to TEST only**: `./scripts/deploy.sh --skip-langfuse [--service static|web|core]`
+  - UI-only changes → `--service static` (zero downtime)
+  - Backend API changes → `--service web`
+  - Core/chatbot changes → `--service core`
+- **NEVER run `./scripts/deploy-prod.sh`** — it is hard-blocked from worktrees and will exit with an error
+- **When ready for prod**, notify your module manager via bus:
   ```bash
   source ~/.boring/lib/harness-jq.sh
-  hq_send "$HARNESS/WORKER_NAME" "$PARENT" "status" "Task T-1 done. Changed: src/foo.ts (+42/-5). Ready for review."
-  ```'
-    ROLE_RULES="- **Never modify harness structure.** Execute tasks, report to module manager."
+  hq_send "'"$HARNESS"'/WORKER_NAME" "'"$PARENT"'" "prod-deploy-ready" "service=web commit=$(git rev-parse --short HEAD) summary=one-line description"
+  ```
+  Warren'"'"'s main session handles all prod deploys. Do not wait — start your next task immediately.
+
+### End-to-End Verification (required before every completion)
+MM will reject completions without evidence. Run these and include output in your status message:
+1. **Tests**: `bun test` (or `bun test src/tests/unit/<relevant>.test.ts`)
+2. **TypeScript**: `bunx tsc --noEmit` on changed files
+3. **Deploy to test**: `./scripts/deploy.sh --service <static|web> --skip-langfuse`
+4. **Verify** (backend): `curl -sf https://test.<domain>/api/v1/<endpoint> | jq .`
+5. **Verify** (UI): generate autologin URL and confirm the page renders correctly:
+   ```bash
+   SESSION=$(curl -s https://test.baoyuansmartlife.com/login \
+     -H "Content-Type: application/json" \
+     -d '"'"'{"username":"admin","password":"UHbPHzjF0jlq71-8"}'"'"' | jq -r .token)
+   curl -s https://test.baoyuansmartlife.com/api/v1/auth/autologin-token \
+     -H "Authorization: Bearer $SESSION" -H "Content-Type: application/json" \
+     -d '"'"'{"username":"admin","redirect":"/app/"}'"'"' | jq -r .url
+   ```
+
+### Reporting Done
+```bash
+source ~/.boring/lib/harness-jq.sh
+hq_send "'"$HARNESS"'/WORKER_NAME" "'"$PARENT"'" "status" "T-1 done. src/foo.ts (+42/-5). Tests: 47 pass. Deployed to test. URL: https://..."
+```'
+    ROLE_RULES="- **Never modify harness structure.** Execute tasks, report to module manager.
+- **Never deploy to prod.** Test only. Signal prod-deploy-ready and move on."
     BEGIN="Use the Read tool to read each file listed above, one by one. Check inbox. Then execute your next unblocked task."
     ;;
   coordinator)
@@ -225,9 +256,20 @@ hq_send "'"$HARNESS"'" "'"$HARNESS"'/WORKER_NAME" "directive" "Your instruction 
 ### Git Discipline (mandatory)
 - **Stage only specific files**: `git add src/foo.ts src/bar.ts` — NEVER `git add -A` or `git add .`
 - **Stay on your branch** — NEVER merge to main or push without operator approval
-- **Workers commit to their own worktree branches** — review their diffs before merging'
+- **Workers commit to their own worktree branches** — review their diffs before merging
+
+### Deploy Protocol (mandatory)
+- **After reviewing a worker branch**: deploy to TEST using `./scripts/deploy.sh --skip-langfuse [--service static|web]`
+- **NEVER run `./scripts/deploy-prod.sh`** — neither you nor your workers are authorized for prod
+- **When a worker sends `prod-deploy-ready`**: forward to Warren'"'"'s main session:
+  ```bash
+  source ~/.boring/lib/harness-jq.sh
+  hq_send "'"$HARNESS"'" "hq-v3" "prod-deploy-ready" "module='"$HARNESS"' service=<s> commit=<sha> summary=<one line>"
+  ```
+  Do not deploy to prod yourself. Warren'"'"'s main session (`hq-v3` or the main Claude pane) handles all prod deploys.'
       ROLE_RULES="- **Never write application code yourself.** Launch workers, review results, coordinate.
-- **Never modify files outside .claude/harness/.** Your scope is harness management only."
+- **Never modify files outside .claude/harness/.** Your scope is harness management only.
+- **Never deploy to prod.** Test only. Forward prod-deploy-ready to hq-v3."
       BEGIN="Use the Read tool to read each file listed above, one by one. Check worker status. Assign unblocked tasks to workers."
     fi
     ;;
@@ -267,14 +309,9 @@ if [ -n "${TMUX:-}" ]; then
   tmux select-pane -T "${HARNESS}/${ROLE_DISPLAY}" 2>/dev/null || true
 fi
 
-# ── Pane registry ──
-if [ -f "$HARNESS_JQ" ] && [ -n "${TMUX:-}" ]; then
-  _PID=$(hook_find_own_pane 2>/dev/null || echo "")
-  if [ -n "$_PID" ]; then
-    _PT=$(hook_pane_target "$_PID" 2>/dev/null || echo "")
-    pane_registry_update "$_PID" "$HARNESS" "${CURRENT:-orienting}" "$DONE" "$TOTAL" "${HARNESS} — starting" "$_PT" "$ROLE"
-  fi
-fi
+# Registration is handled by the spawner (harness-launch.sh) before Claude starts.
+# No self-registration here — spawner writes pane-registry directly with the
+# exact pane_id from split-window, which is more reliable than process-tree walk.
 
 # ── Output ──
 cat <<EOF
@@ -317,6 +354,7 @@ from the bus during tool calls (recent messages within 30 minutes are auto-surfa
 - **No journal.md.** Write cycle learnings to MEMORY.md instead.
 - **Git: stage specific files only.** Never \`git add -A\` or \`git add .\`
 - **Git: never push or merge to main** without the operator's explicit approval.
+- **Deploy to TEST only.** \`./scripts/deploy.sh --skip-langfuse\`. NEVER \`./scripts/deploy-prod.sh\` — hard-blocked from worktrees. Signal prod-deploy-ready and move on.
 $ROLE_RULES
 
 ## RECORD (end of each cycle)

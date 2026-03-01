@@ -32,25 +32,9 @@ if [ -n "${TMUX:-}" ]; then
   tmux select-pane -T "$MODULE/$WORKER_NAME" 2>/dev/null || true
 fi
 
-# Self-register in pane registry (only when launched by harness system)
-if [ -f "$HARNESS_JQ" ] && [ -n "${TMUX:-}" ]; then
-  source "$HARNESS_JQ"
-  PANE_ID=$(hook_find_own_pane $$)
-  PANE_TARGET=""
-  if [ -n "$PANE_ID" ]; then
-    PANE_TARGET=$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' 2>/dev/null | awk -v id="$PANE_ID" '$1==id{print $2}')
-    worker_pane_register "$PANE_ID" "$MODULE" "$WORKER_NAME" "worker" "$LOOP" "0" "$PANE_TARGET" 2>/dev/null || true
-  fi
-
-  # Publish worker.started to bus
-  bus_dir="$PROJECT_ROOT/.claude/bus"
-  if [ -d "$bus_dir" ] && [ -f "$HOME/.boring/lib/event-bus.sh" ]; then
-    _payload=$(jq -nc --arg m "$MODULE" --arg w "$WORKER_NAME" \
-      '{module:$m,worker_name:$w}')
-    PROJECT_ROOT="$PROJECT_ROOT" BUS_DIR="$bus_dir" \
-      bash -c "source '$HOME/.boring/lib/event-bus.sh' && bus_publish 'worker.started' \"\$1\"" -- "$_payload" 2>/dev/null || true
-  fi
-fi
+# Registration is handled by the spawner (launch-worker.sh) before Claude starts.
+# No self-registration here — spawner writes pane-registry with worker_pane_register()
+# using the exact pane_id from split-window, which is more reliable than process-tree walk.
 
 # Output seed prompt
 cat <<SEED
@@ -108,6 +92,12 @@ and starts an OS background sleep. When it expires, tmux wakes you. No flag file
   \`\`\`bash
   hq_send "$MODULE/$WORKER_NAME" "$MODULE" "prod-deploy-ready" "service=<s> commit=<sha> summary=<one line>"
   \`\`\`
+- **End-to-end verification required before every completion.** MM will reject completions without evidence. Run and include in your status message:
+  1. Tests: \`bun test\` (or targeted file)
+  2. TypeScript: \`bunx tsc --noEmit\` on changed files
+  3. Deploy to test: \`./scripts/deploy.sh --service <static|web> --skip-langfuse\`
+  4. Backend: \`curl -sf https://test.<domain>/api/v1/<endpoint> | jq .\`
+  5. UI: generate autologin URL and verify visually
 - **Escalate blockers** via \`hq_send ... "blocked" "..."\`. For critical issues (security, data loss), also notify the operator directly:
   \`\`\`bash
   source ~/.boring/lib/event-bus.sh
