@@ -197,6 +197,7 @@ SEED_FILE="$PROJECT_ROOT/.claude/scripts/${HARNESS}-seed.sh"
 if [ ! -f "$SEED_FILE" ]; then
   SEED_TMPL=$(find_tmpl "seed.sh.tmpl")
   if [ -n "$SEED_TMPL" ]; then
+    mkdir -p "$(dirname "$SEED_FILE")"
     replace "$SEED_TMPL" > "$SEED_FILE"
     chmod +x "$SEED_FILE"
     echo "  created .claude/scripts/${HARNESS}-seed.sh"
