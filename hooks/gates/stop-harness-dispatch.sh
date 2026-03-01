@@ -82,10 +82,8 @@ run_gc
 block_generic() {
   local PROGRESS="$1"
 
-  # ── Guards (V3 + V2 compat) ──
-  # PROGRESS path is used for dirname → harness dir (works even if file deleted in v3).
-  # V3: config.json and state.json replace progress.json.
-  # V2 compat: fall back to reading progress.json directly.
+  # ── Guards ──
+  # PROGRESS path is used for dirname → harness dir.
   local _HDIR; _HDIR=$(dirname "$PROGRESS")
   # Resolve coordinator dir: module-manager (current) or sidecar (legacy)
   local _AGENT_DIR
@@ -102,7 +100,7 @@ block_generic() {
     hook_pass; exit 0
   fi
 
-  # Read status: V3 from state.json, V2 from progress.json
+  # Read status from state.json
   local STATUS="active"
   if [ -f "$_STATE" ]; then
     STATUS=$(jq -r '.status // "active"' "$_STATE" 2>/dev/null || echo "active")
@@ -217,11 +215,7 @@ resolve_progress_file() {
     return
   fi
 
-  if [ -f "$PROJECT_ROOT/.claude/harness/${dispatch_name}/progress.json" ]; then
-    echo "$PROJECT_ROOT/.claude/harness/${dispatch_name}/progress.json"
-  else
-    echo "$PROJECT_ROOT/claude_files/${dispatch_name}-progress.json"
-  fi
+  echo "$PROJECT_ROOT/.claude/harness/${dispatch_name}/tasks.json"
 }
 
 case "$HARNESS" in
