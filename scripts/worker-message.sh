@@ -101,11 +101,12 @@ case "$CMD" in
       esac
     done
 
-    # Find all worker panes except self, send to each
+    # Find all worker panes AND their registered children, send to each.
+    # Includes: panes with harness="worker/$name" (primary workers)
+    #       AND panes with parent_pane pointing to a worker pane (C-x y children).
     SENT=0
-    SKIPPED=0
     while IFS=$'\t' read -r pane_id name; do
-      [ "$pane_id" = "$OWN_PANE" ] && { SKIPPED=$((SKIPPED + 1)); continue; }
+      [ "$pane_id" = "$OWN_PANE" ] && continue
       TARGET=$(_pane_target "$pane_id")
       if [ -z "$TARGET" ]; then
         echo "  ⚠ $name ($pane_id): no active pane (skipped)"
@@ -114,12 +115,19 @@ case "$CMD" in
       _send_to_pane "$TARGET" "$CONTENT"
       echo "  → $name ($TARGET)"
       SENT=$((SENT + 1))
-    done < <(jq -r 'to_entries[]
-      | select(.value.harness | startswith("worker/"))
-      | [.key, (.value.harness | ltrimstr("worker/"))]
-      | @tsv' "$PANE_REGISTRY" 2>/dev/null)
+    done < <(jq -r '
+      # Collect all worker pane IDs (harness starts with "worker/")
+      (to_entries | map(select(.value.harness | startswith("worker/"))) | map(.key)) as $wids |
+      # Emit worker panes and any registered children (parent_pane ∈ worker IDs)
+      to_entries[]
+      | select(
+          (.value.harness | startswith("worker/"))
+          or ((.value.parent_pane // "") as $p | $p != "" and ([$p] | inside($wids)))
+        )
+      | [.key, (.value.harness // ("child:" + (.value.parent_pane // "?")))]
+      | @tsv' "$PANE_REGISTRY" 2>/dev/null | sort -u)
 
-    echo "Broadcast to $SENT worker(s)${SUMMARY:+ — $SUMMARY}"
+    echo "Broadcast to $SENT worker(s) + children${SUMMARY:+ — $SUMMARY}"
     ;;
 
   shutdown)
@@ -144,22 +152,26 @@ case "$CMD" in
     ;;
 
   list)
-    echo "Registered workers (pane-registry.json):"
+    echo "Registered workers + children (pane-registry.json):"
     echo ""
-    jq -r 'to_entries[]
-      | select(.value.harness | startswith("worker/"))
-      | [
-          (.value.harness | ltrimstr("worker/")),
-          .key,
-          (.value.pane_target // "?"),
-          (.value.display // "-")
-        ]
-      | @tsv' "$PANE_REGISTRY" 2>/dev/null \
-      | sort \
-      | awk -F'\t' 'BEGIN{printf "%-24s %-12s %-12s %s\n","WORKER","PANE_ID","TARGET","DISPLAY"; printf "%-24s %-12s %-12s %s\n","------","-------","------","-------"} {printf "%-24s %-12s %-12s %s\n",$1,$2,$3,$4}' \
-      || echo "(none registered)"
+    { printf "WORKER\tPANE_ID\tTARGET\tTYPE\n"
+      jq -r '
+        (to_entries | map(select(.value.harness | startswith("worker/"))) | map(.key)) as $wids |
+        to_entries[]
+        | select(
+            (.value.harness | startswith("worker/"))
+            or ((.value.parent_pane // "") as $p | $p != "" and ([$p] | inside($wids)))
+          )
+        | [
+            (.value.harness // ("child-of:" + (.value.parent_pane // "?")) | ltrimstr("worker/")),
+            .key,
+            (.value.pane_target // "?"),
+            (if (.value.harness | startswith("worker/")) then "primary" else "child" end)
+          ]
+        | @tsv' "$PANE_REGISTRY" 2>/dev/null | sort
+    } | column -t -s $'\t' || echo "(none registered)"
     echo ""
-    echo "Tip: 'worker-message.sh send <WORKER> \"message\"'"
+    echo "Tip: 'worker-message.sh send <WORKER> \"message\"' (use WORKER name column)"
     ;;
 
   help|*)
