@@ -28,15 +28,16 @@ echo "Generating test-watcher seed..."
 "$SEED_SCRIPT" > /tmp/test-watcher-seed.txt
 
 if [ -n "$WINDOW" ]; then
-  echo "Launching in window: $WINDOW"
-  tmux new-window -t "$WINDOW" -n "test-watcher"
-  tmux send-keys -t "$WINDOW" "cat /tmp/test-watcher-seed.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6" Enter
+  # Explicit window target — split a new pane there
+  PANE=$(tmux split-window -t "$WINDOW" -P -F '#{pane_id}' -d \
+    "cd $PROJECT_ROOT && cat /tmp/test-watcher-seed.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6")
+  echo "test-watcher launched as pane $PANE in $WINDOW"
 else
-  echo "Launching in new tmux window (current session)..."
-  tmux new-window -n "test-watcher"
-  tmux send-keys -t "test-watcher" "cd $PROJECT_ROOT && cat /tmp/test-watcher-seed.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6" Enter
+  # Default: split a new pane in the current window (stays alongside oss-steward)
+  CURRENT_WINDOW=$(tmux display-message -p '#{session_name}:#{window_index}' 2>/dev/null || echo "")
+  PANE=$(tmux split-window -t "$CURRENT_WINDOW" -P -F '#{pane_id}' -d \
+    "cd $PROJECT_ROOT && cat /tmp/test-watcher-seed.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6")
   echo ""
-  echo "test-watcher launched in tmux window 'test-watcher'"
-  echo "Attach: tmux attach && select the test-watcher window"
-  echo "Watch: tmux pipe-pane -t test-watcher -o 'cat >> /tmp/test-watcher.log'"
+  echo "test-watcher launched as pane $PANE in $CURRENT_WINDOW"
+  echo "Watch: tmux pipe-pane -t $PANE -o 'cat >> /tmp/test-watcher.log'"
 fi
