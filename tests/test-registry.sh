@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # test-registry.sh — Tests for the manifest-based registry system.
+# Uses a self-contained fixture harness to avoid coupling to real registered harnesses.
 set -euo pipefail
 
 source "$(dirname "$0")/helpers.sh"
@@ -7,7 +8,30 @@ source "$HOME/.boring/lib/harness-jq.sh"
 
 echo "── manifest registry ──"
 
-# Test 1: Manifest directory exists
+# ── Fixture setup ────────────────────────────────────────────────────────────
+FIXTURE_NAME="test-registry-fixture-$$"
+FIXTURE_PROJECT=$(mktemp -d)
+FIXTURE_MANIFEST_DIR="$HOME/.boring/harness/manifests/$FIXTURE_NAME"
+
+cleanup() {
+  rm -rf "$FIXTURE_MANIFEST_DIR" "$FIXTURE_PROJECT"
+}
+trap cleanup EXIT
+
+# Create a minimal progress file the active-list function can find
+mkdir -p "$FIXTURE_PROJECT"
+echo '{"status":"active","tasks":{}}' > "$FIXTURE_PROJECT/tasks.json"
+
+# Create the manifest
+mkdir -p "$FIXTURE_MANIFEST_DIR"
+jq -n \
+  --arg name "$FIXTURE_NAME" \
+  --arg root "$FIXTURE_PROJECT" \
+  '{harness: $name, project_root: $root, status: "active",
+    files: {progress: "tasks.json"}}' \
+  > "$FIXTURE_MANIFEST_DIR/manifest.json"
+
+# ── Test 1: Manifest directory exists ────────────────────────────────────────
 TOTAL=$((TOTAL + 1))
 if [ -d "$HOME/.boring/harness/manifests" ]; then
   echo -e "  ${GREEN}PASS${RESET} harnesses directory exists"
@@ -17,54 +41,46 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-# Test 2: Active harnesses have manifests
-for h in eval-external eval-internal miniapp-chat bi-opt chatbot-agent td-redteam; do
-  assert_file_exists "manifest exists for $h" "$HOME/.boring/harness/manifests/$h/manifest.json"
-done
+# ── Test 2: Fixture manifest exists and has required fields ──────────────────
+assert_file_exists "fixture manifest exists" "$FIXTURE_MANIFEST_DIR/manifest.json"
 
-# Test 3: Manifest has required fields
-for h in eval-external miniapp-chat; do
-  MANIFEST="$HOME/.boring/harness/manifests/$h/manifest.json"
-  TOTAL=$((TOTAL + 1))
-  if jq -e '.harness and .project_root and .files.progress' "$MANIFEST" > /dev/null 2>&1; then
-    echo -e "  ${GREEN}PASS${RESET} $h manifest has required fields"
-    PASS=$((PASS + 1))
-  else
-    echo -e "  ${RED}FAIL${RESET} $h manifest missing required fields"
-    FAIL=$((FAIL + 1))
-  fi
-done
-
-# Test 4: harness_list_active returns results
-RESULT=$(harness_list_active)
 TOTAL=$((TOTAL + 1))
-if [ -n "$RESULT" ]; then
-  ACTIVE_COUNT=$(echo "$RESULT" | wc -l | tr -d ' ')
-  echo -e "  ${GREEN}PASS${RESET} harness_list_active returns $ACTIVE_COUNT active harnesses"
+if jq -e '.harness and .project_root and .files.progress' "$FIXTURE_MANIFEST_DIR/manifest.json" > /dev/null 2>&1; then
+  echo -e "  ${GREEN}PASS${RESET} fixture manifest has required fields"
   PASS=$((PASS + 1))
 else
-  echo -e "  ${RED}FAIL${RESET} harness_list_active returned empty"
+  echo -e "  ${RED}FAIL${RESET} fixture manifest missing required fields"
   FAIL=$((FAIL + 1))
 fi
 
-# Test 5: harness_list_active includes known active harnesses (update when harness statuses change)
-ACTIVE_NAMES=$(echo "$RESULT" | cut -d'|' -f1)
+# ── Test 3: harness_list_active returns fixture ───────────────────────────────
+ACTIVE=$(harness_list_active)
 TOTAL=$((TOTAL + 1))
-# At least one active harness should exist
-if [ -n "$ACTIVE_NAMES" ]; then
-  echo -e "  ${GREEN}PASS${RESET} list_active has active harnesses: $(echo "$ACTIVE_NAMES" | tr '\n' ', ')"
+if echo "$ACTIVE" | grep -q "^${FIXTURE_NAME}|"; then
+  echo -e "  ${GREEN}PASS${RESET} harness_list_active includes fixture"
   PASS=$((PASS + 1))
 else
-  echo -e "  ${RED}FAIL${RESET} no active harnesses found"
+  echo -e "  ${RED}FAIL${RESET} harness_list_active missing fixture (got: $ACTIVE)"
   FAIL=$((FAIL + 1))
 fi
-# All active entries should also appear in list_all
-ALL_RESULT=$(harness_list_all)
+
+# ── Test 4: harness_list_all includes fixture ─────────────────────────────────
+ALL=$(harness_list_all)
+TOTAL=$((TOTAL + 1))
+if echo "$ALL" | grep -q "^${FIXTURE_NAME}|"; then
+  echo -e "  ${GREEN}PASS${RESET} harness_list_all includes fixture"
+  PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${RESET} harness_list_all missing fixture"
+  FAIL=$((FAIL + 1))
+fi
+
+# ── Test 5: active entries are a subset of list_all ──────────────────────────
 TOTAL=$((TOTAL + 1))
 MISMATCH=false
-for name in $ACTIVE_NAMES; do
-  echo "$ALL_RESULT" | grep -q "^${name}|" || MISMATCH=true
-done
+while IFS='|' read -r name _rest; do
+  echo "$ALL" | grep -q "^${name}|" || MISMATCH=true
+done <<< "$ACTIVE"
 if [ "$MISMATCH" = false ]; then
   echo -e "  ${GREEN}PASS${RESET} all active harnesses present in list_all"
   PASS=$((PASS + 1))
@@ -73,26 +89,34 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-# Test 6: harness_list_all returns more than active
-RESULT=$(harness_list_all)
-assert "list_all includes bi-opt" "bi-opt" "$RESULT"
+# ── Test 6: harness_project_root resolves ────────────────────────────────────
+RESULT=$(harness_project_root "$FIXTURE_NAME")
+assert_not_empty "project_root is non-empty" "$RESULT"
+assert "project_root matches fixture" "$FIXTURE_PROJECT" "$RESULT"
 
-# Test 7: harness_project_root resolves
-RESULT=$(harness_project_root "eval-external")
-assert_not_empty "project_root for eval-external is non-empty" "$RESULT"
-assert "project_root contains Wechat" "Wechat" "$RESULT"
-
-# Test 8: harness_progress_path resolves to absolute path (v2: returns tasks.json)
-RESULT=$(harness_progress_path "eval-external")
+# ── Test 7: harness_progress_path resolves to absolute path ──────────────────
+RESULT=$(harness_progress_path "$FIXTURE_NAME")
 assert "progress_path is absolute" "/" "$RESULT"
 assert "progress_path ends with tasks.json" "tasks.json" "$RESULT"
 
-# Test 9: harness_manifest returns expected path format
+# ── Test 8: harness_manifest returns expected path format ────────────────────
 RESULT=$(harness_manifest "my-test-harness")
 assert_equals "manifest path format" "$HOME/.boring/harness/manifests/my-test-harness/manifest.json" "$RESULT"
 
-# Test 10: harness_project_root for nonexistent harness returns empty
+# ── Test 9: harness_project_root for nonexistent harness returns empty ────────
 RESULT=$(harness_project_root "nonexistent-harness-xyz")
 assert_equals "project_root empty for nonexistent" "" "$RESULT"
+
+# ── Test 10: inactive harness not in list_active ─────────────────────────────
+echo '{"status":"done","tasks":{}}' > "$FIXTURE_PROJECT/tasks.json"
+ACTIVE2=$(harness_list_active)
+TOTAL=$((TOTAL + 1))
+if echo "$ACTIVE2" | grep -q "^${FIXTURE_NAME}|"; then
+  echo -e "  ${RED}FAIL${RESET} done harness should not appear in list_active"
+  FAIL=$((FAIL + 1))
+else
+  echo -e "  ${GREEN}PASS${RESET} done harness excluded from list_active"
+  PASS=$((PASS + 1))
+fi
 
 test_summary
