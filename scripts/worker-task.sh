@@ -232,50 +232,56 @@ case "$CMD" in
       esac
     done
 
-    # Common jq: exclude deleted (unless --all), compute effective blocked status
+    # Common jq: exclude deleted (unless --all), compute effective blocked status.
+    # Capture blocked_by into $deps first — avoids .value becoming inaccessible after a pipe.
     LIST_JQ='. as $all | to_entries
       | map(select(.value.status != "deleted" or ($show_all == "true")))
       | map(
+          (.value.blocked_by // []) as $deps |
           .value.blocked = (
-            (.value.blocked_by // []) | length > 0
-            and ((.value.blocked_by // []) | any(. as $d | $all[$d].status != "completed"))
+            ($deps | length) > 0
+            and ($deps | any(. as $d | $all[$d].status != "completed"))
           )
         )'
 
     case "$FILTER" in
       pending)
-        jq -r --arg show_all "$SHOW_ALL" "$LIST_JQ"'
-          | map(select(.value.status == "pending" and (.value.owner == null or .value.owner == "null") and .value.blocked == false))
-          | sort_by({"critical":0,"high":1,"medium":2,"low":3}[.value.priority] // 2)
-          | .[] | [.key, .value.priority, "ready", "-", .value.subject] | @tsv' "$TASKS_FILE" 2>/dev/null \
-          | column -t -s $'\t' | sed '1i\ID\tPRIORITY\tSTATUS\tOWNER\tSUBJECT' | column -t -s $'\t'
+        { printf "ID\tPRIORITY\tSTATUS\tOWNER\tSUBJECT\n"
+          jq -r --arg show_all "$SHOW_ALL" "$LIST_JQ"'
+            | map(select(.value.status == "pending" and (.value.owner == null or .value.owner == "null") and .value.blocked == false))
+            | sort_by({"critical":0,"high":1,"medium":2,"low":3}[.value.priority] // 2)
+            | .[] | [.key, .value.priority, "ready", "-", .value.subject] | @tsv' "$TASKS_FILE" 2>/dev/null
+        } | column -t -s $'\t'
         ;;
       blocked)
-        jq -r --arg show_all "$SHOW_ALL" "$LIST_JQ"'
-          | map(select(.value.blocked == true and .value.status != "completed"))
-          | .[] | [.key, .value.priority, "blocked", (.value.blocked_by // [] | join(",")), .value.subject] | @tsv' "$TASKS_FILE" 2>/dev/null \
-          | column -t -s $'\t' | sed '1i\ID\tPRIORITY\tSTATUS\tBLOCKED_BY\tSUBJECT' | column -t -s $'\t'
+        { printf "ID\tPRIORITY\tSTATUS\tBLOCKED_BY\tSUBJECT\n"
+          jq -r --arg show_all "$SHOW_ALL" "$LIST_JQ"'
+            | map(select(.value.blocked == true and .value.status != "completed"))
+            | .[] | [.key, .value.priority, "blocked", (.value.blocked_by // [] | join(",")), .value.subject] | @tsv' "$TASKS_FILE" 2>/dev/null
+        } | column -t -s $'\t'
         ;;
       mine)
-        jq -r --arg pane "${OWN_PANE:-}" --arg show_all "$SHOW_ALL" "$LIST_JQ"'
-          | map(select(.value.owner == $pane))
-          | .[] | [.key, .value.priority, .value.status, .value.owner, .value.subject] | @tsv' "$TASKS_FILE" 2>/dev/null \
-          | column -t -s $'\t' | sed '1i\ID\tPRIORITY\tSTATUS\tOWNER\tSUBJECT' | column -t -s $'\t'
+        { printf "ID\tPRIORITY\tSTATUS\tOWNER\tSUBJECT\n"
+          jq -r --arg pane "${OWN_PANE:-}" --arg show_all "$SHOW_ALL" "$LIST_JQ"'
+            | map(select(.value.owner == $pane))
+            | .[] | [.key, .value.priority, .value.status, .value.owner, .value.subject] | @tsv' "$TASKS_FILE" 2>/dev/null
+        } | column -t -s $'\t'
         ;;
       *)
-        jq -r --arg show_all "$SHOW_ALL" "$LIST_JQ"'
-          | sort_by({"pending":0,"in_progress":1,"completed":2,"deleted":3}[.value.status] // 0, {"critical":0,"high":1,"medium":2,"low":3}[.value.priority] // 2)
-          | .[] | [.key, .value.priority,
-              (if .value.status == "deleted" then "deleted"
-               elif .value.blocked then "blocked"
-               elif .value.status == "pending" then "ready"
-               else .value.status end),
-              (.value.owner // "-"),
-              .value.subject
-                + (if (.value.blocked_by // [] | length) > 0 then " [after:" + (.value.blocked_by | join(",")) + "]" else "" end)
-                + (if .value.status == "deleted" then " [DELETED]" else "" end)
-            ] | @tsv' "$TASKS_FILE" 2>/dev/null \
-          | column -t -s $'\t' | sed '1i\ID\tPRIORITY\tSTATUS\tOWNER\tSUBJECT' | column -t -s $'\t'
+        { printf "ID\tPRIORITY\tSTATUS\tOWNER\tSUBJECT\n"
+          jq -r --arg show_all "$SHOW_ALL" "$LIST_JQ"'
+            | sort_by({"pending":0,"in_progress":1,"completed":2,"deleted":3}[.value.status] // 0, {"critical":0,"high":1,"medium":2,"low":3}[.value.priority] // 2)
+            | .[] | [.key, .value.priority,
+                (if .value.status == "deleted" then "deleted"
+                 elif .value.blocked then "blocked"
+                 elif .value.status == "pending" then "ready"
+                 else .value.status end),
+                (.value.owner // "-"),
+                .value.subject
+                  + (if (.value.blocked_by // [] | length) > 0 then " [after:" + (.value.blocked_by | join(",")) + "]" else "" end)
+                  + (if .value.status == "deleted" then " [DELETED]" else "" end)
+              ] | @tsv' "$TASKS_FILE" 2>/dev/null
+        } | column -t -s $'\t'
         ;;
     esac
     ;;
