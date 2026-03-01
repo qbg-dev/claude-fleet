@@ -3,7 +3,7 @@
 [![Tests](https://github.com/qbg-dev/boring/actions/workflows/ci.yml/badge.svg)](https://github.com/qbg-dev/boring/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-**boring** is an infrastructure layer built on top of Claude Code that turns Claude sessions into persistent, recoverable agents. It uses Claude Code's native hooks, settings, and session model—no separate runtime.
+**boring** is an infrastructure layer for Claude Code. It turns Claude sessions into persistent, recoverable agents, wires them together for multi-agent coordination, and decouples each agent's identity from the session owner—so an agent running inside your Claude Code environment carries its own mission, access policy, and knowledge scope, independent of your personal context. It uses Claude Code's native hooks, settings, and session model. It is inspired by gastown: TODO, add link. But aims to be less opinionated.
 
 The design is simple: every agent is either a **coordinator** or a **worker**. Coordinators manage task graphs and delegate to workers. Workers claim tasks, execute them, and report back through an **event bus**. Every tool call flows through Claude Code hooks that log events, inject context, and keep agents on task. A **watchdog** respawns agents after graceful stops or crashes. You can interrupt at any point, steer the agent with a message, and it picks up where it left off.
 
@@ -61,7 +61,9 @@ agents/module-manager/
 └── permissions.json    # disallowed tools for this agent
 ```
 
-Memory. Parent context. Tasks. Communication. A **harness** wraps the agent with its task graph and shared context:
+This is the identity decoupling in practice: `mission.md` defines what the agent is and what it's allowed to do; `permissions.json` enforces which tools and paths it can reach. Two agents running under the same Claude Code installation can have entirely different identities, knowledge scopes, and access policies—one can post to a public API with no access to your personal context, while another has full access to your codebase. The session owner's global context (e.g. `~/.claude/CLAUDE.md`) is still loaded at startup, but sensitive data can be moved to a blocked path (e.g. `~/.claude/sensitive/`) so agents that shouldn't have it can't reach it via the Read tool.
+
+A **harness** wraps the agent with its task graph and shared context:
 
 ```
 .claude/harness/{name}/
@@ -99,8 +101,17 @@ tmux session "h"
 
 ```json
 {
-  "%539": { "harness": "mod-platform", "agent_role": "module-manager", "pane_target": "h:0.0" },
-  "%540": { "harness": "auth-handler", "agent_role": "worker", "parent": "mod-platform", "pane_target": "h:0.1" }
+  "%539": {
+    "harness": "mod-platform",
+    "agent_role": "module-manager",
+    "pane_target": "h:0.0"
+  },
+  "%540": {
+    "harness": "auth-handler",
+    "agent_role": "worker",
+    "parent": "mod-platform",
+    "pane_target": "h:0.1"
+  }
 }
 ```
 
