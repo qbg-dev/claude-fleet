@@ -17,9 +17,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Create test per-worker permissions.json files
-mkdir -p "$TMPDIR/.claude/harness/$SIDECAR_NAME_TEST/agents/sidecar"
-cat > "$TMPDIR/.claude/harness/$SIDECAR_NAME_TEST/agents/sidecar/permissions.json" <<'JSON'
+# Create sidecar agent dir (v3: agents/module-manager)
+mkdir -p "$TMPDIR/.claude/harness/$SIDECAR_NAME_TEST/agents/module-manager"
+cat > "$TMPDIR/.claude/harness/$SIDECAR_NAME_TEST/agents/module-manager/config.json" <<JSON
+{
+  "name": "$SIDECAR_NAME_TEST",
+  "lifecycle": "long-running"
+}
+JSON
+cat > "$TMPDIR/.claude/harness/$SIDECAR_NAME_TEST/agents/module-manager/permissions.json" <<'JSON'
 {
   "model": "cds",
   "permission_mode": "bypassPermissions"
@@ -51,9 +57,9 @@ cat > "$TMPDIR/.claude/harness/$SIDECAR_NAME_TEST/agents/worker/worker-gamma/per
 }
 JSON
 
-# Create worker progress.json
+# Create worker tasks.json (v3)
 mkdir -p "$TMPDIR/.claude/harness/worker-alpha"
-cat > "$TMPDIR/.claude/harness/worker-alpha/progress.json" <<JSON
+cat > "$TMPDIR/.claude/harness/worker-alpha/tasks.json" <<JSON
 {
   "harness": "worker-alpha",
   "mission": "Test worker",
@@ -126,7 +132,7 @@ cat > "$HOME/.boring/harness/manifests/worker-alpha/manifest.json" <<JSON
   "harness": "worker-alpha",
   "project_root": "$TMPDIR",
   "files": {
-    "progress": ".claude/harness/worker-alpha/progress.json"
+    "progress": ".claude/harness/worker-alpha/tasks.json"
   },
   "status": "active"
 }
@@ -215,7 +221,7 @@ fi
 worker_add_task "worker-alpha" "sidecar-task-1" "Test task from sidecar" > /dev/null
 
 TOTAL=$((TOTAL + 1))
-PROGRESS="$TMPDIR/.claude/harness/worker-alpha/progress.json"
+PROGRESS="$TMPDIR/.claude/harness/worker-alpha/tasks.json"
 TASK_STATUS=$(jq -r '.tasks["sidecar-task-1"].status // empty' "$PROGRESS")
 if [ "$TASK_STATUS" = "pending" ]; then
   echo -e "  ${GREEN}PASS${RESET} Task creation: task appears in progress.json"
@@ -260,16 +266,17 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-# ── Test 8: Journal append ────────────────────────────────────
+# ── Test 8: worker_inject_journal routes directive to outbox (v3) ────────────
+# In v3, worker_inject_journal routes via worker_send → outbox.jsonl (not journal.md).
 worker_inject_journal "worker-alpha" "Please fix the regression in the billing module." > /dev/null
 
 TOTAL=$((TOTAL + 1))
-JOURNAL="$TMPDIR/.claude/harness/worker-alpha/journal.md"
-if grep -q "SIDECAR DIRECTIVE" "$JOURNAL" && grep -q "$SIDECAR_NAME_TEST" "$JOURNAL"; then
-  echo -e "  ${GREEN}PASS${RESET} Journal append: directive with sidecar attribution"
+OUTBOX="$TMPDIR/.claude/harness/$SIDECAR_NAME_TEST/outbox.jsonl"
+if [ -f "$OUTBOX" ] && jq -e 'select(.type == "directive" and .to == "worker-alpha")' "$OUTBOX" > /dev/null 2>&1; then
+  echo -e "  ${GREEN}PASS${RESET} Journal append: directive queued in sidecar outbox"
   PASS=$((PASS + 1))
 else
-  echo -e "  ${RED}FAIL${RESET} Journal append: missing directive or attribution"
+  echo -e "  ${RED}FAIL${RESET} Journal append: directive not found in outbox ($OUTBOX)"
   FAIL=$((FAIL + 1))
 fi
 
