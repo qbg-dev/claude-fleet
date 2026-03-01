@@ -3,33 +3,11 @@
 [![Tests](https://github.com/qbg-dev/boring/actions/workflows/ci.yml/badge.svg)](https://github.com/qbg-dev/boring/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-**boring** is an infrastructure layer for Claude Code. It turns Claude sessions into persistent, recoverable agents, wires them together for multi-agent coordination, and decouples each agent's identity from the session owner—so an agent running inside your Claude Code environment carries its own mission, access policy, and knowledge scope, independent of your personal context. It uses Claude Code's native hooks, settings, and session model. It is inspired by gastown: TODO, add link. But aims to be less opinionated.
+**boring** is an infrastructure layer for Claude Code. It turns Claude sessions into persistent, recoverable agents, wires them together for multi-agent coordination, and decouples each agent's identity from the session owner—so an agent running inside your Claude Code environment carries its own mission, access policy, and knowledge scope, independent of your personal context. It uses Claude Code's native hooks, settings, and session model. It is inspired by gastown: [TODO, add link,] but is more boring.
 
-The design is simple: every agent is either a **coordinator** or a **worker**. Coordinators manage task graphs and delegate to workers. Workers claim tasks, execute them, and report back through an **event bus**. Every tool call flows through Claude Code hooks that log events, inject context, and keep agents on task. A **watchdog** respawns agents after graceful stops or crashes. You can interrupt at any point, steer the agent with a message, and it picks up where it left off.
+In **boring**, every agent is either a **coordinator** or a **worker**. Coordinators manage task graphs and delegate to workers. Workers claim tasks, execute them, and report back through an **event bus**. Every tool call flows through Claude Code hooks that log events, inject context, and keep agents on task. A **watchdog** respawns agents after graceful stops or crashes. You can interrupt at any point, steer the agent with a message, and it picks up where it left off.
 
-## Quick Start
-
-```bash
-# 1. Install
-curl -fsSL https://raw.githubusercontent.com/qbg-dev/boring/main/install.sh | bash
-
-# 2. Scaffold a harness in your project
-bash ~/.boring/scripts/scaffold.sh my-feature /path/to/project
-
-# 3. Edit the task graph
-$EDITOR /path/to/project/.claude/harness/my-feature/tasks.json
-
-# 4. Generate a seed prompt and launch
-bash /path/to/project/.claude/scripts/my-feature-seed.sh > /tmp/seed.txt
-cat /tmp/seed.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6
-
-# 5. Check status
-bash ~/.boring/scripts/harness-watchdog.sh --status
-```
-
-## Architecture
-
-boring is a **multi-agent layer**. Every Claude session running under boring is registered in `pane-registry.json`—a live map of who is running, in which tmux pane, with which harness. Coordinators and workers can be composed at arbitrary depth; in practice the pattern is one **central coordinator** per repo with one **module-manager** per workstream, each owning its own task graph:
+Every Claude session running under boring is registered in `pane-registry.json`—a live map of who is running, in which tmux pane, with which harness. Coordinators and workers can be composed at arbitrary depth; in practice the pattern is one **central coordinator** per repo with one **module-manager** per workstream, each owning its own task graph:
 
 ```
 central-coordinator
@@ -38,9 +16,7 @@ central-coordinator
 └── module-manager/infra   tasks: [deploy, monitoring, ...]
 ```
 
-The **watchdog** monitors all registered coordinators, respawns them after graceful sleeps or crashes, and nudges agents that go quiet.
-
-**Hooks** instrument every tool call and session boundary—doing three things at once: logging events to the bus, injecting context, and enforcing permissions.
+**Hooks** instrument every tool call and session boundary—logging events to the bus, injecting context, and enforcing permissions.
 
 - **PreToolUse** — injects inbox messages, policy rules, and phase state as context before each tool call
 - **PostToolUse** — publishes every tool call and file edit to the event bus
@@ -61,7 +37,7 @@ agents/module-manager/
 └── permissions.json    # disallowed tools for this agent
 ```
 
-This is the identity decoupling in practice: `mission.md` defines what the agent is and what it's allowed to do; `permissions.json` enforces which tools and paths it can reach. Two agents running under the same Claude Code installation can have entirely different identities, knowledge scopes, and access policies—one can post to a public API with no access to your personal context, while another has full access to your codebase. The session owner's global context (e.g. `~/.claude/CLAUDE.md`) is still loaded at startup, but sensitive data can be moved to a blocked path (e.g. `~/.claude/sensitive/`) so agents that shouldn't have it can't reach it via the Read tool.
+`mission.md` defines what the agent is and what it's allowed to do; `permissions.json` enforces which tools and paths it can reach. Two agents under the same Claude Code installation can have entirely different identities, knowledge scopes, and access policies—one can post to a public API with no access to your personal context, while another has full access to your codebase. The session owner's global context (e.g. `~/.claude/CLAUDE.md`) is loaded at startup, but sensitive data can be moved to a blocked path (e.g. `~/.claude/sensitive/`) so agents that shouldn't have it can't reach it via the Read tool.
 
 A **harness** wraps the agent with its task graph and shared context:
 
@@ -72,6 +48,26 @@ A **harness** wraps the agent with its task graph and shared context:
 ├── acceptance.md       # pass/fail criteria
 └── agents/
     └── module-manager/ # the agent owning this harness
+```
+
+## Quick Start
+
+```bash
+# 1. Install
+curl -fsSL https://raw.githubusercontent.com/qbg-dev/boring/main/install.sh | bash
+
+# 2. Scaffold a harness in your project
+bash ~/.boring/scripts/scaffold.sh my-feature /path/to/project
+
+# 3. Edit the task graph
+$EDITOR /path/to/project/.claude/harness/my-feature/tasks.json
+
+# 4. Generate a seed prompt and launch
+bash /path/to/project/.claude/scripts/my-feature-seed.sh > /tmp/seed.txt
+cat /tmp/seed.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6
+
+# 5. Check status
+bash ~/.boring/scripts/harness-watchdog.sh --status
 ```
 
 ## tmux Layout
@@ -117,7 +113,7 @@ tmux session "h"
 
 Workers run in isolated git worktrees to avoid `.git/index.lock` contention. Monitors use horizontal splits (`-h`) to sit alongside the pane they observe.
 
-## Human Steering
+## Human Control
 
 boring is designed for collaborative workflows where you stay in control:
 
@@ -125,8 +121,6 @@ boring is designed for collaborative workflows where you stay in control:
 - **Send a message**: `hq_send` delivers to the agent's inbox; PreToolUse injects it on the next tool call
 - **Edit the task graph**: plain JSON—add, remove, or reprioritize tasks mid-session
 - **Override the stop gate**: `touch ~/.boring/state/sessions/{id}/allow-stop`
-
-## Human-Verifiable Checkpoints
 
 Agents working through a task graph are organized into **waves**—sequential batches of tasks where all tasks in wave N must be completed and reviewed before wave N+1 begins. At each wave boundary, the system enforces a **wave gate**: a synthetic task injected into the dependency graph that blocks the next wave's tasks until the gate is satisfied.
 
