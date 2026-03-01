@@ -8,10 +8,17 @@
 #   resolve_agent_outbox <agent_name> — Returns outbox.jsonl path for agent
 
 # Resolve a file path within an agent's directory.
-# Handles module/worker slash notation: "mod-x/worker-name" → worker dir, "mod-x" → module-manager dir.
-# Resolution order (non-slash): module-manager → sidecar (legacy) → harness root
+# Resolution order:
+#   "worker/$name"        → .claude/workers/$name/$filename  (flat worker fleet)
+#   "mod-x/worker-name"   → .claude/harness/mod-x/agents/worker/worker-name/$filename  (harness)
+#   "mod-x"               → module-manager → sidecar (legacy) → harness root
 resolve_agent_file() {
   local agent="$1" filename="$2" pr="${PROJECT_ROOT:-.}"
+  # Flat worker: "worker/$name" → .claude/workers/$name/$filename
+  if [[ "$agent" == worker/* ]]; then
+    echo "$pr/.claude/workers/${agent#worker/}/$filename"
+    return
+  fi
   if [[ "$agent" == */* ]]; then
     local module="${agent%%/*}" worker="${agent##*/}"
     echo "$pr/.claude/harness/$module/agents/worker/$worker/$filename"

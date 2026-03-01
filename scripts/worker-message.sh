@@ -9,11 +9,23 @@
 #   worker-message.sh list                  # show all registered workers + panes
 #
 # Workers are identified by name (e.g. "chatbot-tools"), resolved via pane-registry.json.
-# Messages are delivered via tmux send-keys with auto-signature.
+#
+# Delivery is two-layer:
+#   1. Instant  — tmux send-keys (best-effort, fires even if bus unavailable)
+#   2. Durable  — bus_publish "cell-message" → side-effects:
+#                   notify_assignee  → recipient's inbox.jsonl (survives worker sleep)
+#                   append_outbox    → sender's outbox.jsonl (audit trail)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/harness-jq.sh"
+
+# Source event-bus.sh for bus_publish (gracefully degrades if unavailable)
+_BUS_LIB="${BORING_DIR:-${CLAUDE_OPS_DIR:-$HOME/.boring}}/lib/event-bus.sh"
+_BUS_AVAILABLE="false"
+if [ -f "$_BUS_LIB" ]; then
+  source "$_BUS_LIB" 2>/dev/null && _BUS_AVAILABLE="true" || true
+fi
 
 # ── Detect own pane ID + display target ──
 _own_pane_id() {
@@ -33,6 +45,25 @@ OWN_NAME=$(jq -r --arg p "$OWN_PANE" '.[$p].harness // empty' "$PANE_REGISTRY" 2
   | sed 's|^worker/||' || true)
 
 SIGNATURE="[from ${OWN_TARGET:-?}${OWN_NAME:+ ($OWN_NAME)}]"
+# Bus identity: "worker/$name" for worker panes, "operator" for human/main session
+FROM="${OWN_NAME:+worker/$OWN_NAME}"
+FROM="${FROM:-operator}"
+
+# ── Durable bus emit (cell-message → notify_assignee + append_outbox side-effects) ──
+# $1=to (e.g. "worker/chatbot-tools")  $2=content  $3=summary  [$4=msg_type override]
+_bus_emit() {
+  [ "$_BUS_AVAILABLE" = "false" ] && return 0
+  local to="$1" content="$2" summary="${3:-}" msg_type="${4:-message}"
+  local payload
+  payload=$(jq -nc \
+    --arg to "$to" \
+    --arg from "$FROM" \
+    --arg content "$content" \
+    --arg summary "$summary" \
+    --arg msg_type "$msg_type" \
+    '{to: $to, from: $from, content: $content, summary: $summary, msg_type: $msg_type, channel: "worker-message"}')
+  bus_publish "cell-message" "$payload" 2>/dev/null || true
+}
 
 # ── Resolve worker name → pane_id ──
 _worker_pane() {
@@ -87,6 +118,7 @@ case "$CMD" in
     }
 
     _send_to_pane "$TARGET" "$CONTENT"
+    _bus_emit "worker/$RECIPIENT" "$CONTENT" "$SUMMARY"
     echo "Sent to $RECIPIENT ($TARGET)${SUMMARY:+ — $SUMMARY}"
     ;;
 
@@ -131,6 +163,10 @@ case "$CMD" in
         continue
       fi
       _send_to_pane "$TARGET" "$CONTENT"
+      # Strip harness prefix to get plain worker name for bus routing
+      local_name="${name#worker/}"
+      local_name="${local_name#child:}"
+      [ -n "$local_name" ] && _bus_emit "worker/$local_name" "$CONTENT" "$SUMMARY" "broadcast"
       echo "  → $name ($TARGET)"
       SENT=$((SENT + 1))
     done < <(jq -r "$JQ_FILTER" "$PANE_REGISTRY" 2>/dev/null | sort -u)
@@ -157,6 +193,7 @@ case "$CMD" in
 
     MSG="SHUTDOWN REQUEST: Please wrap up your current task and stop. Reason: $REASON"
     _send_to_pane "$TARGET" "$MSG"
+    _bus_emit "worker/$RECIPIENT" "$MSG" "shutdown" "shutdown"
     echo "Shutdown request sent to $RECIPIENT ($TARGET)"
     ;;
 
