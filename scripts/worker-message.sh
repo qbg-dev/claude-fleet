@@ -91,20 +91,38 @@ case "$CMD" in
     ;;
 
   broadcast)
-    CONTENT="${1:?Usage: worker-message.sh broadcast \"<content>\" [--summary \"...\"]}"
+    CONTENT="${1:?Usage: worker-message.sh broadcast \"<content>\" [--primary-only] [--summary \"...\"]}"
     shift
     SUMMARY=""
+    PRIMARY_ONLY="false"
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --summary|-s) SUMMARY="$2"; shift 2 ;;
+        --summary|-s)      SUMMARY="$2"; shift 2 ;;
+        --primary-only|-P) PRIMARY_ONLY="true"; shift ;;
         *) echo "Unknown flag: $1" >&2; exit 1 ;;
       esac
     done
 
-    # Find all worker panes AND their registered children, send to each.
-    # Includes: panes with harness="worker/$name" (primary workers)
-    #       AND panes with parent_pane pointing to a worker pane (C-x y children).
+    # By default: send to all worker panes AND registered children (parent_pane ∈ worker IDs).
+    # With --primary-only: send only to root harness panes (harness="worker/$name").
     SENT=0
+    if [ "$PRIMARY_ONLY" = "true" ]; then
+      JQ_FILTER='to_entries[]
+        | select(.value.harness | startswith("worker/"))
+        | [.key, (.value.harness | ltrimstr("worker/"))]
+        | @tsv'
+    else
+      JQ_FILTER='
+        (to_entries | map(select(.value.harness | startswith("worker/"))) | map(.key)) as $wids |
+        to_entries[]
+        | select(
+            (.value.harness | startswith("worker/"))
+            or ((.value.parent_pane // "") as $p | $p != "" and ([$p] | inside($wids)))
+          )
+        | [.key, (.value.harness // ("child:" + (.value.parent_pane // "?")))]
+        | @tsv'
+    fi
+
     while IFS=$'\t' read -r pane_id name; do
       [ "$pane_id" = "$OWN_PANE" ] && continue
       TARGET=$(_pane_target "$pane_id")
@@ -115,19 +133,10 @@ case "$CMD" in
       _send_to_pane "$TARGET" "$CONTENT"
       echo "  → $name ($TARGET)"
       SENT=$((SENT + 1))
-    done < <(jq -r '
-      # Collect all worker pane IDs (harness starts with "worker/")
-      (to_entries | map(select(.value.harness | startswith("worker/"))) | map(.key)) as $wids |
-      # Emit worker panes and any registered children (parent_pane ∈ worker IDs)
-      to_entries[]
-      | select(
-          (.value.harness | startswith("worker/"))
-          or ((.value.parent_pane // "") as $p | $p != "" and ([$p] | inside($wids)))
-        )
-      | [.key, (.value.harness // ("child:" + (.value.parent_pane // "?")))]
-      | @tsv' "$PANE_REGISTRY" 2>/dev/null | sort -u)
+    done < <(jq -r "$JQ_FILTER" "$PANE_REGISTRY" 2>/dev/null | sort -u)
 
-    echo "Broadcast to $SENT worker(s) + children${SUMMARY:+ — $SUMMARY}"
+    SCOPE=$( [ "$PRIMARY_ONLY" = "true" ] && echo "primary workers" || echo "workers + children" )
+    echo "Broadcast to $SENT $SCOPE${SUMMARY:+ — $SUMMARY}"
     ;;
 
   shutdown)
