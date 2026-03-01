@@ -12,6 +12,7 @@ set -euo pipefail
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # ── GC configs ──
 GC_THROTTLE_SEC="${GC_THROTTLE_SEC:-60}"
+GC_STALE_FILE_AGE_SEC="${GC_STALE_FILE_AGE_SEC:-86400}"
 # ── Discovery configs ──
 AGENT_DISCOVERY_ENABLED="${AGENT_DISCOVERY_ENABLED:-true}"
 ROTATION_LOCK_CLEANUP_SEC="${ROTATION_LOCK_CLEANUP_SEC:-60}"
@@ -79,8 +80,72 @@ run_gc
 # ═══════════════════════════════════════════════════════════════
 # GENERIC BLOCK — works for ALL harnesses using unified task graph
 # ═══════════════════════════════════════════════════════════════
+_block_flat_worker() {
+  local TASKS_FILE="$1"
+  local _wname="${CANONICAL#worker/}"
+  local _wdir="$PROJECT_ROOT/.claude/workers/$_wname"
+  # Worktree fallback: resolve main repo root if worker dir doesn't exist locally
+  if [ ! -d "$_wdir" ]; then
+    local _main_root
+    _main_root=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')
+    [ -n "$_main_root" ] && [ "$_main_root" != "$PROJECT_ROOT" ] && _wdir="$_main_root/.claude/workers/$_wname"
+  fi
+  local _wstate="$_wdir/state.json"
+
+  # Status check
+  local _status
+  _status=$(jq -r '.status // "running"' "$_wstate" 2>/dev/null || echo "running")
+  [ "$_status" = "stopped" ] && { hook_pass; exit 0; }
+
+  # Vision gate
+  local _vision_approved
+  _vision_approved=$(jq -r '.vision_approved // false' "$_wstate" 2>/dev/null || echo "false")
+  if [ "$_vision_approved" != "true" ]; then
+    if [ ! -f "$_wdir/vision.html" ]; then
+      hook_block "$(echo -e "## ${_wname}: Phase 0 — Vision Required\n\nCreate vision.html before any implementation.\n1. Read template: ~/.claude-ops/templates/vision.html.tmpl\n2. Fill in using your mission.md, tasks.json, state.json, MEMORY.md\n3. Include a Generalizations section (3-5 proposed improvements beyond your backlog)\n4. Write to: .claude/workers/${_wname}/vision.html\n5. Open it: open .claude/workers/${_wname}/vision.html\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+      exit 0
+    else
+      hook_block "$(echo -e "## ${_wname}: Phase 0 — Vision Awaiting Approval\n\nvision.html exists. Waiting for Warren to set vision_approved: true in state.json.\nRevise if feedback given. Do not implement until approved.\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+      exit 0
+    fi
+  fi
+
+  # Perpetual workers: pass through (watchdog handles respawn cycle)
+  local _perpetual
+  _perpetual=$(jq -r '.perpetual // false' "$_wstate" 2>/dev/null || echo "false")
+  if [ "$_perpetual" = "true" ]; then
+    local _sleep_dur
+    _sleep_dur=$(jq -r '.sleep_duration // 3600' "$_wstate" 2>/dev/null || echo "3600")
+    _log_watchdog "flat-worker stop: $_wname (perpetual, sleep=${_sleep_dur}s)"
+    hook_pass; exit 0
+  fi
+
+  # One-shot workers: block until tasks done
+  local _total _done _pending _in_prog
+  _total=$(jq '[.[] | select(.status != "deleted")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
+  _done=$(jq '[.[] | select(.status == "completed")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
+  _pending=$(jq '[.[] | select(.status == "pending")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
+  _in_prog=$(jq '[.[] | select(.status == "in_progress")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
+
+  if [ "$_done" -ge "$_total" ] && [ "$_total" -gt 0 ]; then
+    hook_block "$(echo -e "## ${_wname}: All ${_total} tasks complete\n\n1. Update MEMORY.md with key learnings\n2. Update state.json (status: done, cycles_completed++)\n\nThen stop.\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+    exit 0
+  fi
+
+  local _current
+  _current=$(jq -r '[to_entries[] | select(.value.status == "in_progress")] | first | .key // "none"' "$TASKS_FILE" 2>/dev/null || echo "none")
+  hook_block "$(echo -e "## ${_wname}: ${_done}/${_total} tasks complete\n\nCurrent: ${_current} | Pending: ${_pending} | In Progress: ${_in_prog}\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+  exit 0
+}
+
 block_generic() {
   local PROGRESS="$1"
+
+  # ── Flat worker fast-path ──
+  if [[ "$CANONICAL" == worker/* ]]; then
+    _block_flat_worker "$PROGRESS"
+    return
+  fi
 
   # ── Guards ──
   # PROGRESS path is used for dirname → harness dir.
@@ -201,6 +266,54 @@ block_generic() {
 
   hook_block "$(echo -e "$MSG")"
 }
+
+# ═══════════════════════════════════════════════════════════════
+# CHILD PANE PARENT NOTIFICATION
+# ═══════════════════════════════════════════════════════════════
+_check_child_parent_notification() {
+  [ -z "$OWN_PANE_ID" ] && return
+  [ ! -f "$PANE_REGISTRY" ] && return
+
+  local _parent_pane _parent_name _child_target _tool_count
+  _parent_pane=$(jq -r --arg p "$OWN_PANE_ID" '.[$p].parent_pane // empty' "$PANE_REGISTRY" 2>/dev/null || echo "")
+  [ -z "$_parent_pane" ] && return
+
+  _parent_name=$(jq -r --arg p "$_parent_pane" '.[$p].harness // ""' "$PANE_REGISTRY" 2>/dev/null | sed 's|^worker/||')
+  _child_target=$(jq -r --arg p "$OWN_PANE_ID" '.[$p].pane_target // "unknown"' "$PANE_REGISTRY" 2>/dev/null || echo "unknown")
+  local _tool_log="$HOME/.claude/tool-logs/$(basename "$PROJECT_ROOT")/tools.jsonl"
+  _tool_count=0
+  [ -f "$_tool_log" ] && \
+    _tool_count=$(grep -c "\"session_id\":\"$SESSION_ID\"" "$_tool_log" 2>/dev/null || true)
+  [ -z "$_tool_count" ] && _tool_count=0
+
+  # Already notified — emit bus event and pass through
+  if [ -f "$_SESSION_DIR/parent-notified" ]; then
+    if [ -n "$_parent_name" ] && [ "$_tool_count" -ge 3 ]; then
+      local _payload
+      _payload=$(jq -nc \
+        --arg sid "$SESSION_ID" \
+        --arg child_pane "$OWN_PANE_ID" \
+        --arg child_target "$_child_target" \
+        --arg parent_pane "$_parent_pane" \
+        --arg parent_name "$_parent_name" \
+        --argjson tool_count "$_tool_count" \
+        '{session_id:$sid, child_pane:$child_pane, child_target:$child_target,
+          parent_pane:$parent_pane, parent_name:$parent_name, tool_count:$tool_count}' 2>/dev/null || true)
+      [ -n "$_payload" ] && _harness_bus_publish "child.session-ended" "$_payload" 2>/dev/null || true
+    fi
+    return
+  fi
+
+  # Under threshold — pass silently
+  [ "$_tool_count" -lt 3 ] && return
+  [ -z "$_parent_name" ] && return
+
+  hook_block "$(echo -e "## Forked child — notify parent before stopping\n\nYou are a child pane of **${_parent_name}** (${_child_target}, ${_tool_count} tool calls).\n\n1. Send a summary to your parent:\n\n   bash ~/.claude-ops/scripts/worker-message.sh send ${_parent_name} \\\\\n     \"Child session ${SESSION_ID} (${_child_target}): <2-3 sentence summary of what you found/fixed/decided>\"\n\n2. Mark done:\n   touch ${_SESSION_DIR}/parent-notified\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+  exit 0
+}
+
+# ── Child pane parent notification (runs for all harness types) ──
+_check_child_parent_notification
 
 # ═══════════════════════════════════════════════════════════════
 # PROGRESS FILE RESOLUTION

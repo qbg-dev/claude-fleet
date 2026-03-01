@@ -4,7 +4,7 @@
 # Usage: worker-register-child.sh <child_pane_id> <parent_pane_id>
 #
 # The child pane inherits the parent's harness identifier, so tool-policy-gate.sh
-# enforces the same disallowedTools without needing its own permissions.json.
+# enforces the same denyList without needing its own permissions.json.
 # The watchdog skips crash recovery for child panes (they are ephemeral).
 #
 # Example:
@@ -37,4 +37,10 @@ PARENT_HARNESS=$(echo "$PARENT_ENTRY" | jq -r '.harness // empty')
 PANE_TARGET=$(hook_pane_target "$CHILD" 2>/dev/null || echo "")
 
 pane_registry_set_parent "$CHILD" "$PARENT" "$PARENT_HARNESS" "$PANE_TARGET"
+
+# Update parent to know about this child
+locked_jq_write "$PANE_REGISTRY" "pane-registry" \
+  '.[$parent] = ((.[$parent] // {}) * {children: ((.[$parent].children // []) | if index($child) then . else . + [$child] end)})' \
+  --arg parent "$PARENT" --arg child "$CHILD"
+
 echo "Registered $CHILD as child of $PARENT (harness: $PARENT_HARNESS)"
