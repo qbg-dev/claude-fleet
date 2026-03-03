@@ -42,6 +42,8 @@ VERIFIED_ENDPOINT=0
 SCREENSHOT_PATH=""
 EXTRA_CHANGES=""
 FILES_TO_ADD=""
+MERGE_REQUEST=0
+SERVICE_HINT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,6 +55,8 @@ while [[ $# -gt 0 ]]; do
     --screenshots)       SCREENSHOT_PATH="$2"; shift 2 ;;
     --changes)           EXTRA_CHANGES="$2"; shift 2 ;;
     --add)               FILES_TO_ADD="$2"; shift 2 ;;
+    --merge-request)     MERGE_REQUEST=1; shift ;;
+    --service-hint)      SERVICE_HINT="$2"; shift 2 ;;
     -*)                  echo "Unknown flag: $1"; exit 1 ;;
     *)
       if [ -z "$SUBJECT" ]; then
@@ -324,6 +328,21 @@ if [ "$UI_CHANGED" -eq 1 ] && [ -z "$SCREENSHOT_PATH" ]; then
   echo ""
   echo "REMINDER: UI files changed (.tsx/.css). Consider capturing screenshots:"
   echo "  Save to: $WORKER_DIR/screenshots/${COMMIT_SHA}-<description>.png"
+fi
+
+# ──────────────────────────────────────────────────────────────────────
+# Merge request (optional — signals chief-of-staff)
+# ──────────────────────────────────────────────────────────────────────
+
+if [ "$MERGE_REQUEST" -eq 1 ]; then
+  MERGE_SCRIPT="$MAIN_ROOT/.claude/scripts/request-merge.sh"
+  if [ -f "$MERGE_SCRIPT" ]; then
+    MERGE_ARGS=()
+    [ -n "$SERVICE_HINT" ] && MERGE_ARGS+=(--service "$SERVICE_HINT")
+    bash "$MERGE_SCRIPT" "${MERGE_ARGS[@]+"${MERGE_ARGS[@]}"}" || true
+  else
+    echo "WARNING: --merge-request specified but $MERGE_SCRIPT not found"
+  fi
 fi
 
 exit 0

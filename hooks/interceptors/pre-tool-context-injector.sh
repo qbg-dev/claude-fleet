@@ -15,6 +15,7 @@ set -uo pipefail
 # Always emit {} on any error so Claude Code doesn't show hook error in TUI
 # exit 0 in trap ensures we NEVER exit non-zero — prevents TUI "hook error" noise
 trap 'echo "{}"; exit 0' ERR
+exec 2>/dev/null  # suppress stderr — Claude Code treats any stderr as hook error
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.boring/lib/event-bus.sh" ] && source "$HOME/.boring/lib/event-bus.sh"
@@ -85,7 +86,17 @@ fi
 # Two paths: bus-based (cursor, O(1) per topic) or legacy (time-window scan, O(N*M))
 INBOX_CONTEXT=""
 if [ "$INBOX_ENABLED" = "true" ]; then
-  HARNESS_DIR="$PROJECT_ROOT/.claude/harness/$HARNESS"
+  # Resolve HARNESS_DIR for both harness and flat workers
+  # Worktrees may not have .claude/workers/ — fall back to main repo via git commondir
+  if [[ "$HARNESS" == worker/* ]]; then
+    HARNESS_DIR="$PROJECT_ROOT/.claude/workers/${HARNESS#worker/}"
+    if [ ! -d "$HARNESS_DIR" ]; then
+      _MAIN_ROOT=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')
+      [ -n "$_MAIN_ROOT" ] && HARNESS_DIR="$_MAIN_ROOT/.claude/workers/${HARNESS#worker/}"
+    fi
+  else
+    HARNESS_DIR="$PROJECT_ROOT/.claude/harness/$HARNESS"
+  fi
 
   # -- Inbox scan via standalone script --
   if [ -z "$INBOX_CONTEXT" ]; then

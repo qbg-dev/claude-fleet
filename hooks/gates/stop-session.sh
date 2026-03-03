@@ -195,22 +195,10 @@ elif [ "$NAMING_COOLDOWN" = "false" ] && [ ! -f "$ASKED_FLAG" ]; then
         fi
       fi
 
-      # C. Memory/learnings prompt — if non-trivial session
-      if [ "$TOOL_COUNT" -ge 5 ]; then
+      # C. Memory/learnings prompt — uses Claude Code's native worktree-scoped auto-memory
+      if [ "$TOOL_COUNT" -ge 3 ]; then
         PARTS+=("")
-        # Direct agent to save to their own agent memory when running as a harness agent
-        _MEMORY_HARNESS=""
-        if [ -n "$_AUTO_PANE_ID" ] && [ -f "$PANE_REGISTRY" ]; then
-          _MEMORY_HARNESS=$(jq -r --arg pid "$_AUTO_PANE_ID" '.[$pid].harness // ""' "$PANE_REGISTRY" 2>/dev/null || echo "")
-        fi
-        if [ -n "$_MEMORY_HARNESS" ]; then
-          _MEM_SLOT="sidecar"
-          [ -d "${PROJECT_ROOT:-.}/.claude/harness/${_MEMORY_HARNESS}/agents/module-manager" ] && _MEM_SLOT="module-manager"
-          _AGENT_MEMORY=".claude/harness/${_MEMORY_HARNESS}/agents/${_MEM_SLOT}/MEMORY.md"
-          PARTS+=("**Memory check:** Save learnings to your agent memory at \`${_AGENT_MEMORY}\` (NOT project memory).")
-        else
-          PARTS+=("**Memory check:** Did you learn anything worth saving to MEMORY.md?")
-        fi
+        PARTS+=("**Memory check:** Did you learn anything worth saving to your auto-memory MEMORY.md? (patterns, gotchas, API behaviors, file paths)")
       fi
 
       touch "$ASKED_FLAG"
@@ -469,29 +457,28 @@ if [ -n "$_END_PANE" ] && [ -f "$PANE_REGISTRY" ]; then
   _END_HARNESS=$(jq -r --arg pid "$_END_PANE" '.[$pid].harness // ""' "$PANE_REGISTRY" 2>/dev/null || echo "")
 fi
 
-# Detect MEMORY.md changes during this session (post-hoc observability for agent edits)
-if [ -n "$_END_HARNESS" ]; then
-  _MEM_DIR_SLOT="sidecar"
-  [ -d "$PROJECT_ROOT/.claude/harness/$_END_HARNESS/agents/module-manager" ] && _MEM_DIR_SLOT="module-manager"
-  _MEMORY_FILE="$PROJECT_ROOT/.claude/harness/$_END_HARNESS/agents/${_MEM_DIR_SLOT}/MEMORY.md"
-  _SESSION_START_FILE="$_SESSION_DIR/session-start-ts"
-  if [ -f "$_MEMORY_FILE" ]; then
-    _MEM_MTIME=$(_file_mtime "$_MEMORY_FILE")
-    _START_TS=0
-    [ -f "$_SESSION_START_FILE" ] && _START_TS=$(cat "$_SESSION_START_FILE" 2>/dev/null || echo "0")
-    # If no start timestamp recorded, record now for next session; skip detection this time
-    if [ "$_START_TS" = "0" ]; then
-      date +%s > "$_SESSION_START_FILE" 2>/dev/null || true
-    elif [ "$_MEM_MTIME" -gt "$_START_TS" ]; then
-      # MEMORY.md was modified during this session — publish observability event
-      if [ -f "$HOME/.boring/lib/event-bus.sh" ]; then
-        _mem_ev_payload=$(jq -nc --arg a "$_END_HARNESS" --arg src "agent" --arg sid "$SESSION_ID" \
-          '{agent:$a, source:$src, session_id:$sid}' 2>/dev/null || true)
-        if [ -n "$_mem_ev_payload" ]; then
-          (source "$HOME/.boring/lib/event-bus.sh" 2>/dev/null && \
-            bus_publish "agent.memory-updated" "$_mem_ev_payload" 2>/dev/null || true) &
-          disown 2>/dev/null || true
-        fi
+# Detect MEMORY.md changes during this session (post-hoc observability)
+# Uses Claude Code's native worktree-scoped auto-memory path
+_MEM_CWD="${CWD:-$(pwd)}"
+_MEM_PROJ_KEY="${_MEM_CWD//\//-}"
+_MEM_PROJ_KEY="-${_MEM_PROJ_KEY#-}"
+_MEMORY_FILE="$HOME/.claude/projects/${_MEM_PROJ_KEY}/memory/MEMORY.md"
+_SESSION_START_FILE="$_SESSION_DIR/session-start-ts"
+if [ -f "$_MEMORY_FILE" ]; then
+  _MEM_MTIME=$(_file_mtime "$_MEMORY_FILE")
+  _START_TS=0
+  [ -f "$_SESSION_START_FILE" ] && _START_TS=$(cat "$_SESSION_START_FILE" 2>/dev/null || echo "0")
+  if [ "$_START_TS" = "0" ]; then
+    date +%s > "$_SESSION_START_FILE" 2>/dev/null || true
+  elif [ "$_MEM_MTIME" -gt "$_START_TS" ]; then
+    # MEMORY.md was modified during this session — publish observability event
+    if [ -f "$HOME/.boring/lib/event-bus.sh" ]; then
+      _mem_ev_payload=$(jq -nc --arg a "${_END_HARNESS:-unknown}" --arg src "agent" --arg sid "$SESSION_ID" \
+        '{agent:$a, source:$src, session_id:$sid}' 2>/dev/null || true)
+      if [ -n "$_mem_ev_payload" ]; then
+        (source "$HOME/.boring/lib/event-bus.sh" 2>/dev/null && \
+          bus_publish "agent.memory-updated" "$_mem_ev_payload" 2>/dev/null || true) &
+        disown 2>/dev/null || true
       fi
     fi
   fi

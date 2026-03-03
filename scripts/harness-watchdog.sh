@@ -131,21 +131,129 @@ _check_scrollback_stuck() {
     return
   fi
 
+  # Idle Claude TUI detection — Claude finished its turn and is at the input prompt.
+  # The status line shows "⏵⏵ bypass permissions" without "(running)".
+  #
+  # DIFF-BASED activity detection: instead of fragile pattern matching,
+  # hash the scrollback content and compare with previous check.
+  # If content changed → worker is active (new output, thinking, tools).
+  # If content unchanged → genuinely idle.
+  # This eliminates false positives from completed-turn indicators like
+  # "✻ Worked for 52s" which look like active spinners but are static.
+  if [[ "$canonical" == worker/* ]]; then
+    local last_line
+    last_line=$(echo "$content" | tail -1)
+    local hash_file="$runtime/scrollback-hash"
+
+    if echo "$last_line" | grep -qF 'bypass permissions' && ! echo "$last_line" | grep -qF '(running)'; then
+      # Statusline looks idle — use scrollback diff to detect actual activity
+      local current_hash
+      current_hash=$(echo "$content" | md5 2>/dev/null || echo "$content" | md5sum 2>/dev/null | cut -d' ' -f1)
+
+      local prev_hash=""
+      [ -f "$hash_file" ] && prev_hash=$(cat "$hash_file" 2>/dev/null)
+      echo "$current_hash" > "$hash_file"
+
+      if [ -n "$prev_hash" ] && [ "$current_hash" != "$prev_hash" ]; then
+        # Scrollback content changed since last check — worker is active
+        rm -f "$marker" 2>/dev/null || true
+        echo 0
+        return
+      fi
+
+      # Content unchanged since last check — genuinely idle
+      if [ ! -f "$marker" ]; then
+        echo "$now_ts" > "$marker"
+        echo 0  # just detected idle, not stuck yet
+        return
+      fi
+      local since; since=$(cat "$marker" 2>/dev/null || echo "$now_ts")
+      echo $(( now_ts - since ))
+      return
+    else
+      # Worker not at idle statusline — update hash for next comparison
+      local current_hash
+      current_hash=$(echo "$content" | md5 2>/dev/null || echo "$content" | md5sum 2>/dev/null | cut -d' ' -f1)
+      echo "$current_hash" > "$hash_file"
+    fi
+  fi
+
   # Not matching stuck pattern — clear marker
   rm -f "$marker" 2>/dev/null || true
   echo 0
 }
 
-# ── Kill + respawn a stuck flat worker in the same pane ───────────
-# Kills the Claude process, then relaunches with a respawn seed.
-# The worker keeps its pane ID and registry entry (still the parent).
+# ── Extract session ID from pane scrollback or registry ───────────
+_get_session_id() {
+  local pane_id="$1"
+  local sid=""
+
+  # Try pane registry first
+  sid=$(jq -r --arg p "$pane_id" '.[$p].session_id // empty' "$PANE_REGISTRY" 2>/dev/null || echo "")
+  [ -n "$sid" ] && [ "$sid" != "null" ] && [ "$sid" != "none" ] && { echo "$sid"; return; }
+
+  # Fall back to scrollback — look for the transcript .jsonl filename
+  sid=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null \
+    | grep -oE '[a-f0-9-]{36}\.jsonl' | tail -1 | sed 's/\.jsonl//')
+  [ -n "$sid" ] && { echo "$sid"; return; }
+
+  echo ""
+}
+
+# ── Build Claude command from worker config ───────────────────────
+# Reads permissions.json + state.json to construct the full CLI command,
+# optionally with --resume <session_id> for context recovery.
+_build_claude_cmd() {
+  local worker_name="$1"
+  local session_id="${2:-}"   # optional: resume this session
+  local worker_dir="$PROJECT_ROOT/.claude/workers/$worker_name"
+  local perms="$worker_dir/permissions.json"
+
+  # Read model from permissions.json (with runtime cache fallback for macOS TCC)
+  local perms_cache="$HARNESS_STATE_DIR/harness-runtime/worker/$worker_name/permissions-cache.json"
+  local model
+  model=$(jq -r '.model // empty' "$perms" 2>/dev/null)
+  [ -z "$model" ] && model=$(jq -r '.model // empty' "$perms_cache" 2>/dev/null)
+  [ -z "$model" ] && model="sonnet"
+
+  # Read permission_mode from permissions.json (with runtime cache fallback)
+  local perm_mode
+  perm_mode=$(jq -r '.permission_mode // empty' "$perms" 2>/dev/null)
+  [ -z "$perm_mode" ] && perm_mode=$(jq -r '.permission_mode // empty' "$perms_cache" 2>/dev/null)
+  [ -z "$perm_mode" ] && perm_mode="bypassPermissions"
+
+  # Build base command
+  local cmd="claude --model $model"
+
+  # Permission mode
+  if [ "$perm_mode" = "bypassPermissions" ]; then
+    cmd="$cmd --dangerously-skip-permissions"
+  fi
+
+  # Add worker config directory
+  cmd="$cmd --add-dir $worker_dir"
+
+  # Resume session if provided
+  if [ -n "$session_id" ]; then
+    cmd="$cmd --resume $session_id"
+  fi
+
+  echo "$cmd"
+}
+
+# ── Kill + resume a stuck flat worker in the same pane ────────────
+# Kills the Claude process, then resumes via `claude --resume <session_id>`.
+# The worker keeps its pane ID, registry entry, and full conversation context.
 _unstick_worker() {
   local pane_id="$1" canonical="$2" idle_sec="$3"
   local worker_name="${canonical#worker/}"
   local worker_dir="$PROJECT_ROOT/.claude/workers/$worker_name"
-  local perms="$worker_dir/permissions.json"
 
-  # 1. Kill Claude process tree in pane
+  # 1. Get session ID before killing (need scrollback)
+  local prev_session_id
+  prev_session_id=$(_get_session_id "$pane_id")
+
+  # 2. Kill Claude process tree in pane
   local pane_pid
   pane_pid=$(tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null \
     | awk -v id="$pane_id" '$1==id{print $2}')
@@ -156,47 +264,58 @@ _unstick_worker() {
     sleep 1
   fi
 
-  # 2. Read model from permissions
-  local model
-  model=$(jq -r '.model // "sonnet"' "$perms" 2>/dev/null || echo "sonnet")
+  # 3. Build command from worker config (with resume if session available)
+  local claude_cmd
+  claude_cmd=$(_build_claude_cmd "$worker_name" "$prev_session_id")
 
-  # 3. Generate respawn seed
+  if [ -n "$prev_session_id" ]; then
+    _log "UNSTICK: $canonical — resuming session $prev_session_id in pane $pane_id"
+  else
+    _log "UNSTICK: $canonical — no session_id found, fresh start in pane $pane_id"
+  fi
+
+  # 4. Prepare seed file BEFORE launching Claude (avoids race condition)
+  local perpetual_protocol="$PROJECT_ROOT/.claude/workers/PERPETUAL-PROTOCOL.md"
   local seed_file="/tmp/worker-${worker_name}-respawn.txt"
   cat > "$seed_file" << RSEED
-You are worker **$worker_name** (respawned by watchdog after ${idle_sec}s stuck on a hanging task).
+Watchdog respawn, reason: idle ${idle_sec}s. You are worker **$worker_name**.
 
-Read these files NOW:
-1. $worker_dir/tasks.json — your current task list
-2. $worker_dir/MEMORY.md — accumulated knowledge
-3. $worker_dir/state.json — current state
+Read these files NOW in this order:
+1. $worker_dir/mission.md — your mission
+2. ${perpetual_protocol} — self-optimization protocol
+3. $worker_dir/MEMORY.md — accumulated knowledge
+4. $worker_dir/state.json — current state
+5. $worker_dir/inbox.jsonl — pending messages
 
-Then continue your work. Key rules:
-- Use explicit timeouts for network ops: \`timeout 60 <cmd>\` or \`--connect-timeout 10\`
-- If a background task doesn't complete in 2 minutes, cancel and try a different approach
-- Claim your next unclaimed task: \`bash ~/.claude-ops/scripts/worker-task.sh next\`
+Then start your next mission cycle. Do NOT stop to ask if you should continue.
 RSEED
 
-  # 4. Launch Claude in the same pane
-  local claude_cmd="claude --model $model --dangerously-skip-permissions"
-  claude_cmd="$claude_cmd --add-dir $PROJECT_ROOT/.claude/workers/$worker_name"
+  # 5. Launch Claude in the same pane
   tmux send-keys -t "$pane_id" "$claude_cmd" 2>/dev/null || true
   tmux send-keys -t "$pane_id" -H 0d 2>/dev/null || true
 
-  # 5. Wait for TUI prompt (max 60s)
+  # 6. Wait for Claude TUI to be READY (not just ❯ — old ❯ may be in scrollback).
+  # Detect "bypass permissions" statusline which only appears when Claude TUI is loaded.
+  # Clear any old content detection by waiting for FRESH statusline after launch.
+  sleep 5  # minimum startup time for Claude
   local wait=0
-  until tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -qE '❯|> $'; do
-    sleep 2; wait=$((wait + 2))
-    [ "$wait" -ge 60 ] && break
+  until tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; do
+    sleep 3; wait=$((wait + 3))
+    if [ "$wait" -ge 90 ]; then
+      _log "UNSTICK-WARN: $canonical — TUI prompt not detected after 95s, injecting seed anyway"
+      break
+    fi
   done
   sleep 2
 
-  # 6. Inject seed
+  # 7. Inject full seed prompt into Claude TUI
   tmux load-buffer "$seed_file" 2>/dev/null || true
   tmux paste-buffer -t "$pane_id" 2>/dev/null || true
-  sleep 2
+  sleep 1
   tmux send-keys -t "$pane_id" -H 0d 2>/dev/null || true
-
-  _log "UNSTICK: $canonical — killed and respawned in pane $pane_id"
+  rm -f "$seed_file" 2>/dev/null || true
+  # Write pane border status for visual indicator
+  echo "⚡ $worker_name" > "/tmp/tmux_pane_status_${pane_id}" 2>/dev/null || true
 }
 
 # ── Check a single agent ──────────────────────────────────────────
@@ -284,6 +403,19 @@ check_agent() {
   elif $pane_alive && $process_alive; then
     # ── Alive and no graceful-stop — check for stuck ──
     # Agent is mid-turn (hasn't hit stop hook yet). Nudge if too idle.
+
+    # Quick check: if a bash command is currently running, the worker is active.
+    # Long-running commands (bun test, deploy, OCR) make bus timestamps stale
+    # even though the worker is legitimately busy. Check "(running)" in statusline.
+    local pane_content
+    pane_content=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^$' | tail -3)
+    if echo "$pane_content" | grep -qF '(running)'; then
+      # Command actively executing — not stuck, clear any stale marker
+      local runtime_chk; runtime_chk=$(harness_runtime "$canonical")
+      rm -f "$runtime_chk/stuck-candidate" 2>/dev/null || true
+      return  # skip all stuck detection
+    fi
+
     local last_tool_ts; last_tool_ts=$(_last_tool_call_sec "$canonical")
     local idle_sec=0
 
@@ -295,7 +427,18 @@ check_agent() {
       idle_sec=$(_check_scrollback_stuck "$pane_id" "$canonical" "$now_ts")
     fi
 
-    if [ "$idle_sec" -gt "$STUCK_THRESHOLD_SEC" ]; then
+    # For perpetual workers, use sleep_duration as the stuck threshold
+    # (they finish cycles and go idle — detect faster than the global 20min)
+    local effective_threshold="$STUCK_THRESHOLD_SEC"
+    if [[ "$canonical" == worker/* ]]; then
+      local worker_sleep_dur
+      worker_sleep_dur=$(harness_sleep_duration "$canonical" 2>/dev/null || echo "0")
+      if [ "$worker_sleep_dur" != "none" ] && [ "$worker_sleep_dur" -gt 0 ] 2>/dev/null; then
+        effective_threshold="$worker_sleep_dur"
+      fi
+    fi
+
+    if [ "$idle_sec" -gt "$effective_threshold" ]; then
       _log "STUCK: $canonical (pane $pane_id) — ${idle_sec}s since last activity"
       _publish_agent_event "agent.stuck" "$canonical" "Alive but ${idle_sec}s since last activity"
 
@@ -338,10 +481,82 @@ check_agent() {
 _respawn_agent() {
   local canonical="$1" pane_id="$2" pane_target="$3" reason="$4"
 
-  # ── Flat worker path: worker/{name} → launch-flat-worker.sh ──
+  # ── Flat worker path: worker/{name} ──
   if [[ "$canonical" == worker/* ]]; then
     local worker_name="${canonical#worker/}"
-    # Try project-local first, fall back to upstream generic
+
+    # If pane is alive, resume in-place (avoids creating new window/worktree)
+    local pane_alive=false
+    tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -q "^${pane_id}$" && pane_alive=true
+
+    if $pane_alive; then
+      local prev_session_id
+      prev_session_id=$(_get_session_id "$pane_id")
+
+      # Kill existing Claude process in pane
+      local pane_pid
+      pane_pid=$(tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null \
+        | awk -v id="$pane_id" '$1==id{print $2}')
+      if [ -n "$pane_pid" ]; then
+        pkill -TERM -P "$pane_pid" 2>/dev/null || true
+        sleep 2
+        pkill -KILL -P "$pane_pid" 2>/dev/null || true
+        sleep 1
+      fi
+
+      # Prepare seed file BEFORE launching
+      local perpetual_protocol="$PROJECT_ROOT/.claude/workers/PERPETUAL-PROTOCOL.md"
+      local prompt_file="/tmp/watchdog-prompt-${worker_name}.txt"
+      cat > "$prompt_file" << WSEED
+Watchdog respawn, reason: $reason. You are worker **$worker_name**.
+
+Read these files NOW in this order:
+1. $worker_dir/mission.md — your mission
+2. ${perpetual_protocol} — self-optimization protocol
+3. $worker_dir/MEMORY.md — accumulated knowledge
+4. $worker_dir/state.json — current state
+5. $worker_dir/inbox.jsonl — pending messages
+
+Then start your next mission cycle. Do NOT stop to ask if you should continue.
+WSEED
+
+      # Build command from config, resume previous session
+      local claude_cmd
+      claude_cmd=$(_build_claude_cmd "$worker_name" "$prev_session_id")
+      tmux send-keys -t "$pane_id" "$claude_cmd" 2>/dev/null || true
+      tmux send-keys -t "$pane_id" -H 0d 2>/dev/null || true
+
+      # Wait for Claude TUI to be READY (detect "bypass permissions" statusline)
+      sleep 5
+      local wait=0
+      until tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; do
+        sleep 3; wait=$((wait + 3))
+        if [ "$wait" -ge 90 ]; then
+          _log "RESPAWN-WARN: $canonical — TUI prompt not detected after 95s, injecting seed anyway"
+          break
+        fi
+      done
+      sleep 2
+
+      # Inject seed into Claude TUI
+      tmux load-buffer "$prompt_file" 2>/dev/null || true
+      tmux paste-buffer -t "$pane_id" 2>/dev/null || true
+      sleep 1
+      tmux send-keys -t "$pane_id" -H 0d 2>/dev/null || true
+      rm -f "$prompt_file" 2>/dev/null || true
+
+      if [ -n "$prev_session_id" ]; then
+        _log "RESPAWN: $canonical (reason=$reason) — resumed session $prev_session_id in pane $pane_id"
+      else
+        _log "RESPAWN: $canonical (reason=$reason) — fresh start in pane $pane_id"
+      fi
+      # Write pane border status for visual indicator
+      echo "⚡ $worker_name" > "/tmp/tmux_pane_status_${pane_id}" 2>/dev/null || true
+      _publish_agent_event "agent.respawned" "$canonical" "Respawned after $reason (in-place)"
+      return
+    fi
+
+    # Pane dead — fall back to launch-flat-worker.sh (creates new window)
     local worker_launch="$PROJECT_ROOT/.claude/scripts/launch-flat-worker.sh"
     if [ ! -f "$worker_launch" ]; then
       worker_launch="$HOME/.boring/scripts/launch-flat-worker.sh"
@@ -353,8 +568,8 @@ _respawn_agent() {
     # Remove stale pane registry entry
     pane_registry_remove "$pane_id" 2>/dev/null || true
     bash "$worker_launch" "$worker_name" &
-    _log "RESPAWN: $canonical (reason=$reason) — launched via launch-flat-worker.sh"
-    _publish_agent_event "agent.respawned" "$canonical" "Respawned after $reason"
+    _log "RESPAWN: $canonical (reason=$reason) — launched via launch-flat-worker.sh (pane was dead)"
+    _publish_agent_event "agent.respawned" "$canonical" "Respawned after $reason (new pane)"
     return
   fi
 

@@ -87,7 +87,22 @@ for dir in "$WORKERS_DIR"/*/; do
     last_line=$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -E '✢|✶|✳|⏺|❯|Bash|Read|Edit|Write|Glob|Grep' | tail -1 | head -c 80 || echo "(empty)")
     loc=$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' 2>/dev/null \
       | awk -v p="$pane" '$1==p{print $2}')
-    echo "  $name ($pane $loc): $last_line"
+    # Check if registered in pane-registry with harness key (required for watchdog)
+    reg=""
+    if [ -f "$PANE_REG" ]; then
+      harness=$(jq -r --arg p "$pane" '.[$p].harness // empty' "$PANE_REG" 2>/dev/null)
+      if [ -n "$harness" ]; then
+        reg="⚡"
+      else
+        sn=$(jq -r --arg p "$pane" '.[$p].session_name // empty' "$PANE_REG" 2>/dev/null)
+        if [ -n "$sn" ]; then
+          reg="⚠️ no-harness"
+        else
+          reg="❌ unregistered"
+        fi
+      fi
+    fi
+    echo "  $name ($pane $loc) $reg: $last_line"
   else
     echo "  $name: NO PANE (dead or not started)"
   fi
@@ -130,15 +145,26 @@ for dir in "$WORKERS_DIR"/*/; do
   [ ! -d "$dir" ] && continue
   name=$(basename "$dir")
   branch="worker/$name"
-  # Check branch exists first
-  if git -C "$PROJECT_ROOT" rev-parse --verify "$branch" &>/dev/null; then
+  if ! git -C "$PROJECT_ROOT" rev-parse --verify "$branch" &>/dev/null; then
+    continue
+  fi
+  # Check if branch shares history with main (post-v1.0 squash branches do)
+  mb=$(git -C "$PROJECT_ROOT" merge-base main "$branch" 2>/dev/null || echo "")
+  if [ -n "$mb" ]; then
     commits=$(git -C "$PROJECT_ROOT" log --oneline "main..$branch" 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$commits" -gt 0 ]; then
-      echo "  $name: $commits unmerged commits on $branch"
+    if [ "${commits:-0}" -gt 0 ]; then
+      echo "  $name: $commits unmerged commits"
+      BRANCH_FOUND=1
+    fi
+  else
+    # Disconnected history (pre-v1.0 squash) — compare file trees
+    diff_files=$(git -C "$PROJECT_ROOT" diff --name-only main "$branch" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${diff_files:-0}" -gt 0 ]; then
+      echo "  $name: diverged (pre-v1.0), $diff_files files differ"
       BRANCH_FOUND=1
     fi
   fi
 done
 if [ "$BRANCH_FOUND" -eq 0 ]; then
-  echo "  No worker branches with unmerged commits"
+  echo "  All worker branches up to date"
 fi

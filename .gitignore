@@ -41,3 +41,5 @@ plugins/
 *.swp
 *.swo
 *~
+node_modules/
+bun.lock

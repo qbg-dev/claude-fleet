@@ -4,7 +4,7 @@
   "last_cycle_at": null,
   "issues_found": 0,
   "issues_fixed": 0,
-  "perpetual": true,
+  "perpetual": false,
   "sleep_duration": 3600,
   "vision_approved": false
 }

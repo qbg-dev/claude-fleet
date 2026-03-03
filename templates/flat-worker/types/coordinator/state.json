@@ -5,6 +5,6 @@
   "issues_found": 0,
   "issues_fixed": 0,
   "perpetual": true,
-  "sleep_duration": 3600,
+  "sleep_duration": 1800,
   "vision_approved": false
 }

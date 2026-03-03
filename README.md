@@ -7,6 +7,16 @@
 
 In **boring**, every agent is either a **coordinator** or a **worker**. Coordinators manage task graphs and delegate to workers. Workers claim tasks, execute them, and report back through an **event bus**. Every tool call flows through Claude Code hooks that log events, inject context, and keep agents on task. A **watchdog** respawns agents after graceful stops or crashes. You can interrupt at any point, steer the agent with a message, and it picks up where it left off.
 
+**Flat workers** are a simpler alternative: independent Claude sessions with their own tmux windows, git worktrees, and `mission.md`—no module-manager layer required. Three typed templates make it easy to spin up the right kind of agent:
+
+| Type | Access | Lifecycle | Use case |
+|------|--------|-----------|----------|
+| **implementer** | Full read-write | One-shot | Features, bug fixes |
+| **monitor** | Read-only | Perpetual | Production observation, anomaly detection |
+| **coordinator** | Full + git merge/push | Perpetual | Branch merges, prod deploys, triage |
+
+Monitor workers report findings to the coordinator (chief-of-staff) rather than fixing them, preserving a clean read-only boundary. New flat workers must pass a **Phase 0 vision gate**—creating a `vision.html` artifact showing Before/After, approach, and acceptance criteria—before beginning implementation.
+
 Every Claude session running under boring is registered in `pane-registry.json`—a live map of who is running, in which tmux pane, with which harness. Coordinators and workers can be composed at arbitrary depth; in practice the pattern is one **central coordinator** per repo with one **module-manager** per workstream, each owning its own task graph:
 
 ```
@@ -156,6 +166,8 @@ Wave reports live at `~/.boring/harness/reports/{harness}/wave-{N}.html` and ser
 ├── scripts/              # CLI scripts (scaffold.sh, watchdog, monitor, ...)
 ├── sweeps.d/             # Cron-style maintenance sweeps
 ├── templates/            # Scaffold templates (.tmpl files)
+│   └── flat-worker/
+│       └── types/        # Agent type templates (implementer, monitor, coordinator)
 ├── tests/                # Test suite
 
 ```

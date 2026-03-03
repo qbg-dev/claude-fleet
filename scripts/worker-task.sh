@@ -126,7 +126,7 @@ case "$CMD" in
 
     # Find next task ID
     MAX_NUM=$(jq -r 'keys[]' "$TASKS_FILE" 2>/dev/null | sed 's/^T//' | sort -n | tail -1)
-    NEXT_NUM=$(( ${MAX_NUM:-0} + 1 ))
+    NEXT_NUM=$(( 10#${MAX_NUM:-0} + 1 ))
     TASK_ID=$(printf "T%03d" "$NEXT_NUM")
     NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 

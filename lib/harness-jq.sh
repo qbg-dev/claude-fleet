@@ -20,7 +20,9 @@ mkdir -p "$HARNESS_LOCK_DIR" 2>/dev/null || true
 # Works on both macOS (date -j) and Linux (date -d).
 iso_to_epoch() {
   local ts="$1"
-  date -j -f "%Y-%m-%dT%H:%M:%S" "${ts%Z}" "+%s" 2>/dev/null \
+  # Bus timestamps end in Z (UTC). macOS date -j treats input as local time,
+  # so we must set TZ=UTC to get correct epoch seconds.
+  TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "${ts%Z}" "+%s" 2>/dev/null \
     || date -d "$ts" "+%s" 2>/dev/null || echo "0"
 }
 
@@ -550,19 +552,32 @@ harness_sleep_duration() {
   local val
   local perpetual_val
 
+  # Helper: read JSON safely — tries direct jq first, falls back to runtime cache.
+  # macOS TCC blocks launchd agents from reading ~/Desktop/ files directly.
+  _safe_jq() {
+    local file="$1" expr="$2" cache="$3"
+    val=$(jq -r "$expr" "$file" 2>/dev/null)
+    [ -n "$val" ] && [ "$val" != "null" ] && echo "$val" && return
+    # Fallback: read from runtime cache (in ~/.boring/state/, always accessible)
+    [ -n "$cache" ] && [ -f "$cache" ] && val=$(jq -r "$expr" "$cache" 2>/dev/null)
+    [ -n "$val" ] && [ "$val" != "null" ] && echo "$val" && return
+    echo ""
+  }
+
   if [[ "$canonical" == worker/* ]]; then
     # Flat worker: "worker/{name}" → .claude/workers/{name}/state.json
     local worker="${canonical#worker/}"
     local state="$project_root/.claude/workers/$worker/state.json"
-    if [ -f "$state" ]; then
+    local cache="$HARNESS_STATE_DIR/harness-runtime/worker/$worker/config-cache.json"
+    if [ -f "$state" ] || [ -f "$cache" ]; then
       # Check perpetual field: if explicitly false, signal watchdog to skip respawn
       # NOTE: cannot use jq // operator — it treats boolean false as falsy
-      perpetual_val=$(jq -r 'if .perpetual == null then "unset" elif .perpetual == false then "false" else "true" end' "$state" 2>/dev/null)
+      perpetual_val=$(_safe_jq "$state" 'if .perpetual == null then "unset" elif .perpetual == false then "false" else "true" end' "$cache")
       if [ "$perpetual_val" = "false" ]; then
         echo "none"
         return
       fi
-      val=$(jq -r '.sleep_duration // empty' "$state" 2>/dev/null)
+      val=$(_safe_jq "$state" '.sleep_duration // empty' "$cache")
       [ -n "$val" ] && echo "$val" && return
     fi
   elif [[ "$canonical" == */* ]]; then
@@ -571,7 +586,7 @@ harness_sleep_duration() {
     local worker="${canonical##*/}"
     local state="$project_root/.claude/harness/$module/agents/worker/$worker/state.json"
     if [ -f "$state" ]; then
-      val=$(jq -r '.sleep_duration // empty' "$state" 2>/dev/null)
+      val=$(_jq_read "$state" '.sleep_duration // empty')
       [ -n "$val" ] && echo "$val" && return
     fi
   else
@@ -580,13 +595,13 @@ harness_sleep_duration() {
     local _agent_dir; _agent_dir=$(_harness_coordinator_dir "$_hdir")
     local state="$_agent_dir/state.json"
     if [ -f "$state" ]; then
-      val=$(jq -r '.sleep_duration // empty' "$state" 2>/dev/null)
+      val=$(_jq_read "$state" '.sleep_duration // empty')
       [ -n "$val" ] && echo "$val" && return
     fi
     # Fallback: progress.json (legacy top-level harnesses like hq-v2)
     local progress="$project_root/.claude/harness/$canonical/progress.json"
     if [ -f "$progress" ]; then
-      val=$(jq -r '.sleep_duration // empty' "$progress" 2>/dev/null)
+      val=$(_jq_read "$progress" '.sleep_duration // empty')
       [ -n "$val" ] && echo "$val" && return
     fi
   fi
@@ -1173,6 +1188,22 @@ harness_progress_path() {
     fi
   fi
 
+  # Try 2.5: flat worker tasks.json (check worktree, then fall back to main repo)
+  if [[ "$name" == worker/* ]]; then
+    local worker_name="${name#worker/}"
+    if [ -n "$project" ] && [ -f "$project/.claude/workers/$worker_name/tasks.json" ]; then
+      echo "$project/.claude/workers/$worker_name/tasks.json" && return
+    fi
+    # Worktree fallback: resolve main repo root
+    if [ -n "$project" ]; then
+      local _main_root
+      _main_root=$(git -C "$project" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')
+      if [ -n "$_main_root" ] && [ "$_main_root" != "$project" ] && [ -f "$_main_root/.claude/workers/$worker_name/tasks.json" ]; then
+        echo "$_main_root/.claude/workers/$worker_name/tasks.json" && return
+      fi
+    fi
+  fi
+
   # Try 3: v2 tasks.json
   if [ -n "$project" ] && [ -f "$project/.claude/harness/$name/tasks.json" ]; then
     echo "$project/.claude/harness/$name/tasks.json" && return
@@ -1189,6 +1220,11 @@ harness_all_progress_files() {
     [ -f "$pf" ] || continue
     echo "$pf"
   done
+  # Flat workers
+  for pf in "$project"/.claude/workers/*/tasks.json; do
+    [ -f "$pf" ] || continue
+    echo "$pf"
+  done
 }
 
 # ── Policy file resolution ──
@@ -1197,6 +1233,17 @@ harness_all_progress_files() {
 # Returns path to the injections config (also serves as rules file — same policy.json)
 harness_inject_file() {
   local harness="${1:?}" project="${2:?}"
+  # Flat worker path (check worktree, then main repo)
+  if [[ "$harness" == worker/* ]]; then
+    local wf="$project/.claude/workers/${harness#worker/}/policy.json"
+    [ -f "$wf" ] && echo "$wf" && return
+    local _main_root
+    _main_root=$(git -C "$project" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')
+    if [ -n "$_main_root" ] && [ "$_main_root" != "$project" ]; then
+      wf="$_main_root/.claude/workers/${harness#worker/}/policy.json"
+      [ -f "$wf" ] && echo "$wf" && return
+    fi
+  fi
   local f="$project/.claude/harness/$harness/policy.json"
   [ -f "$f" ] && echo "$f" && return
   echo ""

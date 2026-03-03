@@ -7,15 +7,16 @@ set -uo pipefail
 
 # ── Always return {} on stdout, even on error — exit 0 ensures no TUI "hook error" noise ──
 trap 'echo "{}"; exit 0' EXIT
+exec 2>/dev/null  # suppress stderr — Claude Code treats any stderr as hook error
 
 # ── Read stdin ──
 INPUT=$(cat)
 
 # ── Extract common fields (use <<< to avoid echo+pipe control-char issues) ──
-SESSION_ID=$(jq -r '.session_id // "unknown"' <<< "$INPUT")
-TOOL_NAME=$(jq -r '.tool_name // empty' <<< "$INPUT")
-CWD=$(jq -r '.cwd // ""' <<< "$INPUT")
-TOOL_USE_ID=$(jq -r '.tool_use_id // ""' <<< "$INPUT")
+SESSION_ID=$(jq -r '.session_id // "unknown"' <<< "$INPUT" 2>/dev/null || echo "unknown")
+TOOL_NAME=$(jq -r '.tool_name // empty' <<< "$INPUT" 2>/dev/null || echo "")
+CWD=$(jq -r '.cwd // ""' <<< "$INPUT" 2>/dev/null || echo "")
+TOOL_USE_ID=$(jq -r '.tool_use_id // ""' <<< "$INPUT" 2>/dev/null || echo "")
 TOOL_RESULT=$(jq -r '.tool_result // ""' <<< "$INPUT" 2>/dev/null || echo "")
 
 # Skip if no tool name
@@ -33,6 +34,7 @@ TIMESTAMP=$(date -Iseconds)
 # ── Source libraries ──
 source "$HOME/.boring/lib/pane-resolve.sh" 2>/dev/null || true
 source "$HOME/.boring/lib/event-bus.sh" 2>/dev/null || true
+set +e  # event-bus.sh sets -euo pipefail; undo -e to avoid unexpected exits
 
 # ── Resolve harness ──
 HARNESS=""

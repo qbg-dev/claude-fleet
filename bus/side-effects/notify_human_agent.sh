@@ -43,10 +43,7 @@ if [ -n "$url" ]; then
   click_args+=(-open "$url")
 fi
 
-terminal-notifier \
-  -title "$title" \
-  -subtitle "$subtitle" \
-  -message "$body" \
-  -sound default \
-  "${click_args[@]}" \
-  2>/dev/null || true
+# Build full args array — avoids empty-array set -u crash on bash 3.2 (macOS)
+notif_args=(-title "$title" -subtitle "$subtitle" -message "$body" -sound default)
+[ ${#click_args[@]} -gt 0 ] && notif_args+=("${click_args[@]}")
+terminal-notifier "${notif_args[@]}" 2>/dev/null || true

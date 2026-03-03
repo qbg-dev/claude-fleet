@@ -264,6 +264,70 @@ Each worker gets a git worktree at `../{ProjectName}-w-{name}` on branch `worker
 
 The watchdog (`harness-watchdog.sh`) handles both harness agents and flat workers (detects `worker/*` canonical names).
 
+### Phase 0 Vision Gate
+
+Every new flat worker must pass a **vision gate** before beginning its mission. The seed prompt includes:
+
+> **Phase 0 — Vision First**: Before writing any code, create `vision.html` in the project root. The file must show: (1) A Before/After sketch of the feature or fix, (2) the proposed implementation approach, (3) acceptance criteria. Open the file in a browser for Warren to review. Do not proceed to implementation until `vision_approved: true` appears in `state.json`.
+
+The Stop hook enforces this: if `vision_approved` is absent or false, it blocks the session with a reminder to create and share `vision.html`.
+
+**Bypass for existing workers** (already have cycles completed): set `"vision_approved": true` in `state.json` before launch.
+
+---
+
+## Agent Type Templates
+
+Three typed templates at `~/.boring/templates/flat-worker/types/`. Copy the matching type when scaffolding a new worker:
+
+```bash
+cp -r ~/.boring/templates/flat-worker/types/implementer/ .claude/workers/my-worker/
+# Or: monitor / coordinator
+```
+
+### implementer
+
+A **read-write** worker that implements features or fixes bugs. Full tool access. Deploys to test autonomously; notifies coordinator for prod deploys.
+
+| Field | Value |
+|-------|-------|
+| `perpetual` | false |
+| `vision_approved` | false (must create vision.html first) |
+| Denied tools | `git push --force`, `sudo`, destructive ops |
+
+### monitor
+
+A **read-only** worker that observes production and reports issues. Cannot modify source files or deploy. Reports findings to the coordinator (chief-of-staff) rather than fixing them directly.
+
+| Field | Value |
+|-------|-------|
+| `perpetual` | true |
+| `sleep_duration` | 1800 (30 min) |
+| Denied tools | Edit, Write(src/**), Write(data/**), git push, deploy-prod |
+
+**Escalation pattern** — at end of each cycle, if issues found:
+
+```bash
+bash ~/.boring/scripts/worker-message.sh send chief-of-staff \
+  "monitor CRITICAL: <summary of findings, 1 line each>"
+```
+
+For CRITICAL findings, also emit a bus event to notify Warren directly:
+```bash
+source ~/.boring/lib/event-bus.sh
+bus_publish "notification" '{"message":"<finding>","title":"Monitor Alert"}'
+```
+
+### coordinator
+
+A **full-access** worker that merges completed branches, deploys to prod, and triages monitor reports. Reads the task list for pending merge/deploy work, then handles it in order.
+
+| Field | Value |
+|-------|-------|
+| `perpetual` | true |
+| `sleep_duration` | 1800 |
+| Extra tools | git merge, git push, deploy-prod |
+
 ---
 
 ## Respawn Configuration (Flat Workers)
@@ -339,8 +403,12 @@ bus_git_checkpoint "auto: cycle N complete"
 | `.claude/bus/stream.jsonl` | Event stream (project-local) |
 | `~/.boring/templates/conv-monitor/` | Conv-monitor worker template |
 | `~/.boring/templates/flat-worker/.commit-template.md` | Standardized worker commit format |
+| `~/.boring/templates/flat-worker/types/implementer/` | Implementer type template (read-write, one-shot) |
+| `~/.boring/templates/flat-worker/types/monitor/` | Monitor type template (read-only, perpetual, reports to chief-of-staff) |
+| `~/.boring/templates/flat-worker/types/coordinator/` | Coordinator type template (full access, merge/deploy) |
 | `~/.boring/scripts/scaffold-conv-monitor.sh` | Scaffold conv-monitor for a project |
 | `~/.boring/scripts/worker-commit.sh` | Structured commit helper for flat workers |
+| `~/.boring/scripts/worker-message.sh` | Inter-worker messaging (send/read) |
 | `~/.boring/scripts/worker-bus-emit.sh` | Worker → bus message emitter |
 | `~/.boring/scripts/worker-outbox-sync.sh` | Bus → per-worker outbox materializer |
 | `~/.boring/scripts/worker-inbox.sh` | Human-readable worker message summary |
@@ -411,7 +479,10 @@ Each 30-minute cycle:
 4. Append cycle report to MEMORY.md
 5. Update state.json counters
 6. Emit bus events for urgent findings
-7. Sleep 30 minutes, repeat
+7. **Report to coordinator**: if any findings, message chief-of-staff via `worker-message.sh`
+8. Sleep 30 minutes, repeat
+
+Conv-monitor is a **monitor-type** worker (read-only). It never fixes issues itself—it reports them to the coordinator for triage. The coordinator (chief-of-staff) then creates implementer tasks or notifies Warren.
 
 The worker never sets `status="done"` — it runs perpetually until killed.
 

@@ -2,8 +2,8 @@
   "version": 3,
   "event_types": {
     "cell-message": {
-      "side_effects": ["notify_assignee", "notify_tmux_if_urgent", "inject_directive_if_flagged", "append_outbox"],
-      "description": "Direct message between agents. Writes to recipient inbox, appends to sender outbox."
+      "side_effects": ["deliver_tmux", "notify_assignee", "notify_tmux_if_urgent", "inject_directive_if_flagged", "append_outbox"],
+      "description": "Direct message between agents. Delivers to recipient tmux pane, writes to inbox, appends to sender outbox."
     },
     "announcement": {
       "side_effects": ["notify_assignee", "inject_directive_if_flagged", "notify_tmux_if_urgent", "append_outbox"],
@@ -12,6 +12,10 @@
     "worker.started": {
       "side_effects": ["notify_assignee"],
       "description": "Worker agent launched and registered."
+    },
+    "worker.commit": {
+      "side_effects": ["notify_chief_of_staff"],
+      "description": "Worker made a git commit."
     },
     "worker.loop": {
       "side_effects": [],

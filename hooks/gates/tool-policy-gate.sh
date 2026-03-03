@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tool-policy-gate.sh — PreToolUse gate that blocks tools per agent permissions.json
 #
-# Reads disallowedTools from the calling agent's permissions.json and blocks
+# Reads denyList from the calling agent's permissions.json and blocks
 # matching tool calls. Pattern format:
 #   "ToolName"              — blocks all uses of ToolName
 #   "Bash(git push*)"      — blocks Bash commands matching glob (also catches env/command/bash -c wrappers)
@@ -9,7 +9,7 @@
 #   "Write(data/**)"        — blocks Write on files matching glob (resolves symlinks)
 #   "Read(/secret/**)"      — blocks Read on files matching glob (resolves symlinks)
 #
-# This replaces --disallowedTools CLI flag with a centralized hook.
+# Hook-enforced (not the CLI --disallowedTools flag).
 set -uo pipefail
 trap 'echo "{}"; exit 0' ERR
 exec 2>/dev/null  # suppress stderr — Claude Code treats any stderr as hook error
@@ -28,8 +28,10 @@ resolve_pane_and_harness "$SESSION_ID"
 # Resolve PROJECT_ROOT — must follow worktrees back to main repo
 # Do this BEFORE any reference to $PROJECT_ROOT (set -u would kill us)
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+_IS_WORKTREE=false
 if [ -f "$PROJECT_ROOT/.git" ]; then
   # Worktree: .git is a file pointing to main repo
+  _IS_WORKTREE=true
   _MAIN_GIT_DIR=$(sed 's/gitdir: //' "$PROJECT_ROOT/.git" | sed 's|/\.git/worktrees/.*||')
   PROJECT_ROOT="$_MAIN_GIT_DIR"
 fi
@@ -58,8 +60,8 @@ fi
 
 [ ! -f "$PERMS" ] && { echo '{}'; exit 0; }
 
-# Read disallowedTools array
-DISALLOWED=$(jq -r '.disallowedTools // [] | .[]' "$PERMS" 2>/dev/null || true)
+# Read denyList array
+DISALLOWED=$(jq -r '.denyList // [] | .[]' "$PERMS" 2>/dev/null || true)
 [ -z "$DISALLOWED" ] && { echo '{}'; exit 0; }
 
 # Extract tool-specific arguments for matching
@@ -81,6 +83,21 @@ if [ "$TOOL_NAME" = "Bash" ]; then
   fi
   # Also match against normalized form (checked alongside raw COMMAND below)
   COMMAND_NORM="$_NORM"
+
+  # Whitelist: messaging/notification tools — content should never trigger policy blocks
+  case "$COMMAND_NORM" in
+    *worker-message.sh*|*worker-bus-emit.sh*|notify\ *) echo '{}'; exit 0 ;;
+  esac
+
+  # Universal gate: block direct prod access from worktrees (workers)
+  # Workers must not rsync/scp/ssh to prod directly — use deploy-prod.sh from main repo
+  if [ "$_IS_WORKTREE" = true ]; then
+    _PROD_IP="120.77.216.196"
+    if echo "$COMMAND" | grep -qF "$_PROD_IP" || echo "$COMMAND_NORM" | grep -qF "$_PROD_IP"; then
+      hook_block "Direct prod access ($_PROD_IP) blocked from worktree. Workers cannot deploy to prod — notify Warren's main session."
+      exit 0
+    fi
+  fi
 fi
 FILE_PATH=""
 case "$TOOL_NAME" in

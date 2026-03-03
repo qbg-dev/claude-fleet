@@ -95,7 +95,7 @@ for harness_dir in "$HARNESS_ROOT"/*/; do
 {
   "model": "sonnet",
   "permission_mode": "bypassPermissions",
-  "disallowedTools": [
+  "denyList": [
     "Bash(./scripts/deploy-prod*)",
     "Bash(./scripts/deploy.sh*)",
     "Bash(git push*)",

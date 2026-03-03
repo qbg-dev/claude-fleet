@@ -2,10 +2,12 @@
 # worker-post-commit-hook.sh — Installed as .git/hooks/post-commit in worker worktrees.
 # Generic upstream version — works with any project that has .claude/workers/{name}/.
 #
-# After each commit, notifies the operator via:
+# After each commit:
 # 1. Updates worker state.json with latest commit info
-# 2. Sends a tmux notification to the operator's pane
-# 3. Writes to shared commit log
+# 2. Messages chief-of-staff via worker-message.sh (durable inbox delivery)
+# 3. Sends desktop notification to Warren
+# 4. Writes to shared commit log (.commit-log.jsonl)
+# 5. Emits worker.commit bus event
 
 # Resolve which worker this is from the branch name
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
@@ -31,22 +33,12 @@ if [ -f "$STATE_FILE" ]; then
     "$STATE_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATE_FILE" || rm -f "$TMP"
 fi
 
-# Notify operator via tmux message
-# Find operator's pane from pane-registry (look for the main session lead)
-PANE_REG="$HOME/.claude-ops/state/pane-registry.json"
-OPERATOR_PANE=""
-if [ -f "$PANE_REG" ]; then
-  # Operator's main agent is typically flagged as "warren", "lead", or a known pane
-  OPERATOR_PANE=$(jq -r 'to_entries[] | select(.value.display == "warren" or .value.task == "lead") | .key' "$PANE_REG" 2>/dev/null | head -1)
-fi
-# Fallback: look for session h:1.0 pane
-if [ -z "$OPERATOR_PANE" ]; then
-  OPERATOR_PANE=$(tmux list-panes -t h:1 -F '#{pane_id}' 2>/dev/null | head -1)
-fi
-if [ -n "$OPERATOR_PANE" ]; then
-  MSG="[from $WORKER_NAME] committed $COMMIT_SHA: $COMMIT_MSG"
-  tmux send-keys -t "$OPERATOR_PANE" "$MSG"
-  tmux send-keys -t "$OPERATOR_PANE" -H 0d
+# Notify chief-of-staff via worker-message.sh (durable inbox + tmux delivery)
+WORKER_MSG_SCRIPT="$HOME/.claude-ops/scripts/worker-message.sh"
+if [ -x "$WORKER_MSG_SCRIPT" ]; then
+  bash "$WORKER_MSG_SCRIPT" send chief-of-staff \
+    "[$WORKER_NAME] committed $COMMIT_SHA on $BRANCH: $COMMIT_MSG" \
+    --summary "commit $COMMIT_SHA by $WORKER_NAME" 2>/dev/null || true
 fi
 
 # Also send desktop notification via notify helper (if available)
@@ -58,7 +50,7 @@ fi
 COMMIT_LOG="$MAIN_ROOT/.claude/workers/.commit-log.jsonl"
 echo "{\"worker\":\"$WORKER_NAME\",\"sha\":\"$COMMIT_SHA\",\"msg\":\"$COMMIT_MSG\",\"branch\":\"$BRANCH\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >> "$COMMIT_LOG" 2>/dev/null
 
-# Emit worker.commit bus event (materialized to outbox by side-effect)
+# Emit worker.commit bus event (side-effects handle inbox + tmux delivery)
 _BUS_LIB="${CLAUDE_OPS_DIR:-${BORING_DIR:-$HOME/.boring}}/lib/event-bus.sh"
 if [ -f "$_BUS_LIB" ]; then
   export PROJECT_ROOT="$MAIN_ROOT"

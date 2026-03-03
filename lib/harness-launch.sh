@@ -48,7 +48,7 @@ harness_launch() {
 
   # ── Resolve permissions from permissions.json ────────────────
   # Reads sidecar permissions (self-sidecar agents use this too).
-  # Fields: permission_mode, model, allowedTools[], disallowedTools[], tools[], addDirs[]
+  # Fields: permission_mode, model, allowedTools[], denyList[], tools[], addDirs[]
   # Check module-manager first (v3 harnesses), fall back to sidecar (v2 legacy)
   local perms_json="$project_root/.claude/harness/${harness}/agents/module-manager/permissions.json"
   [ ! -f "$perms_json" ] && perms_json="$project_root/.claude/harness/${harness}/agents/sidecar/permissions.json"
@@ -61,7 +61,7 @@ harness_launch() {
     perm_mode=$(jq -r '.permission_mode // "bypassPermissions"' "$perms_json")
     local _model; _model=$(jq -r '.model // empty' "$perms_json"); [ -n "$_model" ] && model="$_model"
     perm_allowed_tools=$(jq -r '(.allowedTools // []) | join(",")' "$perms_json")
-    # disallowedTools enforced by tool-policy-gate.sh PreToolUse hook
+    # denyList enforced by tool-policy-gate.sh PreToolUse hook
     perm_tools=$(jq -r '(.tools // []) | join(",")' "$perms_json")
     perm_add_dirs=$(jq -r '(.addDirs // []) | join(",")' "$perms_json")
   fi
@@ -88,7 +88,7 @@ harness_launch() {
     *)                 perm_flags="--dangerously-skip-permissions" ;;
   esac
   [ -n "$perm_allowed_tools" ]    && perm_flags="$perm_flags --allowedTools $perm_allowed_tools"
-  # disallowedTools is now enforced by tool-policy-gate.sh PreToolUse hook — no CLI flag needed
+  # denyList is now enforced by tool-policy-gate.sh PreToolUse hook — no CLI flag needed
   [ -n "$perm_tools" ]            && perm_flags="$perm_flags --tools $perm_tools"
   [ -n "$perm_add_dirs" ]         && perm_flags="$perm_flags --add-dir $perm_add_dirs"
 

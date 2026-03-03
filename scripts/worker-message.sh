@@ -44,24 +44,45 @@ OWN_TARGET=$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#
 OWN_NAME=$(jq -r --arg p "$OWN_PANE" '.[$p].harness // empty' "$PANE_REGISTRY" 2>/dev/null \
   | sed 's|^worker/||' || true)
 
-SIGNATURE="[from ${OWN_TARGET:-?}${OWN_NAME:+ ($OWN_NAME)}]"
+# Resolve parent for child panes — used in message signatures and payload
+PARENT_PANE=$(jq -r --arg p "$OWN_PANE" '.[$p].parent_pane // empty' "$PANE_REGISTRY" 2>/dev/null || echo "")
+PARENT_NAME=""
+[ -n "$PARENT_PANE" ] && \
+  PARENT_NAME=$(jq -r --arg p "$PARENT_PANE" '.[$p].harness // ""' "$PANE_REGISTRY" 2>/dev/null \
+    | sed 's|^worker/||' || echo "")
+
 # Bus identity: "worker/$name" for worker panes, "operator" for human/main session
 FROM="${OWN_NAME:+worker/$OWN_NAME}"
 FROM="${FROM:-operator}"
 
-# ── Durable bus emit (cell-message → notify_assignee + append_outbox side-effects) ──
+# Fallback signature — used only when bus is unavailable
+if [ -n "$PARENT_NAME" ]; then
+  _FALLBACK_SIG="[from ${OWN_TARGET:-?} (child of ${PARENT_NAME})]"
+elif [ -n "$OWN_NAME" ]; then
+  _FALLBACK_SIG="[from ${OWN_TARGET:-?} (${OWN_NAME})]"
+else
+  _FALLBACK_SIG="[from ${OWN_TARGET:-?}]"
+fi
+
+# ── Durable bus emit (cell-message → deliver_tmux + notify_assignee + append_outbox side-effects) ──
 # $1=to (e.g. "worker/chatbot-tools")  $2=content  $3=summary  [$4=msg_type override]
 _bus_emit() {
-  [ "$_BUS_AVAILABLE" = "false" ] && return 0
+  [ "$_BUS_AVAILABLE" = "false" ] && return 1
   local to="$1" content="$2" summary="${3:-}" msg_type="${4:-message}"
   local payload
   payload=$(jq -nc \
     --arg to "$to" \
     --arg from "$FROM" \
+    --arg from_pane "$OWN_PANE" \
+    --arg from_target "$OWN_TARGET" \
+    --arg from_name "$OWN_NAME" \
+    --arg from_parent_name "$PARENT_NAME" \
     --arg content "$content" \
     --arg summary "$summary" \
     --arg msg_type "$msg_type" \
-    '{to: $to, from: $from, content: $content, summary: $summary, msg_type: $msg_type, channel: "worker-message"}')
+    '{to:$to, from:$from, from_pane:$from_pane, from_target:$from_target,
+      from_name:$from_name, from_parent_name:$from_parent_name,
+      content:$content, summary:$summary, msg_type:$msg_type, channel:"worker-message"}')
   bus_publish "cell-message" "$payload" 2>/dev/null || true
 }
 
@@ -78,14 +99,6 @@ _pane_target() {
   local pane_id="$1"
   tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' 2>/dev/null \
     | awk -v id="$pane_id" '$1 == id {print $2; exit}'
-}
-
-# ── Send text to a tmux pane ──
-_send_to_pane() {
-  local target="$1"
-  local content="$2"
-  tmux send-keys -t "$target" "$SIGNATURE $content"
-  tmux send-keys -t "$target" -H 0d
 }
 
 CMD="${1:-help}"
@@ -117,8 +130,11 @@ case "$CMD" in
       exit 1
     }
 
-    _send_to_pane "$TARGET" "$CONTENT"
-    _bus_emit "worker/$RECIPIENT" "$CONTENT" "$SUMMARY"
+    if ! _bus_emit "worker/$RECIPIENT" "$CONTENT" "$SUMMARY"; then
+      # Bus unavailable — fall back to direct tmux delivery
+      tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT"
+      tmux send-keys -t "$TARGET" -H 0d
+    fi
     echo "Sent to $RECIPIENT ($TARGET)${SUMMARY:+ — $SUMMARY}"
     ;;
 
@@ -162,11 +178,20 @@ case "$CMD" in
         echo "  ⚠ $name ($pane_id): no active pane (skipped)"
         continue
       fi
-      _send_to_pane "$TARGET" "$CONTENT"
-      # Strip harness prefix to get plain worker name for bus routing
+      # Strip harness prefix to get plain worker name; child panes keep pane_id as to
       local_name="${name#worker/}"
       local_name="${local_name#child:}"
-      [ -n "$local_name" ] && _bus_emit "worker/$local_name" "$CONTENT" "$SUMMARY" "broadcast"
+      local bus_to
+      if [[ "$local_name" == %* ]]; then
+        bus_to="$local_name"   # bare pane ID — deliver_tmux resolves directly
+      else
+        bus_to="worker/$local_name"
+      fi
+      if ! _bus_emit "$bus_to" "$CONTENT" "$SUMMARY" "broadcast"; then
+        # Bus unavailable — fall back to direct tmux delivery
+        tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT"
+        tmux send-keys -t "$TARGET" -H 0d
+      fi
       echo "  → $name ($TARGET)"
       SENT=$((SENT + 1))
     done < <(jq -r "$JQ_FILTER" "$PANE_REGISTRY" 2>/dev/null | sort -u)
@@ -192,8 +217,10 @@ case "$CMD" in
     }
 
     MSG="SHUTDOWN REQUEST: Please wrap up your current task and stop. Reason: $REASON"
-    _send_to_pane "$TARGET" "$MSG"
-    _bus_emit "worker/$RECIPIENT" "$MSG" "shutdown" "shutdown"
+    if ! _bus_emit "worker/$RECIPIENT" "$MSG" "shutdown" "shutdown"; then
+      tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $MSG"
+      tmux send-keys -t "$TARGET" -H 0d
+    fi
     echo "Shutdown request sent to $RECIPIENT ($TARGET)"
     ;;
 

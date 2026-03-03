@@ -184,10 +184,28 @@ Flat workers are simpler: Warren → workers directly. No module-manager layer. 
 
 ```
 Warren
-    ├── worker/chatbot-tools   (branch: worker/chatbot-tools)
-    ├── worker/miniapp-ux      (branch: worker/miniapp-ux)
-    └── worker/chief-of-staff  merges completed branches → main
+    ├── worker/chatbot-tools   (branch: worker/chatbot-tools, type: implementer)
+    ├── worker/miniapp-ux      (branch: worker/miniapp-ux,    type: implementer)
+    ├── worker/conv-monitor    (branch: worker/conv-monitor,  type: monitor)
+    └── worker/chief-of-staff  (branch: worker/chief-of-staff, type: coordinator)
+                               merges completed branches → main, deploys to prod
 ```
+
+#### Phase 0 — Vision Gate
+
+Before a new flat worker begins implementation, it must create `vision.html` (a Before/After sketch + approach + acceptance criteria) and have it approved. The Stop hook checks `vision_approved` in `state.json`: if absent or `false`, the session is blocked with a reminder. Workers with existing cycles (`cycles_completed > 0`) are pre-approved.
+
+#### Agent Types
+
+Three typed templates at `~/.boring/templates/flat-worker/types/` define different capability levels:
+
+| Type | Permissions | `perpetual` | Use case |
+|------|------------|-------------|----------|
+| **implementer** | Full read-write, no sudo/force-push | false | Feature work, bug fixes |
+| **monitor** | Read-only (no Edit/Write/deploy) | true | Production observation, anomaly detection |
+| **coordinator** | Full + git merge/push + deploy-prod | true | Branch merges, prod deploys, issue triage |
+
+Monitor workers never fix issues themselves—they report to the coordinator (chief-of-staff) via `worker-message.sh`. The coordinator then creates implementer tasks or notifies Warren. This preserves the read-only safety boundary while ensuring findings are acted on.
 
 Each flat worker gets a `tasks.json` flat task list (not nested under `.tasks`—keys are `T001`, `T002`, ...) managed with `worker-task.sh`:
 
@@ -241,9 +259,13 @@ Creates a worktree on `worker/{name}`, registers in pane-registry, injects a see
 | `scripts/launch-worker.sh` | Create worktree + spawn harness worker pane (harness system) |
 | `scripts/launch-flat-worker.sh` | Launch flat worker in own tmux window (flat system) |
 | `scripts/worker-task.sh` | Per-worker task list management (add/claim/complete/list/next) |
+| `scripts/worker-message.sh` | Inter-worker messaging (monitor → coordinator escalation) |
 | `scripts/check-flat-workers.sh` | Auto-discover and report flat worker fleet status |
 | `scripts/worker-post-commit-hook.sh` | Post-commit hook for worker worktrees (auto-notification) |
-| `templates/flat-worker/` | Template files for scaffolding new flat workers |
+| `templates/flat-worker/` | Base template for new flat workers |
+| `templates/flat-worker/types/implementer/` | Implementer type (read-write, one-shot, vision gate) |
+| `templates/flat-worker/types/monitor/` | Monitor type (read-only, perpetual, reports to coordinator) |
+| `templates/flat-worker/types/coordinator/` | Coordinator type (full access, merge/deploy) |
 | `~/.boring/state/pane-registry.json` | Maps panes to harnesses (coordinator looks up workers here) |
 
 ### Messaging
@@ -292,6 +314,8 @@ User seeds agent via Claude Code TUI
 | `~/.boring/harness/manifests/` | Harness registry entries | Until deregistered |
 | `~/.boring/templates/conv-monitor/` | Conv-monitor worker template | All projects |
 | `~/.boring/templates/flat-worker/.commit-template.md` | Worker commit format template | All projects |
+| `~/.boring/templates/flat-worker/types/` | Agent type templates (implementer/monitor/coordinator) | All projects |
 | `~/.boring/scripts/worker-commit.sh` | Structured commit helper | All projects |
+| `~/.boring/scripts/worker-message.sh` | Inter-worker messaging | All projects |
 | `~/.boring/scripts/scaffold-conv-monitor.sh` | Conv-monitor scaffolding | All projects |
 | `{project}/.claude/workers/{name}/` | Flat worker files | Worker lifetime |
