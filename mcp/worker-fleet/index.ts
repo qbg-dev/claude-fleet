@@ -2,11 +2,11 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 18 tools in 8 categories:
+ * 19 tools in 8 categories:
  *   Messaging (3):  send_message, broadcast, read_inbox
- *   Tasks (4):      create_task, claim_task, complete_task, list_tasks
+ *   Tasks (3):      create_task, update_task, list_tasks
  *   State (2):      get_worker_state, update_state
- *   Fleet (1):      fleet_status
+ *   Fleet (2):      fleet_status, remote_health
  *   Deploy (2):     deploy, health_check
  *   Lifecycle (4):  recycle, spawn_child, register_pane, check_config
  *   Git (1):        smart_commit
@@ -26,8 +26,8 @@ import {
   readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync,
   readdirSync, openSync, fstatSync, readSync, closeSync, truncateSync,
 } from "fs";
-import { join } from "path";
-import { execSync, spawnSync } from "child_process";
+import { join, basename } from "path";
+import { execSync, spawnSync, spawn, type ChildProcess } from "child_process";
 
 // ── Configuration ────────────────────────────────────────────────────
 const HOME = process.env.HOME!;
@@ -46,6 +46,80 @@ const WORKER_MESSAGE_SH = join(CLAUDE_OPS, "scripts/worker-message.sh");
 const WORKER_COMMIT_SH = join(PROJECT_ROOT, ".claude/scripts/worker-commit.sh");
 const CHECK_WORKERS_SH = join(CLAUDE_OPS, "scripts/check-flat-workers.sh");
 const REQUEST_MERGE_SH = join(PROJECT_ROOT, ".claude/scripts/request-merge.sh");
+
+// ── Relay Configuration ──────────────────────────────────────────────
+const RELAY_PORT = parseInt(process.env.RELAY_PORT || "3847", 10);
+const RELAY_SECRET_PATH = join(BORING_DIR, "relay-secret");
+const RELAY_SERVER_PATH = join(CLAUDE_OPS, "mcp/relay-server/index.ts");
+const REMOTE_RELAY_URL = process.env.REMOTE_RELAY_URL || "";
+const PROJECT_SLUG = basename(PROJECT_ROOT);
+
+let _relaySecret = "";
+try { _relaySecret = readFileSync(RELAY_SECRET_PATH, "utf-8").trim(); } catch {}
+
+let _relayProcess: ChildProcess | null = null;
+
+/** Start local relay server as a detached subprocess (idempotent) */
+function startRelayServer(): void {
+  if (_relayProcess && _relayProcess.exitCode === null) return; // already running
+
+  // Check if relay is already listening (pass auth since /health requires it)
+  const check = spawnSync("curl", [
+    "-sf", "--max-time", "1",
+    "-H", `Authorization: Bearer ${_relaySecret}`,
+    `http://localhost:${RELAY_PORT}/health`,
+  ], { timeout: 3000, encoding: "utf-8" });
+  if (check.status === 0) return; // already running (maybe from another MCP instance)
+
+  if (!existsSync(RELAY_SERVER_PATH)) return;
+  if (!_relaySecret) return;
+
+  const bunPath = process.env.BUN_PATH || join(HOME, ".bun/bin/bun");
+  _relayProcess = spawn(bunPath, ["run", RELAY_SERVER_PATH], {
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      RELAY_PORT: String(RELAY_PORT),
+      RELAY_PROJECT_ROOTS: PROJECT_ROOT,
+    },
+  });
+  _relayProcess.unref();
+}
+
+/** Fetch from remote relay with auth + timeout. Returns null on any failure. */
+async function relayFetch(
+  method: string,
+  path: string,
+  body?: any,
+): Promise<any | null> {
+  if (!REMOTE_RELAY_URL || !_relaySecret) return null;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    const opts: RequestInit = {
+      method,
+      headers: {
+        "Authorization": `Bearer ${_relaySecret}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+    };
+    if (body && method !== "GET") {
+      opts.body = JSON.stringify(body);
+    }
+
+    const resp = await fetch(`${REMOTE_RELAY_URL}${path}`, opts);
+    clearTimeout(timeout);
+
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
+  }
+}
 
 // ── Worker Identity Detection ────────────────────────────────────────
 function detectWorkerName(): string {
@@ -89,6 +163,233 @@ function runScript(
 
 function readJsonFile(path: string): any {
   try { return JSON.parse(readFileSync(path, "utf-8")); } catch { return null; }
+}
+
+// ── Unified Registry Types & Helpers ────────────────────────────────
+
+interface RegistryWorker {
+  project_root: string;
+  worker_dir: string;
+  worktree: string;
+  branch: string;
+  config: {
+    model: string;
+    permission_mode: string;
+    disallowedTools: string[];
+    [k: string]: any;
+  };
+  state: Record<string, any>;
+  tasks: Record<string, Task>;
+}
+
+interface RegistryPane {
+  worker: string;
+  role: "worker" | "child" | "operator";
+  pane_target: string;
+  tmux_session: string;
+  session_id: string;
+  parent_pane: string | null;
+  registered_at: string;
+}
+
+interface UnifiedRegistry {
+  workers: Record<string, RegistryWorker>;
+  panes: Record<string, RegistryPane>;
+  [key: string]: any; // flat compat entries (% prefixed pane IDs for shell script backward compat)
+}
+
+const LINT_ENABLED = process.env.WORKER_FLEET_LINT !== "0";
+
+/** Project-qualified worker key for multi-project registries */
+function workerKey(name: string): string {
+  return `${PROJECT_SLUG}:${name}`;
+}
+
+/** Read registry from disk (no locking — caller handles concurrency) */
+function readRegistryRaw(): UnifiedRegistry {
+  const raw = readJsonFile(PANE_REGISTRY_PATH) || {};
+  if (!raw.workers) raw.workers = {};
+  if (!raw.panes) raw.panes = {};
+  return raw as UnifiedRegistry;
+}
+
+/** Atomic read-modify-write under lock. Returns the value from fn(). */
+function withRegistryLocked<T>(fn: (registry: UnifiedRegistry) => T): T {
+  const lockPath = join(HARNESS_LOCK_DIR, "pane-registry");
+  acquireLock(lockPath);
+  try {
+    const registry = readRegistryRaw();
+    migrateOldEntries(registry);
+    const result = fn(registry);
+    writeFileSync(PANE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+    return result;
+  } finally {
+    releaseLock(join(HARNESS_LOCK_DIR, "pane-registry"));
+  }
+}
+
+/** Ensure worker entry exists in registry, bootstrapping from filesystem if needed */
+function ensureWorkerInRegistry(registry: UnifiedRegistry, name: string): RegistryWorker {
+  const wk = workerKey(name);
+  if (registry.workers[wk]) return registry.workers[wk];
+
+  const workerDir = join(WORKERS_DIR, name);
+  const perms = readJsonFile(join(workerDir, "permissions.json"));
+  const state = readJsonFile(join(workerDir, "state.json"));
+  const tasks = readJsonFile(join(workerDir, "tasks.json"));
+
+  const projectName = PROJECT_ROOT.split("/").pop()!;
+  const worktreeDir = join(PROJECT_ROOT, "..", `${projectName}-w-${name}`);
+
+  registry.workers[wk] = {
+    project_root: PROJECT_ROOT,
+    worker_dir: workerDir,
+    worktree: worktreeDir,
+    branch: `worker/${name}`,
+    config: perms || { model: "sonnet", permission_mode: "bypassPermissions", disallowedTools: [] },
+    state: state || { status: "idle", cycles_completed: 0 },
+    tasks: tasks && typeof tasks === "object" ? tasks : {},
+  };
+
+  return registry.workers[wk];
+}
+
+/** Migrate old flat pane entries to panes section (idempotent, keeps flat entries for compat) */
+function migrateOldEntries(registry: UnifiedRegistry): boolean {
+  let migrated = false;
+  for (const [key, entry] of Object.entries(registry)) {
+    if (!key.startsWith("%") || key === "workers" || key === "panes") continue;
+    if (!entry || typeof entry !== "object" || !entry.harness) continue;
+    if (registry.panes[key]) continue; // already migrated
+
+    const workerName = (entry.harness as string).replace(/^worker\//, "");
+    registry.panes[key] = {
+      worker: workerName,
+      role: entry.task === "child" ? "child" : "worker",
+      pane_target: entry.pane_target || "",
+      tmux_session: entry.tmux_session || "",
+      session_id: entry.session_id || "",
+      parent_pane: entry.parent_pane || null,
+      registered_at: entry.registered_at || new Date().toISOString(),
+    };
+    migrated = true;
+    // Keep flat entry for backward compat with shell scripts
+  }
+  return migrated;
+}
+
+/** Write flat compat entry alongside panes entry (for shell script backward compat) */
+function writeFlatCompat(registry: UnifiedRegistry, paneId: string, pane: RegistryPane): void {
+  const wk = workerKey(pane.worker);
+  const worker = registry.workers[wk];
+  registry[paneId] = {
+    harness: `worker/${pane.worker}`,
+    session_name: pane.worker,
+    display: pane.worker,
+    task: pane.role === "child" ? "child" : "worker",
+    pane_target: pane.pane_target,
+    project_root: worker?.project_root || PROJECT_ROOT,
+    tmux_session: pane.tmux_session,
+    session_id: pane.session_id,
+    parent_pane: pane.parent_pane,
+    registered_at: pane.registered_at,
+    done: 0,
+    total: 0,
+  };
+}
+
+/** Sync registry state to filesystem state.json (backward compat for shell scripts) */
+function syncStateToFilesystem(name: string, state: Record<string, any>): void {
+  try {
+    const statePath = join(WORKERS_DIR, name, "state.json");
+    const dir = join(WORKERS_DIR, name);
+    if (existsSync(dir)) {
+      writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+    }
+  } catch {}
+}
+
+/** Sync registry tasks to filesystem tasks.json (backward compat for shell scripts) */
+function syncTasksToFilesystem(name: string, tasks: Record<string, Task>): void {
+  try {
+    const tasksPath = join(WORKERS_DIR, name, "tasks.json");
+    const dir = join(WORKERS_DIR, name);
+    if (existsSync(dir)) {
+      writeFileSync(tasksPath, JSON.stringify(tasks, null, 2) + "\n");
+    }
+  } catch {}
+}
+
+/** Run registry linter checks */
+function lintRegistry(registry: UnifiedRegistry): DiagnosticIssue[] {
+  if (!LINT_ENABLED) return [];
+  const issues: DiagnosticIssue[] = [];
+
+  // Dead panes
+  for (const [paneId, pane] of Object.entries(registry.panes)) {
+    if (!isPaneAlive(paneId)) {
+      issues.push({ severity: "warning", check: "lint.dead_pane", message: `Dead pane ${paneId} (worker: ${pane.worker})`, fix: "Auto-pruned on fleet_status()" });
+    }
+  }
+
+  // Duplicate: two live panes for same worker+role=worker
+  const workerPanes: Record<string, string[]> = {};
+  for (const [paneId, pane] of Object.entries(registry.panes)) {
+    if (pane.role === "worker" && isPaneAlive(paneId)) {
+      const key = pane.worker;
+      if (!workerPanes[key]) workerPanes[key] = [];
+      workerPanes[key].push(paneId);
+    }
+  }
+  for (const [worker, panes] of Object.entries(workerPanes)) {
+    if (panes.length > 1) {
+      issues.push({ severity: "error", check: "lint.duplicate_pane", message: `Worker '${worker}' has ${panes.length} live worker panes: ${panes.join(", ")}` });
+    }
+  }
+
+  // worker_dir doesn't exist
+  for (const [wk, worker] of Object.entries(registry.workers)) {
+    if (!wk.startsWith(`${PROJECT_SLUG}:`)) continue; // only lint our project
+    if (!existsSync(worker.worker_dir)) {
+      issues.push({ severity: "error", check: "lint.worker_dir", message: `Worker '${wk}' worker_dir doesn't exist: ${worker.worker_dir}` });
+    }
+  }
+
+  // worktree doesn't exist
+  for (const [wk, worker] of Object.entries(registry.workers)) {
+    if (!wk.startsWith(`${PROJECT_SLUG}:`)) continue;
+    const name = wk.split(":").slice(1).join(":");
+    if (name !== "operator" && !existsSync(worker.worktree)) {
+      issues.push({ severity: "warning", check: "lint.worktree", message: `Worker '${wk}' worktree doesn't exist: ${worker.worktree}` });
+    }
+  }
+
+  // parent_pane references missing pane
+  for (const [paneId, pane] of Object.entries(registry.panes)) {
+    if (pane.parent_pane && !registry.panes[pane.parent_pane] && !registry[pane.parent_pane]) {
+      issues.push({ severity: "warning", check: "lint.orphan_parent", message: `Pane ${paneId} parent_pane '${pane.parent_pane}' not found`, fix: "Will auto-fix to null" });
+    }
+  }
+
+  // Worker in panes but not in workers (project-scoped)
+  for (const [paneId, pane] of Object.entries(registry.panes)) {
+    const wk = workerKey(pane.worker);
+    // Only check panes belonging to our project
+    const flatEntry = registry[paneId];
+    if (flatEntry?.project_root === PROJECT_ROOT && !registry.workers[wk]) {
+      issues.push({ severity: "warning", check: "lint.missing_worker", message: `Pane ${paneId} references worker '${pane.worker}' not in workers section` });
+    }
+  }
+
+  // config.model empty
+  for (const [wk, worker] of Object.entries(registry.workers)) {
+    if (!wk.startsWith(`${PROJECT_SLUG}:`)) continue;
+    if (!worker.config?.model) {
+      issues.push({ severity: "warning", check: "lint.model", message: `Worker '${wk}' has no model configured` });
+    }
+  }
+
+  return issues;
 }
 
 /** mkdir-based spinlock matching harness-jq.sh convention */
@@ -137,6 +438,13 @@ function getTasksPath(worker: string): string {
 }
 
 function readTasks(worker: string): Record<string, Task> {
+  // Primary: read from unified registry
+  const registry = readRegistryRaw();
+  const wk = workerKey(worker);
+  if (registry.workers[wk]?.tasks && Object.keys(registry.workers[wk].tasks).length > 0) {
+    return registry.workers[wk].tasks;
+  }
+  // Fallback: read from filesystem (pre-migration or other project's workers)
   const path = getTasksPath(worker);
   try {
     const data = JSON.parse(readFileSync(path, "utf-8"));
@@ -147,17 +455,12 @@ function readTasks(worker: string): Record<string, Task> {
 }
 
 function writeTasks(worker: string, tasks: Record<string, Task>): void {
-  const lockPath = join(HARNESS_LOCK_DIR, `worker-tasks-${worker}`);
-  acquireLock(lockPath);
-  try {
-    const path = getTasksPath(worker);
-    // Ensure worker directory exists
-    const dir = join(WORKERS_DIR, worker);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(path, JSON.stringify(tasks, null, 2) + "\n");
-  } finally {
-    releaseLock(lockPath);
-  }
+  withRegistryLocked((registry) => {
+    ensureWorkerInRegistry(registry, worker);
+    registry.workers[workerKey(worker)].tasks = tasks;
+  });
+  // Sync to filesystem for backward compat with shell scripts
+  syncTasksToFilesystem(worker, tasks);
 }
 
 /** T001, T002, ... — zero-padded, 3+ digits, finds next available */
@@ -258,8 +561,8 @@ function readInboxFromCursor(
       });
     }
 
-    if (opts.limit && opts.limit > 0) {
-      entries = entries.slice(-opts.limit);
+    if (opts.limit !== undefined) {
+      entries = opts.limit > 0 ? entries.slice(-opts.limit) : [];
     }
 
     const newOffset = fileSize;
@@ -308,11 +611,12 @@ function writeToInbox(
   }
 }
 
-/** Resolve recipient — worker name, "parent", or raw pane ID */
+/** Resolve recipient — worker name, "parent", "children", or raw pane ID */
 function resolveRecipient(to: string): {
-  type: "worker" | "pane";
+  type: "worker" | "pane" | "multi_pane";
   workerName?: string;
   paneId?: string;
+  paneIds?: string[];
   error?: string;
 } {
   // Raw pane ID
@@ -320,25 +624,94 @@ function resolveRecipient(to: string): {
     return { type: "pane", paneId: to };
   }
 
-  // "parent" — look up in pane registry
+  // "parent" — look up in pane registry, deliver via tmux
   if (to === "parent") {
     try {
-      const registry = readJsonFile(PANE_REGISTRY_PATH);
-      if (!registry) return { type: "worker", error: "Pane registry not found" };
+      const registry = readRegistryRaw();
+      const ownPane = findOwnPane();
 
-      // Find our pane by matching harness to WORKER_NAME
-      for (const [paneId, entry] of Object.entries(registry) as [string, any][]) {
-        if (entry.harness === `worker/${WORKER_NAME}` && entry.parent_pane) {
-          const parentEntry = registry[entry.parent_pane];
-          if (parentEntry?.harness) {
-            const parentName = parentEntry.harness.replace(/^worker\//, "");
+      // Strategy 1: Check panes section for parent_pane
+      if (ownPane?.paneId && registry.panes[ownPane.paneId]?.parent_pane) {
+        const parentPaneId = registry.panes[ownPane.paneId].parent_pane!;
+        const parentPane = registry.panes[parentPaneId];
+        if (parentPane) {
+          if (existsSync(join(WORKERS_DIR, parentPane.worker))) {
+            return { type: "worker", workerName: parentPane.worker };
+          }
+          return { type: "pane", paneId: parentPaneId };
+        }
+      }
+
+      // Strategy 2: Check flat entries for parent_pane (legacy compat)
+      if (ownPane?.paneId && registry[ownPane.paneId]?.parent_pane) {
+        const parentPaneId = registry[ownPane.paneId].parent_pane;
+        const parentEntry = registry[parentPaneId];
+        if (parentEntry) {
+          const parentName = parentEntry.harness?.replace(/^worker\//, "");
+          if (parentName && existsSync(join(WORKERS_DIR, parentName))) {
             return { type: "worker", workerName: parentName };
+          }
+          return { type: "pane", paneId: parentPaneId };
+        }
+      }
+
+      // Strategy 3: Fall back to operator
+      for (const [paneId, pane] of Object.entries(registry.panes)) {
+        if (pane.worker === "operator" && pane.role === "worker") {
+          const flatEntry = registry[paneId];
+          if (flatEntry?.project_root === PROJECT_ROOT || !flatEntry) {
+            if (existsSync(join(WORKERS_DIR, "operator"))) {
+              return { type: "worker", workerName: "operator" };
+            }
+            return { type: "pane", paneId };
           }
         }
       }
-      return { type: "worker", error: `No parent found for worker '${WORKER_NAME}'` };
+      // Legacy flat fallback for operator
+      for (const [paneId, entry] of Object.entries(registry) as [string, any][]) {
+        if (paneId.startsWith("%") && entry.harness === "worker/operator" &&
+            (entry.project_root || "") === PROJECT_ROOT) {
+          if (existsSync(join(WORKERS_DIR, "operator"))) {
+            return { type: "worker", workerName: "operator" };
+          }
+          return { type: "pane", paneId };
+        }
+      }
+      return { type: "pane", error: `No parent found for worker '${WORKER_NAME}'` };
     } catch {
-      return { type: "worker", error: "Failed to read pane registry" };
+      return { type: "pane", error: "Failed to read pane registry" };
+    }
+  }
+
+  // "children" — find all child panes from panes section
+  if (to === "children") {
+    try {
+      const registry = readRegistryRaw();
+      const ownPane = findOwnPane();
+      const childPaneIds: string[] = [];
+
+      // Search panes section for entries with parent_pane matching ours
+      if (ownPane?.paneId) {
+        for (const [paneId, pane] of Object.entries(registry.panes)) {
+          if (pane.parent_pane === ownPane.paneId) {
+            childPaneIds.push(paneId);
+          }
+        }
+        // Also check flat entries for children array (legacy compat)
+        const flatEntry = registry[ownPane.paneId];
+        if (flatEntry?.children && Array.isArray(flatEntry.children)) {
+          for (const childId of flatEntry.children) {
+            if (!childPaneIds.includes(childId)) childPaneIds.push(childId);
+          }
+        }
+      }
+
+      if (childPaneIds.length === 0) {
+        return { type: "multi_pane", error: "No children found in pane registry" };
+      }
+      return { type: "multi_pane", paneIds: childPaneIds };
+    } catch {
+      return { type: "multi_pane", error: "Failed to read pane registry" };
     }
   }
 
@@ -346,19 +719,39 @@ function resolveRecipient(to: string): {
   return { type: "worker", workerName: to };
 }
 
+/** Check if a tmux pane is alive */
+function isPaneAlive(paneId: string): boolean {
+  try {
+    const result = spawnSync("tmux", ["has-session", "-t", paneId], {
+      encoding: "utf-8", timeout: 3000,
+    });
+    if (result.status !== 0) return false;
+    // has-session checks the session, but we need to verify the pane specifically
+    const check = spawnSync("tmux", ["display-message", "-t", paneId, "-p", "#{pane_id}"], {
+      encoding: "utf-8", timeout: 3000,
+    });
+    return check.status === 0 && check.stdout.trim() === paneId;
+  } catch {
+    return false;
+  }
+}
+
 // ── Pane & Session Helpers ───────────────────────────────────────────
 
 /** Find this worker's pane. Prefers TMUX_PANE env (exact), falls back to registry search. */
 function findOwnPane(): { paneId: string; paneTarget: string } | null {
-  // Best: TMUX_PANE env var — exact pane ID
   const tmuxPane = process.env.TMUX_PANE;
   if (tmuxPane) {
-    // Try registry for pane_target
-    const registry = readJsonFile(PANE_REGISTRY_PATH);
-    if (registry?.[tmuxPane]?.pane_target) {
+    const registry = readRegistryRaw();
+    // Check panes section first
+    if (registry.panes[tmuxPane]) {
+      return { paneId: tmuxPane, paneTarget: registry.panes[tmuxPane].pane_target || "" };
+    }
+    // Fallback: flat compat entry
+    if (registry[tmuxPane]?.pane_target) {
       return { paneId: tmuxPane, paneTarget: registry[tmuxPane].pane_target };
     }
-    // Not in registry — resolve pane_target from tmux directly
+    // Resolve from tmux directly
     try {
       const target = execSync(
         `tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' | awk -v id="${tmuxPane}" '$1 == id {print $2}'`,
@@ -366,18 +759,24 @@ function findOwnPane(): { paneId: string; paneTarget: string } | null {
       ).trim();
       if (target) return { paneId: tmuxPane, paneTarget: target };
     } catch {}
-    // Last resort — just return the pane ID without target
     return { paneId: tmuxPane, paneTarget: "" };
   }
 
-  // Fallback: search registry by worker name (excludes children)
-  const registry = readJsonFile(PANE_REGISTRY_PATH);
-  if (!registry) return null;
-
+  // Fallback: search panes section by worker name (excludes children)
+  const registry = readRegistryRaw();
+  for (const [paneId, pane] of Object.entries(registry.panes)) {
+    if (pane.worker === WORKER_NAME && pane.role === "worker") {
+      // Project-scope: check flat entry or worker entry for project match
+      const flatEntry = registry[paneId];
+      if (flatEntry?.project_root === PROJECT_ROOT || registry.workers[workerKey(WORKER_NAME)]) {
+        return { paneId, paneTarget: pane.pane_target || "" };
+      }
+    }
+  }
+  // Legacy fallback: search flat entries
   for (const [paneId, entry] of Object.entries(registry) as [string, any][]) {
-    if (entry.harness === `worker/${WORKER_NAME}` &&
-        entry.task !== "child" &&
-        entry.project_root === PROJECT_ROOT) {
+    if (paneId.startsWith("%") && entry.harness === `worker/${WORKER_NAME}` &&
+        entry.task !== "child" && entry.project_root === PROJECT_ROOT) {
       return { paneId, paneTarget: entry.pane_target || "" };
     }
   }
@@ -390,9 +789,13 @@ function getSessionId(paneId: string): string | null {
   try { return readFileSync(paneMapPath, "utf-8").trim(); } catch { return null; }
 }
 
-/** Read worker's model from permissions.json */
+/** Read worker's model from registry (fallback: permissions.json) */
 function getWorkerModel(): string {
   try {
+    const registry = readRegistryRaw();
+    const wk = workerKey(WORKER_NAME);
+    if (registry.workers[wk]?.config?.model) return registry.workers[wk].config.model;
+    // Fallback: filesystem
     const perms = readJsonFile(join(WORKERS_DIR, WORKER_NAME, "permissions.json"));
     return perms?.model || "sonnet";
   } catch { return "sonnet"; }
@@ -427,9 +830,9 @@ Every cycle follows this sequence:
 
 1. **Drain inbox** — \`read_inbox(clear=true)\` — act on messages before anything else
 2. **Check tasks** — \`list_tasks(filter="pending")\` — find highest-priority unblocked work
-3. **Claim** — \`claim_task("T00N")\` — mark what you're working on
+3. **Claim** — \`update_task(task_id="T00N", status="in_progress")\` — mark what you're working on
 4. **Do the work** — investigate, fix, test, commit, deploy, verify
-5. **Complete** — \`complete_task("T00N")\` — only after fully verified
+5. **Complete** — \`update_task(task_id="T00N", status="completed")\` — only after fully verified
 6. **Update state** — \`update_state("cycles_completed", N+1)\` then \`update_state("last_cycle_at", ISO)\`
 7. **Perpetual?** — if \`perpetual: true\`, sleep for \`sleep_duration\` seconds, then loop
 
@@ -443,8 +846,7 @@ If your inbox has a message from Warren or chief-of-staff, prioritize it over yo
 | \`broadcast(content, summary)\` | Send to ALL workers (use sparingly) |
 | \`read_inbox(limit?, since?, clear?)\` | Read your inbox; \`clear=true\` truncates after reading |
 | \`create_task(subject, priority?, ...)\` | Add a task to your task list |
-| \`claim_task(task_id)\` | Assign a task to yourself, set in_progress |
-| \`complete_task(task_id)\` | Mark done (recurring tasks auto-reset) |
+| \`update_task(task_id, status?, subject?, owner?, ...)\` | Update task status/fields — claim, complete, delete, reassign |
 | \`list_tasks(filter?, worker?)\` | List tasks; \`worker="all"\` for cross-worker view |
 | \`get_worker_state(name?)\` | Read any worker's state.json |
 | \`update_state(key, value)\` | Update your state.json + emit bus event |
@@ -498,9 +900,6 @@ function runDiagnostics(): DiagnosticIssue[] {
   const issues: DiagnosticIssue[] = [];
 
   // ── Environment ──
-  if (!process.env.TMUX_PANE) {
-    issues.push({ severity: "warning", check: "env.TMUX_PANE", message: "TMUX_PANE not set — recycle/spawn_child/register_pane won't work", fix: "Launch via launch-flat-worker.sh or set TMUX_PANE manually" });
-  }
 
   if (WORKER_NAME === "operator") {
     issues.push({ severity: "warning", check: "env.WORKER_NAME", message: "Worker name defaulted to 'operator' — not on a worker/* branch and WORKER_NAME not set", fix: "Set WORKER_NAME env or checkout a worker/* branch" });
@@ -596,11 +995,27 @@ function runDiagnostics(): DiagnosticIssue[] {
 
   // ── Pane registry ──
   if (process.env.TMUX_PANE) {
-    const registry = readJsonFile(PANE_REGISTRY_PATH);
-    if (!registry?.[process.env.TMUX_PANE]) {
-      issues.push({ severity: "warning", check: "pane_registry", message: `Pane ${process.env.TMUX_PANE} not in pane-registry — spawn_child/recycle may fail`, fix: "Call register_pane() to fix" });
+    const registry = readRegistryRaw();
+    const inPanes = !!registry.panes[process.env.TMUX_PANE];
+    const inFlat = !!registry[process.env.TMUX_PANE];
+    if (!inPanes && !inFlat) {
+      issues.push({ severity: "error", check: "pane_registry", message: `Pane ${process.env.TMUX_PANE} not in pane-registry — messaging, spawn_child, recycle will NOT work. Call register_pane() BEFORE doing anything else.`, fix: "Call register_pane() immediately" });
     }
+    // Check if worker exists in workers section
+    const wk = workerKey(WORKER_NAME);
+    if (WORKER_NAME !== "operator" && !registry.workers[wk]) {
+      issues.push({ severity: "error", check: "registry.workers", message: `Worker '${WORKER_NAME}' not in registry.workers — watchdog cannot monitor you, messages cannot reach you. Call register_pane() BEFORE doing anything else.`, fix: "Call register_pane() immediately" });
+    }
+  } else {
+    issues.push({ severity: "error", check: "env.TMUX_PANE", message: "TMUX_PANE not set — you are not registered with the fleet. Messaging, watchdog monitoring, spawn_child, and recycle will NOT work.", fix: "Launch via launch-flat-worker.sh or call register_pane()" });
   }
+
+  // ── Registry linter ──
+  try {
+    const registry = readRegistryRaw();
+    const lintIssues = lintRegistry(registry);
+    issues.push(...lintIssues);
+  } catch {}
 
   // ── Required scripts ──
   const requiredScripts: [string, string][] = [
@@ -654,14 +1069,13 @@ const server = new McpServer({
 // MESSAGING TOOLS (3)
 // ═══════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "send_message",
-  `Send a direct message to a specific worker (durable inbox + tmux instant delivery)`,
-  {
-    to: z.string().describe("Worker name (e.g. 'chief-of-staff', 'chatbot-tools')"),
+  { description: `Send a direct message to a specific worker (durable inbox + tmux instant delivery)`, inputSchema: {
+    to: z.string().describe("Worker name (e.g. 'chief-of-staff', 'chatbot-tools'), 'parent' (spawner pane), 'children' (all child panes), or raw pane ID '%NN'"),
     content: z.string().describe("Message content"),
     summary: z.string().describe("Short preview (5-10 words)"),
-  },
+  } },
   async ({ to, content, summary }) => {
     const resolved = resolveRecipient(to);
 
@@ -669,14 +1083,46 @@ server.tool(
       return { content: [{ type: "text" as const, text: `Error: ${resolved.error}` }], isError: true };
     }
 
-    // Raw pane ID — tmux-only delivery (no inbox)
+    // Multi-pane (children) — tmux delivery to each child
+    if (resolved.type === "multi_pane") {
+      const paneIds = resolved.paneIds!;
+      const successes: string[] = [];
+      const failures: string[] = [];
+      const dead: string[] = [];
+      const msg = JSON.stringify(`\n[msg from ${WORKER_NAME}] ${content}\n`);
+
+      for (const pId of paneIds) {
+        if (!isPaneAlive(pId)) {
+          dead.push(pId);
+          continue;
+        }
+        try {
+          execSync(`tmux send-keys -t "${pId}" ${msg} ""`, { timeout: 5000 });
+          successes.push(pId);
+        } catch {
+          failures.push(pId);
+        }
+      }
+      let result = successes.length > 0
+        ? `Sent to ${successes.length} children: ${successes.join(", ")}`
+        : "No live children to deliver to";
+      if (dead.length > 0) result += `\nDead panes (skipped): ${dead.join(", ")}`;
+      if (failures.length > 0) result += `\nFailed: ${failures.join(", ")}`;
+      return { content: [{ type: "text" as const, text: result }], isError: successes.length === 0 };
+    }
+
+    // Raw pane ID or parent pane — tmux-only delivery (no inbox)
     if (resolved.type === "pane") {
+      if (!isPaneAlive(resolved.paneId!)) {
+        return { content: [{ type: "text" as const, text: `Error: Pane ${resolved.paneId} is dead (not found in tmux)` }], isError: true };
+      }
       try {
         execSync(
           `tmux send-keys -t "${resolved.paneId}" ${JSON.stringify(`\n[msg from ${WORKER_NAME}] ${content}\n`)} ""`,
           { timeout: 5000 }
         );
-        return { content: [{ type: "text" as const, text: `Sent to pane ${resolved.paneId} (tmux-only, no inbox)` }] };
+        const label = to === "parent" ? `parent (pane ${resolved.paneId})` : `pane ${resolved.paneId}`;
+        return { content: [{ type: "text" as const, text: `Sent to ${label} (tmux-only, no inbox)` }] };
       } catch (e: any) {
         return { content: [{ type: "text" as const, text: `Error sending to pane: ${e.message}` }], isError: true };
       }
@@ -688,6 +1134,13 @@ server.tool(
     // Step 1: Write to inbox (critical — must succeed)
     const inboxResult = writeToInbox(recipientName, { content, summary, from_name: WORKER_NAME });
     if (!inboxResult.ok) {
+      // Worker not local — try remote relay
+      const remoteResult = await relayFetch("POST", "/msg", {
+        project: PROJECT_SLUG, worker: recipientName, content, summary, from_name: WORKER_NAME,
+      });
+      if (remoteResult?.ok) {
+        return { content: [{ type: "text" as const, text: `Message sent to ${recipientName} (remote)` }] };
+      }
       return { content: [{ type: "text" as const, text: `Error: ${inboxResult.error}` }], isError: true };
     }
 
@@ -704,13 +1157,12 @@ server.tool(
   }
 );
 
-server.tool(
+server.registerTool(
   "broadcast",
-  "Send a message to all workers (use sparingly — costs scale with team size)",
-  {
+  { description: "Send a message to all workers (use sparingly — costs scale with team size)", inputSchema: {
     content: z.string().describe("Message content"),
     summary: z.string().describe("Short preview (5-10 words)"),
-  },
+  } },
   async ({ content, summary }) => {
     // Write to every worker's inbox (durable)
     const failures: string[] = [];
@@ -741,20 +1193,38 @@ server.tool(
       runScript(WORKER_MESSAGE_SH, args, { timeout: 10_000 });
     } catch {}
 
-    const msg = `Broadcast to ${successes.length} workers` +
-      (failures.length > 0 ? `\nFailed: ${failures.join(", ")}` : "");
+    // Also broadcast to remote workers via relay (best-effort)
+    let remoteCount = 0;
+    try {
+      const remote = await relayFetch("GET", "/workers");
+      if (remote) {
+        for (const [proj, workers] of Object.entries(remote) as [string, string[]][]) {
+          for (const w of workers) {
+            if (w === WORKER_NAME) continue; // skip self
+            if (successes.includes(w)) continue; // already sent locally
+            const r = await relayFetch("POST", "/msg", {
+              project: proj, worker: w, content, summary, from_name: WORKER_NAME,
+            });
+            if (r?.ok) remoteCount++;
+          }
+        }
+      }
+    } catch {}
+
+    let msg = `Broadcast to ${successes.length} local workers`;
+    if (remoteCount > 0) msg += ` + ${remoteCount} remote`;
+    if (failures.length > 0) msg += `\nFailed: ${failures.join(", ")}`;
     return { content: [{ type: "text" as const, text: msg }] };
   }
 );
 
-server.tool(
+server.registerTool(
   "read_inbox",
-  "Read your inbox messages (durable messages from other workers)",
-  {
+  { description: "Read your inbox messages (durable messages from other workers)", inputSchema: {
     limit: z.number().optional().describe("Max messages to return (default: all)"),
     since: z.string().optional().describe("ISO timestamp — only messages after this time"),
     clear: z.boolean().optional().describe("If true, clear inbox after reading (replaces clear_inbox)"),
-  },
+  } },
   async ({ limit, since, clear }) => {
     try {
       const { messages } = readInboxFromCursor(WORKER_NAME, { limit, since, clear });
@@ -780,13 +1250,12 @@ server.tool(
 );
 
 // ═══════════════════════════════════════════════════════════════════
-// TASK TOOLS (4) — native TS, no shell subprocess
+// TASK TOOLS (3) — native TS, no shell subprocess
 // ═══════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "create_task",
-  "Create a new task in your worker's task list",
-  {
+  { description: "Create a new task in your worker's task list", inputSchema: {
     subject: z.string().describe("Task title (imperative form)"),
     description: z.string().optional().describe("Detailed description"),
     priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Priority level (default: medium)"),
@@ -794,7 +1263,7 @@ server.tool(
     blocks: z.string().optional().describe("Comma-separated task IDs that this task blocks (e.g. 'T003,T004')"),
     blocked_by: z.string().optional().describe("Comma-separated task IDs that block this (e.g. 'T001,T002')"),
     recurring: z.boolean().optional().describe("If true, resets to pending when completed"),
-  },
+  } },
   async ({ subject, description, priority, active_form, blocks, blocked_by, recurring }) => {
     try {
       const tasks = readTasks(WORKER_NAME);
@@ -849,52 +1318,20 @@ server.tool(
   }
 );
 
-server.tool(
-  "claim_task",
-  "Claim a task (assign it to yourself and set status to in_progress)",
-  {
+server.registerTool(
+  "update_task",
+  { description: "Update a task's status, owner, subject, description, priority, or dependencies. Use status='in_progress' to claim, 'completed' to finish, 'deleted' to remove.", inputSchema: {
     task_id: z.string().describe("Task ID (e.g. 'T001')"),
-  },
-  async ({ task_id }) => {
-    try {
-      const tasks = readTasks(WORKER_NAME);
-      const task = tasks[task_id];
-
-      if (!task) {
-        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} not found` }], isError: true };
-      }
-      if (task.status === "completed") {
-        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} already completed` }], isError: true };
-      }
-      if (task.status === "deleted") {
-        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} has been deleted` }], isError: true };
-      }
-      if (isTaskBlocked(tasks, task_id)) {
-        const blockers = (task.blocked_by || []).filter(d => tasks[d]?.status !== "completed");
-        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} blocked by: ${blockers.join(", ")}` }], isError: true };
-      }
-      if (task.owner && task.owner !== "null" && task.owner !== WORKER_NAME) {
-        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} already claimed by ${task.owner}` }], isError: true };
-      }
-
-      task.status = "in_progress";
-      task.owner = WORKER_NAME;
-      writeTasks(WORKER_NAME, tasks);
-
-      return { content: [{ type: "text" as const, text: `Claimed ${task_id}: ${task.subject}` }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "complete_task",
-  "Mark a task as completed (recurring tasks auto-reset to pending)",
-  {
-    task_id: z.string().describe("Task ID (e.g. 'T001')"),
-  },
-  async ({ task_id }) => {
+    status: z.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("New status"),
+    subject: z.string().optional().describe("New subject"),
+    description: z.string().optional().describe("New description"),
+    active_form: z.string().optional().describe("Present continuous label for spinner"),
+    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("New priority"),
+    owner: z.string().optional().describe("New owner (worker name)"),
+    add_blocked_by: z.string().optional().describe("Comma-separated task IDs to add as blockers"),
+    add_blocks: z.string().optional().describe("Comma-separated task IDs this task should block"),
+  } },
+  async ({ task_id, status, subject, description, active_form, priority, owner, add_blocked_by, add_blocks }) => {
     try {
       const tasks = readTasks(WORKER_NAME);
       const task = tasks[task_id];
@@ -903,38 +1340,94 @@ server.tool(
         return { content: [{ type: "text" as const, text: `Error: Task ${task_id} not found` }], isError: true };
       }
 
+      const changes: string[] = [];
       const now = new Date().toISOString();
 
-      if (task.recurring) {
-        task.status = "pending";
-        task.owner = null;
-        task.completed_at = null;
-        task.last_completed_at = now;
-        task.cycles_completed = (task.cycles_completed || 0) + 1;
-        writeTasks(WORKER_NAME, tasks);
-        return { content: [{ type: "text" as const, text: `Completed ${task_id} (recurring — reset to pending, cycle #${task.cycles_completed})` }] };
+      // Status transitions
+      if (status) {
+        if (status === "in_progress") {
+          if (task.status === "completed") {
+            return { content: [{ type: "text" as const, text: `Error: Task ${task_id} already completed` }], isError: true };
+          }
+          if (task.status === "deleted") {
+            return { content: [{ type: "text" as const, text: `Error: Task ${task_id} has been deleted` }], isError: true };
+          }
+          if (isTaskBlocked(tasks, task_id)) {
+            const blockers = (task.blocked_by || []).filter(d => tasks[d]?.status !== "completed");
+            return { content: [{ type: "text" as const, text: `Error: Task ${task_id} blocked by: ${blockers.join(", ")}` }], isError: true };
+          }
+          task.status = "in_progress";
+          task.owner = owner || WORKER_NAME;
+          changes.push("claimed");
+        } else if (status === "completed") {
+          if (task.recurring) {
+            task.status = "pending";
+            task.owner = null;
+            task.completed_at = null;
+            task.last_completed_at = now;
+            task.cycles_completed = (task.cycles_completed || 0) + 1;
+            changes.push(`completed (recurring — reset to pending, cycle #${task.cycles_completed})`);
+          } else {
+            task.status = "completed";
+            task.completed_at = now;
+            changes.push("completed");
+          }
+        } else if (status === "deleted") {
+          task.status = "deleted";
+          task.deleted_at = now;
+          changes.push("deleted");
+        } else if (status === "pending") {
+          task.status = "pending";
+          changes.push("set to pending");
+        }
       }
 
-      task.status = "completed";
-      task.completed_at = now;
-      writeTasks(WORKER_NAME, tasks);
+      // Field updates
+      if (subject) { task.subject = subject; changes.push("subject updated"); }
+      if (description !== undefined) { task.description = description; changes.push("description updated"); }
+      if (active_form) { task.activeForm = active_form; changes.push("activeForm updated"); }
+      if (priority) { task.priority = priority; changes.push(`priority → ${priority}`); }
+      if (owner && !status) { task.owner = owner; changes.push(`owner → ${owner}`); }
 
-      return { content: [{ type: "text" as const, text: `Completed ${task_id}` }] };
+      // Dependency updates
+      if (add_blocked_by) {
+        const ids = add_blocked_by.split(",").map(s => s.trim()).filter(Boolean);
+        task.blocked_by = [...new Set([...(task.blocked_by || []), ...ids])];
+        changes.push(`blocked by: ${ids.join(",")}`);
+      }
+      if (add_blocks) {
+        const ids = add_blocks.split(",").map(s => s.trim()).filter(Boolean);
+        for (const targetId of ids) {
+          if (tasks[targetId]) {
+            const existing = tasks[targetId].blocked_by || [];
+            if (!existing.includes(task_id)) {
+              tasks[targetId].blocked_by = [...existing, task_id];
+            }
+          }
+        }
+        changes.push(`blocks: ${ids.join(",")}`);
+      }
+
+      if (changes.length === 0) {
+        return { content: [{ type: "text" as const, text: `No changes specified for ${task_id}` }] };
+      }
+
+      writeTasks(WORKER_NAME, tasks);
+      return { content: [{ type: "text" as const, text: `Updated ${task_id}: ${changes.join(", ")}` }] };
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
 
-server.tool(
+server.registerTool(
   "list_tasks",
-  "List tasks across workers — unified cross-worker view or filtered to one worker",
-  {
+  { description: "List tasks across workers — unified cross-worker view or filtered to one worker", inputSchema: {
     filter: z.enum(["all", "pending", "in_progress", "blocked"]).optional()
       .describe("Filter by status (default: all non-deleted)"),
     worker: z.string().optional()
       .describe("Specific worker name, or 'all' for cross-worker view (default: self)"),
-  },
+  } },
   async ({ filter, worker }) => {
     try {
       const targetWorkers: string[] = [];
@@ -953,7 +1446,16 @@ server.tool(
       let totalCount = 0;
 
       for (const w of targetWorkers) {
-        const tasks = readTasks(w);
+        let tasks = readTasks(w);
+
+        // If no local tasks and querying a specific worker, try remote
+        if (Object.keys(tasks).length === 0 && workerName !== "all") {
+          const remote = await relayFetch("GET", `/tasks/${PROJECT_SLUG}/${w}`);
+          if (remote && Object.keys(remote).length > 0) {
+            tasks = remote;
+          }
+        }
+
         if (Object.keys(tasks).length === 0) continue;
 
         const entries = Object.entries(tasks) as [string, Task][];
@@ -994,18 +1496,24 @@ server.tool(
 // STATE & FLEET TOOLS (3)
 // ═══════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "get_worker_state",
-  "Read a worker's state.json (default: your own)",
-  {
+  { description: "Read a worker's state.json (default: your own)", inputSchema: {
     name: z.string().optional().describe("Worker name (default: self)"),
-  },
+  } },
   async ({ name }) => {
     try {
       const targetName = name || WORKER_NAME;
+      // Primary: read from registry
+      const registry = readRegistryRaw();
+      const wk = workerKey(targetName);
+      if (registry.workers[wk]?.state) {
+        return { content: [{ type: "text" as const, text: JSON.stringify(registry.workers[wk].state, null, 2) }] };
+      }
+      // Fallback: filesystem
       const statePath = join(WORKERS_DIR, targetName, "state.json");
       if (!existsSync(statePath)) {
-        return { content: [{ type: "text" as const, text: `No state.json for worker '${targetName}'` }], isError: true };
+        return { content: [{ type: "text" as const, text: `No state for worker '${targetName}'` }], isError: true };
       }
       const state = readJsonFile(statePath);
       return { content: [{ type: "text" as const, text: JSON.stringify(state, null, 2) }] };
@@ -1015,30 +1523,42 @@ server.tool(
   }
 );
 
-server.tool(
+server.registerTool(
   "update_state",
-  "Update a key in your own state.json and emit a bus event",
-  {
+  { description: "Update a key in your own state.json and emit a bus event", inputSchema: {
     key: z.string().describe("State key to update (e.g. 'status', 'cycles_completed')"),
     value: z.union([z.string(), z.number(), z.boolean()]).describe("New value"),
-  },
+  } },
   async ({ key, value }) => {
     try {
-      const statePath = join(WORKERS_DIR, WORKER_NAME, "state.json");
-      const lockPath = statePath + ".lock";
+      // Write to unified registry
+      let stateJson: string = "";
+      withRegistryLocked((registry) => {
+        ensureWorkerInRegistry(registry, WORKER_NAME);
+        const wk = workerKey(WORKER_NAME);
+        registry.workers[wk].state[key] = value;
+        stateJson = JSON.stringify(registry.workers[wk].state, null, 2) + "\n";
+      });
 
-      if (!existsSync(statePath)) {
-        return { content: [{ type: "text" as const, text: `No state.json for worker '${WORKER_NAME}'` }], isError: true };
-      }
-
-      acquireLock(lockPath);
+      // Sync to filesystem for backward compat
       try {
-        const state = readJsonFile(statePath) || {};
-        state[key] = value;
-        writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
-      } finally {
-        releaseLock(lockPath);
-      }
+        const wk = workerKey(WORKER_NAME);
+        const registry = readRegistryRaw();
+        if (registry.workers[wk]?.state) {
+          syncStateToFilesystem(WORKER_NAME, registry.workers[wk].state);
+        }
+      } catch {}
+
+      // Sync to watchdog config-cache (best-effort, bypasses macOS TCC restrictions)
+      try {
+        const cacheDir = join(
+          process.env.HOME || "/tmp",
+          ".boring/state/harness-runtime/worker",
+          WORKER_NAME
+        );
+        if (!existsSync(cacheDir)) mkdirSync(cacheDir, { recursive: true });
+        writeFileSync(join(cacheDir, "config-cache.json"), stateJson);
+      } catch {}
 
       // Emit bus event (best-effort)
       try {
@@ -1058,20 +1578,108 @@ server.tool(
   }
 );
 
-server.tool(
+server.registerTool(
   "fleet_status",
-  "Get full fleet status (same output as check-flat-workers.sh)",
-  {},
+  { description: "Get full fleet status (same output as check-flat-workers.sh)" },
   async () => {
     try {
-      const result = runScript(CHECK_WORKERS_SH, ["--project", PROJECT_ROOT], { timeout: 15_000 });
-      if (result.exitCode !== 0) {
-        return { content: [{ type: "text" as const, text: `Error: ${result.stderr || result.stdout}` }], isError: true };
+      const registry = readRegistryRaw();
+      migrateOldEntries(registry);
+
+      // Auto-discover workers from filesystem and ensure they're in registry
+      try {
+        const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
+          .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+          .map(d => d.name);
+        for (const name of dirs) {
+          ensureWorkerInRegistry(registry, name);
+        }
+      } catch {}
+
+      // Auto-prune dead panes
+      let pruned = 0;
+      for (const [paneId] of Object.entries(registry.panes)) {
+        if (!isPaneAlive(paneId)) {
+          delete registry.panes[paneId];
+          delete registry[paneId]; // flat compat
+          pruned++;
+        }
       }
-      return { content: [{ type: "text" as const, text: result.stdout }] };
+      // Persist pruning
+      if (pruned > 0) {
+        const lockPath = join(HARNESS_LOCK_DIR, "pane-registry");
+        acquireLock(lockPath);
+        try {
+          writeFileSync(PANE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+        } finally {
+          releaseLock(lockPath);
+        }
+      }
+
+      // Format output
+      const projectName = basename(PROJECT_ROOT);
+      let output = `=== Worker Fleet Status (${projectName}) ===\n`;
+      output += `${new Date().toISOString()}\n\n`;
+
+      // Workers table — only show this project's workers
+      const header = `${"Worker".padEnd(22)} ${"Status".padEnd(10)} ${"Cycles".padEnd(8)} ${"Last Cycle".padEnd(24)} ${"Found".padEnd(8)} ${"Fixed".padEnd(8)}`;
+      output += header + "\n";
+      output += `${"------".padEnd(22)} ${"------".padEnd(10)} ${"------".padEnd(8)} ${"----------".padEnd(24)} ${"-----".padEnd(8)} ${"-----".padEnd(8)}\n`;
+
+      const projectWorkers = Object.entries(registry.workers)
+        .filter(([wk]) => wk.startsWith(`${PROJECT_SLUG}:`))
+        .sort(([a], [b]) => a.localeCompare(b));
+
+      for (const [wk, w] of projectWorkers) {
+        const name = wk.split(":").slice(1).join(":");
+        const s = w.state || {};
+        output += `${name.padEnd(22)} ${String(s.status || "unknown").padEnd(10)} ${String(s.cycles_completed || 0).padEnd(8)} ${String(s.last_cycle_at || "never").padEnd(24)} ${String(s.issues_found || 0).padEnd(8)} ${String(s.issues_fixed || 0).padEnd(8)}\n`;
+      }
+
+      // Pane check
+      output += "\n=== Pane Check ===\n";
+      for (const [wk] of projectWorkers) {
+        const name = wk.split(":").slice(1).join(":");
+        const workerPanes = Object.entries(registry.panes)
+          .filter(([_, p]) => p.worker === name && p.role === "worker");
+        if (workerPanes.length > 0) {
+          const [paneId, pane] = workerPanes[0];
+          const alive = isPaneAlive(paneId);
+          output += `  ${name} (${paneId} ${pane.pane_target}) ${alive ? "⚡" : "❌ dead"}\n`;
+        } else {
+          output += `  ${name}: NO PANE (dead or not started)\n`;
+        }
+      }
+
+      if (pruned > 0) {
+        output += `\n(Pruned ${pruned} dead pane(s))\n`;
+      }
+
+      // Append remote fleet status (best-effort)
+      const remote = await relayFetch("GET", "/fleet");
+      if (remote?.output) {
+        output += "\n\n=== Remote Fleet ===\n" + remote.output;
+      }
+
+      return { content: [{ type: "text" as const, text: output }] };
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
+  }
+);
+
+server.registerTool(
+  "remote_health",
+  { description: "Check connectivity to the remote relay server (cross-machine fleet communication)" },
+  async () => {
+    if (!REMOTE_RELAY_URL) {
+      return { content: [{ type: "text" as const, text: "No REMOTE_RELAY_URL configured" }] };
+    }
+    const result = await relayFetch("GET", "/health");
+    if (!result) {
+      return { content: [{ type: "text" as const, text: `Remote relay unreachable at ${REMOTE_RELAY_URL}` }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: `Remote relay OK: ${JSON.stringify(result)}` }] };
   }
 );
 
@@ -1079,13 +1687,12 @@ server.tool(
 // DEPLOY & HEALTH TOOLS (2)
 // ═══════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "deploy",
-  "Deploy to test server (workers cannot deploy to prod). Runs deploy.sh with --skip-langfuse, then auto-checks health.",
-  {
+  { description: "Deploy to test server (workers cannot deploy to prod). Runs deploy.sh with --skip-langfuse, then auto-checks health.", inputSchema: {
     service: z.enum(["static", "web", "core", "all"]).optional()
       .describe("Which service to deploy (default: static). 'static' = zero downtime UI only. 'core' requires Warren approval."),
-  },
+  } },
   async ({ service }) => {
     const svc = service || "static";
 
@@ -1107,6 +1714,13 @@ server.tool(
       const deployArgs = ["--skip-langfuse"];
       if (svc !== "all") deployArgs.push("--service", svc);
       const deployScript = join(PROJECT_ROOT, "scripts/deploy.sh");
+
+      if (!existsSync(deployScript)) {
+        return {
+          content: [{ type: "text" as const, text: `Error: Deploy script not found at ${deployScript}` }],
+          isError: true,
+        };
+      }
 
       const result = runScript(deployScript, deployArgs, { timeout: 300_000 }); // 5 min timeout
 
@@ -1141,12 +1755,11 @@ server.tool(
   }
 );
 
-server.tool(
+server.registerTool(
   "health_check",
-  "Check test and/or prod server health (curl /health endpoint)",
-  {
+  { description: "Check test and/or prod server health (curl /health endpoint)", inputSchema: {
     target: z.enum(["test", "prod", "both"]).optional().describe("Which server to check (default: test)"),
-  },
+  } },
   async ({ target }) => {
     const t = target || "test";
     const results: string[] = [];
@@ -1187,13 +1800,13 @@ server.tool(
 // LIFECYCLE TOOLS (2) — recycle & spawn_child
 // ═══════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "recycle",
-  "Self-recycle: write handoff context, then restart as a fresh Claude session in the same pane. Use at end of a cycle or when context is stale.",
-  {
+  { description: "Self-recycle: write handoff context, notify parent/operator, then restart as a fresh Claude session in the same pane. Use at end of a cycle or when context is stale. Set final=true for last cycle (exit without restarting).", inputSchema: {
     message: z.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
-  },
-  async ({ message }) => {
+    final: z.boolean().optional().describe("If true, this is the last cycle — exit cleanly without restarting. Use when work is complete."),
+  } },
+  async ({ message, final }) => {
     // 1. Find own pane
     const ownPane = findOwnPane();
     if (!ownPane) {
@@ -1222,11 +1835,83 @@ server.tool(
       }
     }
 
-    // 4. Get config
+    // 4. Notify parent/operator of cycle completion
+    try {
+      const registry = readRegistryRaw();
+      const paneEntry = registry.panes[ownPane.paneId] || registry[ownPane.paneId];
+      const parentPaneId = paneEntry?.parent_pane;
+      // Find operator pane
+      let operatorName: string | null = null;
+      for (const [, pane] of Object.entries(registry.panes)) {
+        if (pane.worker === "operator" && pane.role === "worker") {
+          operatorName = "operator";
+          break;
+        }
+      }
+      // Build cycle report
+      const cycleReport = message
+        ? `[${WORKER_NAME}] ${final ? "FINAL cycle" : "Cycle"} complete: ${message}`
+        : `[${WORKER_NAME}] ${final ? "FINAL cycle" : "Cycle"} complete (no summary provided)`;
+
+      // Notify parent if we're a child pane
+      if (parentPaneId) {
+        const parentPane: any = registry.panes?.[parentPaneId] || registry[parentPaneId];
+        const parentName = parentPane?.worker || parentPane?.harness?.replace(/^worker\//, "");
+        if (parentName) {
+          writeToInbox(parentName, { content: cycleReport, summary: `${WORKER_NAME} cycle done`, from_name: WORKER_NAME });
+        }
+      }
+      // Notify operator (if registered and not us)
+      if (operatorName && operatorName !== WORKER_NAME) {
+        writeToInbox(operatorName, { content: cycleReport, summary: `${WORKER_NAME} cycle done`, from_name: WORKER_NAME });
+      }
+    } catch {
+      // Best-effort notification — don't block recycle if it fails
+    }
+
+    // 4b. If final cycle, just exit without restarting
+    if (final) {
+      // Update state to reflect completion — write to registry
+      try {
+        withRegistryLocked((registry) => {
+          ensureWorkerInRegistry(registry, WORKER_NAME);
+          const wk = workerKey(WORKER_NAME);
+          registry.workers[wk].state.status = "done";
+          registry.workers[wk].state.completed_at = new Date().toISOString();
+          syncStateToFilesystem(WORKER_NAME, registry.workers[wk].state);
+        });
+      } catch {}
+
+      // Send /exit to Claude (graceful shutdown)
+      try {
+        const exitScript = `/tmp/final-exit-${WORKER_NAME}-${Date.now()}.sh`;
+        writeFileSync(exitScript, `#!/bin/bash
+sleep 5
+tmux send-keys -t "${ownPane.paneId}" "/exit"
+tmux send-keys -t "${ownPane.paneId}" -H 0d
+rm -f "${exitScript}"
+`);
+        execSync(`nohup bash "${exitScript}" > /dev/null 2>&1 &`, {
+          shell: "/bin/bash", timeout: 5000,
+        });
+      } catch {}
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Final cycle. Shutting down.\n` +
+            `Handoff: ${message ? "written to handoff.md" : "none"}\n` +
+            `Parent/operator notified.\n` +
+            `Do NOT send any more tool calls — /exit will be sent shortly.`,
+        }],
+      };
+    }
+
+    // 5. Get config
     const model = getWorkerModel();
     const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
 
-    // 5. Generate seed file (includes handoff + transcript path)
+    // 7. Generate seed file (includes handoff + transcript path)
     const seedHandoff = message || "";
     const seedTranscript = transcriptPath
       ? `\n\nIf you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: ${transcriptPath}`
@@ -1235,7 +1920,7 @@ server.tool(
     const seedFile = `/tmp/worker-${WORKER_NAME}-seed.txt`;
     writeFileSync(seedFile, seedContent);
 
-    // 6. Create recycle script
+    // 8. Create recycle script
     // Key fix: use /exit via tmux instead of kill — keeps pane alive
     const recycleScript = `/tmp/recycle-${WORKER_NAME}-${Date.now()}.sh`;
     const claudeCmd = `claude --model ${model} --dangerously-skip-permissions --add-dir ${workerDir}`;
@@ -1289,9 +1974,10 @@ until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -q "Context left"; d
 done
 sleep 3
 
-# Inject seed
-tmux load-buffer "$SEED_FILE"
-tmux paste-buffer -t "$PANE_ID"
+# Inject seed using a named buffer (prevents race conditions when multiple workers recycle concurrently)
+BUFFER_NAME="recycle-${WORKER_NAME}-$$"
+tmux load-buffer -b "$BUFFER_NAME" "$SEED_FILE"
+tmux paste-buffer -b "$BUFFER_NAME" -t "$PANE_ID" -d
 sleep 2
 tmux send-keys -t "$PANE_ID" -H 0d
 
@@ -1299,7 +1985,7 @@ tmux send-keys -t "$PANE_ID" -H 0d
 rm -f "${recycleScript}"
 `);
 
-    // 7. Spawn recycle script in background (detached)
+    // 9. Spawn recycle script in background (detached)
     try {
       execSync(`nohup bash "${recycleScript}" > /tmp/recycle-${WORKER_NAME}.log 2>&1 &`, {
         shell: "/bin/bash", timeout: 5000,
@@ -1321,12 +2007,11 @@ rm -f "${recycleScript}"
   }
 );
 
-server.tool(
+server.registerTool(
   "spawn_child",
-  "Fork yourself into a new pane split to the right. The child inherits your full conversation context and can work independently.",
-  {
+  { description: "Fork yourself into a new pane split to the right. The child inherits your full conversation context and can work independently.", inputSchema: {
     task: z.string().optional().describe("Task/instruction to inject into the child after it starts"),
-  },
+  } },
   async ({ task }) => {
     // 1. Find own pane
     const ownPane = findOwnPane();
@@ -1404,9 +2089,10 @@ until tmux capture-pane -t "$CHILD_PANE" -p 2>/dev/null | grep -q "Context left"
 done
 sleep 3
 
-# Inject task
-tmux load-buffer "${taskFile}"
-tmux paste-buffer -t "$CHILD_PANE"
+# Inject task using a named buffer (prevents race with other concurrent paste operations)
+SPAWN_BUFFER_NAME="spawn-${WORKER_NAME}-$$"
+tmux load-buffer -b "$SPAWN_BUFFER_NAME" "${taskFile}"
+tmux paste-buffer -b "$SPAWN_BUFFER_NAME" -t "$CHILD_PANE" -d
 sleep 2
 tmux send-keys -t "$CHILD_PANE" -H 0d
 
@@ -1439,10 +2125,9 @@ rm -f "${taskFile}"
   }
 );
 
-server.tool(
+server.registerTool(
   "register_pane",
-  "Register this pane in pane-registry as a worker pane. Call this after recycle or manual launch when spawn_child/recycle can't find your pane.",
-  {},
+  { description: "Register this pane in pane-registry as a worker pane. Call this after recycle or manual launch when spawn_child/recycle can't find your pane." },
   async () => {
     const tmuxPane = process.env.TMUX_PANE;
     if (!tmuxPane) {
@@ -1462,29 +2147,60 @@ server.tool(
       tmuxSession = parts[1] || "";
     } catch {}
 
-    // Write to pane-registry.json
-    const registryPath = PANE_REGISTRY_PATH;
-    if (!existsSync(registryPath)) {
-      writeFileSync(registryPath, "{}");
+    // Verify the pane actually exists in tmux
+    if (!isPaneAlive(tmuxPane)) {
+      return { content: [{ type: "text" as const, text: `Error: Pane ${tmuxPane} is not alive in tmux. Check your TMUX_PANE env var.` }], isError: true };
     }
 
-    const entry = {
-      harness: `worker/${WORKER_NAME}`,
-      session_name: WORKER_NAME,
-      display: WORKER_NAME,
-      task: "worker",
-      done: 0,
-      total: 0,
-      pane_target: paneTarget,
-      project_root: PROJECT_ROOT,
-      tmux_session: tmuxSession,
-      registered_at: new Date().toISOString(),
-    };
+    // Lint: check for duplicate live panes for same worker
+    if (LINT_ENABLED) {
+      const checkRegistry = readRegistryRaw();
+      for (const [paneId, pane] of Object.entries(checkRegistry.panes)) {
+        if (pane.worker === WORKER_NAME && pane.role === "worker" &&
+            paneId !== tmuxPane && isPaneAlive(paneId)) {
+          const flatEntry = checkRegistry[paneId];
+          if (flatEntry?.project_root === PROJECT_ROOT) {
+            return { content: [{ type: "text" as const, text: `Error: Worker '${WORKER_NAME}' already has a live worker pane: ${paneId} (${pane.pane_target}). Kill it first or use a different worker name.` }], isError: true };
+          }
+        }
+      }
+    }
 
+    let operatorInfo = "";
     try {
-      const registry = readJsonFile(registryPath) || {};
-      registry[tmuxPane] = entry;
-      writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+      withRegistryLocked((registry) => {
+        // Ensure worker entry exists in workers section
+        ensureWorkerInRegistry(registry, WORKER_NAME);
+
+        // Write to panes section
+        const paneEntry: RegistryPane = {
+          worker: WORKER_NAME,
+          role: "worker",
+          pane_target: paneTarget,
+          tmux_session: tmuxSession,
+          session_id: "",
+          parent_pane: null,
+          registered_at: new Date().toISOString(),
+        };
+        registry.panes[tmuxPane] = paneEntry;
+
+        // Write flat compat entry for shell scripts
+        writeFlatCompat(registry, tmuxPane, paneEntry);
+
+        // Auto-discover operator as fallback parent
+        if (WORKER_NAME !== "operator") {
+          for (const [paneId, pane] of Object.entries(registry.panes)) {
+            if (pane.worker === "operator" && pane.role === "worker" && paneId !== tmuxPane) {
+              const flatEntry = registry[paneId];
+              if (flatEntry?.project_root === PROJECT_ROOT) {
+                registry[tmuxPane].operator_pane = paneId;
+                operatorInfo = `\nOperator: ${paneId} (fallback parent)`;
+                break;
+              }
+            }
+          }
+        }
+      });
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error writing registry: ${e.message}` }], isError: true };
     }
@@ -1493,17 +2209,16 @@ server.tool(
       content: [{
         type: "text" as const,
         text: `Registered pane ${tmuxPane} (${paneTarget}) as worker/${WORKER_NAME}\n` +
-          `Project: ${PROJECT_ROOT}\n` +
-          `Registry: ${registryPath}`,
+          `Project: ${PROJECT_ROOT}${operatorInfo}\n` +
+          `Registry: ${PANE_REGISTRY_PATH}`,
       }],
     };
   }
 );
 
-server.tool(
+server.registerTool(
   "check_config",
-  "Run diagnostics on worker configuration. Checks: env vars, worker dir, mission.md, state.json, permissions.json, tasks.json, inbox, git branch, worktree, pane registry, required scripts. Returns issues with fix suggestions.",
-  {},
+  { description: "Run diagnostics on worker configuration. Checks: env vars, worker dir, mission.md, state.json, permissions.json, tasks.json, inbox, git branch, worktree, pane registry, required scripts. Returns issues with fix suggestions." },
   async () => {
     const issues = getCachedDiagnostics();
     if (issues.length === 0) {
@@ -1543,17 +2258,16 @@ server.tool(
 // GIT TOOL (1)
 // ═══════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "smart_commit",
-  "Commit staged changes with structured metadata + optional merge request signal",
-  {
+  { description: "Commit staged changes with structured metadata + optional merge request signal", inputSchema: {
     message: z.string().describe("Commit message in type(scope): description format"),
     files: z.string().optional().describe("Space-separated files to git add before committing"),
     verified_test: z.boolean().optional().describe("Skip test run (pre-verified)"),
     verified_tsc: z.boolean().optional().describe("Skip tsc check (pre-verified)"),
     merge_request: z.boolean().optional().describe("Signal chief-of-staff to merge after commit"),
     service_hint: z.string().optional().describe("Deploy service hint for merge (static|web|core)"),
-  },
+  } },
   async ({ message, files, verified_test, verified_tsc, merge_request, service_hint }) => {
     try {
       const args = [message];
@@ -1586,13 +2300,12 @@ server.tool(
 // NEXUS TOOL (1)
 // ═══════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "post_to_nexus",
-  "Post a status message to a Nexus room with [worker-name] prefix",
-  {
+  { description: "Post a status message to a Nexus room with [worker-name] prefix", inputSchema: {
     message: z.string().describe("Message content"),
     room: z.string().optional().describe("Nexus room (default: nexus-qbg-zhu)"),
-  },
+  } },
   async ({ message, room }) => {
     try {
       const targetRoom = room || "nexus-qbg-zhu";
@@ -1654,6 +2367,9 @@ server.tool(
 // ═══════════════════════════════════════════════════════════════════
 
 async function main() {
+  // Auto-start local relay server (idempotent — skips if already running)
+  startRelayServer();
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
@@ -1669,9 +2385,12 @@ if (import.meta.main) {
 export {
   readTasks, writeTasks, nextTaskId, isTaskBlocked, getTasksPath,
   writeToInbox, readInboxFromCursor, readInboxCursor, writeInboxCursor,
-  resolveRecipient, readJsonFile, acquireLock, releaseLock,
+  resolveRecipient, isPaneAlive, readJsonFile, acquireLock, releaseLock,
   findOwnPane, getSessionId, getWorkerModel, getWorktreeDir, generateSeedContent,
   runDiagnostics, _setWorkersDir,
+  readRegistryRaw, withRegistryLocked, ensureWorkerInRegistry, migrateOldEntries,
+  writeFlatCompat, lintRegistry, workerKey,
   WORKER_NAME, WORKERS_DIR, HARNESS_LOCK_DIR,
   type Task, type InboxCursor, type DiagnosticIssue,
+  type RegistryWorker, type RegistryPane, type UnifiedRegistry,
 };
