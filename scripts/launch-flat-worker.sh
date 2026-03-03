@@ -54,6 +54,13 @@ if [ ! -d "$WORKTREE_DIR" ]; then
   git -C "$PROJECT_ROOT" worktree add "$WORKTREE_DIR" -b "$BRANCH" 2>/dev/null
 fi
 
+# Copy untracked config files that worktrees don't inherit from git
+for UNTRACKED_CFG in .mcp.json; do
+  if [ -f "$PROJECT_ROOT/$UNTRACKED_CFG" ] && [ ! -f "$WORKTREE_DIR/$UNTRACKED_CFG" ]; then
+    cp "$PROJECT_ROOT/$UNTRACKED_CFG" "$WORKTREE_DIR/$UNTRACKED_CFG"
+  fi
+done
+
 # Install post-merge hook in main repo (rebase notification after chief-of-staff merges)
 # Try project-local hook first, then upstream generic
 POST_MERGE_SRC="$PROJECT_ROOT/.claude/hooks/git/post-merge"
@@ -162,7 +169,8 @@ if [ -f "$PANE_REG" ]; then
   # Update pane registry with worker info
   TMP_REG=$(mktemp)
   jq --arg pid "$WORKER_PANE" --arg name "$WORKER" --arg target "${_PANE_TARGET:-}" \
-    '.[$pid] = {"harness": ("worker/" + $name), "session_name": $name, "display": $name, "task": "worker", "done": 0, "total": 0, "pane_target": $target}' \
+    --arg proj "$PROJECT_ROOT" --arg sess "$TARGET_SESSION" \
+    '.[$pid] = {"harness": ("worker/" + $name), "session_name": $name, "display": $name, "task": "worker", "done": 0, "total": 0, "pane_target": $target, "project_root": $proj, "tmux_session": $sess}' \
     "$PANE_REG" > "$TMP_REG" 2>/dev/null && mv "$TMP_REG" "$PANE_REG" || rm -f "$TMP_REG"
 fi
 

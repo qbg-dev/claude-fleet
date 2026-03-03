@@ -35,14 +35,24 @@ else
   SIG="[from unknown]"
 fi
 
-# ── Resolve recipient pane ──
+# ── Resolve recipient pane (project-scoped when possible) ──
+from_project=$(echo "$payload" | jq -r '.from_project // ""' 2>/dev/null || echo "")
 if [[ "$to" == %* ]]; then
   # Bare pane ID (e.g. child panes in broadcast)
   PANE_ID="$to"
 else
-  PANE_ID=$(jq -r --arg h "$to" \
-    'to_entries[] | select(.value.harness == $h) | .key' \
-    "$PANE_REGISTRY" 2>/dev/null | head -1 || echo "")
+  # Try project-scoped lookup first, fall back to global
+  PANE_ID=""
+  if [ -n "$from_project" ]; then
+    PANE_ID=$(jq -r --arg h "$to" --arg proj "$from_project" \
+      'to_entries[] | select(.value.harness == $h and (.value.project_root // "") == $proj) | .key' \
+      "$PANE_REGISTRY" 2>/dev/null | head -1 || echo "")
+  fi
+  if [ -z "$PANE_ID" ]; then
+    PANE_ID=$(jq -r --arg h "$to" \
+      'to_entries[] | select(.value.harness == $h) | .key' \
+      "$PANE_REGISTRY" 2>/dev/null | head -1 || echo "")
+  fi
 fi
 [ -z "$PANE_ID" ] && exit 0
 

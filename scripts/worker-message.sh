@@ -70,6 +70,8 @@ _bus_emit() {
   [ "$_BUS_AVAILABLE" = "false" ] && return 1
   local to="$1" content="$2" summary="${3:-}" msg_type="${4:-message}"
   local payload
+  local own_project
+  own_project=$(jq -r --arg p "$OWN_PANE" '.[$p].project_root // ""' "$PANE_REGISTRY" 2>/dev/null || echo "")
   payload=$(jq -nc \
     --arg to "$to" \
     --arg from "$FROM" \
@@ -77,11 +79,13 @@ _bus_emit() {
     --arg from_target "$OWN_TARGET" \
     --arg from_name "$OWN_NAME" \
     --arg from_parent_name "$PARENT_NAME" \
+    --arg from_project "$own_project" \
     --arg content "$content" \
     --arg summary "$summary" \
     --arg msg_type "$msg_type" \
     '{to:$to, from:$from, from_pane:$from_pane, from_target:$from_target,
       from_name:$from_name, from_parent_name:$from_parent_name,
+      from_project:$from_project,
       content:$content, summary:$summary, msg_type:$msg_type, channel:"worker-message"}')
   bus_publish "cell-message" "$payload" 2>/dev/null || true
 }
@@ -153,10 +157,13 @@ case "$CMD" in
 
     # By default: send to all worker panes AND registered children (parent_pane ∈ worker IDs).
     # With --primary-only: send only to root harness panes (harness="worker/$name").
+    # Scoped by project: only broadcast to workers in the same project as the sender.
     SENT=0
+    OWN_PROJECT=$(jq -r --arg p "$OWN_PANE" '.[$p].project_root // ""' "$PANE_REGISTRY" 2>/dev/null || echo "")
     if [ "$PRIMARY_ONLY" = "true" ]; then
       JQ_FILTER='to_entries[]
         | select(.value.harness | startswith("worker/"))
+        | select(($proj == "") or ((.value.project_root // "") == $proj) or ((.value.project_root // "") == ""))
         | [.key, (.value.harness | ltrimstr("worker/"))]
         | @tsv'
     else
@@ -164,7 +171,8 @@ case "$CMD" in
         (to_entries | map(select(.value.harness | startswith("worker/"))) | map(.key)) as $wids |
         to_entries[]
         | select(
-            (.value.harness | startswith("worker/"))
+            ((.value.harness | startswith("worker/"))
+              and (($proj == "") or ((.value.project_root // "") == $proj) or ((.value.project_root // "") == "")))
             or ((.value.parent_pane // "") as $p | $p != "" and ([$p] | inside($wids)))
           )
         | [.key, (.value.harness // ("child:" + (.value.parent_pane // "?")))]
@@ -194,7 +202,7 @@ case "$CMD" in
       fi
       echo "  → $name ($TARGET)"
       SENT=$((SENT + 1))
-    done < <(jq -r "$JQ_FILTER" "$PANE_REGISTRY" 2>/dev/null | sort -u)
+    done < <(jq -r --arg proj "$OWN_PROJECT" "$JQ_FILTER" "$PANE_REGISTRY" 2>/dev/null | sort -u)
 
     SCOPE=$( [ "$PRIMARY_ONLY" = "true" ] && echo "primary workers" || echo "workers + children" )
     echo "Broadcast to $SENT $SCOPE${SUMMARY:+ — $SUMMARY}"
