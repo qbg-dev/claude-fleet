@@ -1,9 +1,19 @@
 #!/usr/bin/env bun
 /**
- * worker-fleet MCP server — Provides Claude tools for worker fleet coordination.
+ * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * Wraps existing shell scripts (worker-message.sh, worker-task.sh, worker-commit.sh,
- * check-flat-workers.sh) and adds native TS for simple file reads.
+ * 17 tools in 8 categories:
+ *   Messaging (3):  send_message, broadcast, read_inbox
+ *   Tasks (4):      create_task, claim_task, complete_task, list_tasks
+ *   State (2):      get_worker_state, update_state
+ *   Fleet (1):      fleet_status
+ *   Deploy (2):     deploy, health_check
+ *   Lifecycle (3):  recycle, spawn_child, register_pane
+ *   Git (1):        smart_commit
+ *   External (1):   post_to_nexus
+ *
+ * Task CRUD and inbox are native TS (no shell subprocess).
+ * Messaging writes inbox first (durable), then fires bus (best-effort).
  *
  * Runtime: bun run ~/.claude-ops/mcp/worker-fleet/index.ts (stdio transport)
  * Identity: auto-detected from WORKER_NAME env, git branch, or fallback "operator"
@@ -12,56 +22,53 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "fs";
+import {
+  readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync,
+  readdirSync, openSync, fstatSync, readSync, closeSync, truncateSync,
+} from "fs";
 import { join } from "path";
 import { execSync, spawnSync } from "child_process";
 
 // ── Configuration ────────────────────────────────────────────────────
+const HOME = process.env.HOME!;
 const PROJECT_ROOT = process.env.PROJECT_ROOT || "/Users/wz/Desktop/zPersonalProjects/Wechat";
-const CLAUDE_OPS = process.env.CLAUDE_OPS_DIR || join(process.env.HOME!, ".claude-ops");
-const WORKERS_DIR = join(PROJECT_ROOT, ".claude/workers");
-// Available for future use
-// const PANE_REGISTRY = join(CLAUDE_OPS, "state/pane-registry.json");
-// const BUS_SCHEMA = join(PROJECT_ROOT, ".claude/bus/schema.json");
+const CLAUDE_OPS = process.env.CLAUDE_OPS_DIR || join(HOME, ".claude-ops");
+let WORKERS_DIR = join(PROJECT_ROOT, ".claude/workers");
 
-// Script paths
+/** For testing — override the workers directory */
+function _setWorkersDir(dir: string) { WORKERS_DIR = dir; }
+const BORING_DIR = process.env.BORING_DIR || join(HOME, ".boring");
+const HARNESS_LOCK_DIR = join(BORING_DIR, "state/locks");
+const PANE_REGISTRY_PATH = join(BORING_DIR, "state/pane-registry.json");
+
+// Script paths (only for tools that still shell out)
 const WORKER_MESSAGE_SH = join(CLAUDE_OPS, "scripts/worker-message.sh");
-const WORKER_TASK_SH = join(CLAUDE_OPS, "scripts/worker-task.sh");
 const WORKER_COMMIT_SH = join(PROJECT_ROOT, ".claude/scripts/worker-commit.sh");
 const CHECK_WORKERS_SH = join(CLAUDE_OPS, "scripts/check-flat-workers.sh");
 const REQUEST_MERGE_SH = join(PROJECT_ROOT, ".claude/scripts/request-merge.sh");
 
 // ── Worker Identity Detection ────────────────────────────────────────
 function detectWorkerName(): string {
-  // 1. Env var
   if (process.env.WORKER_NAME) return process.env.WORKER_NAME;
-
-  // 2. Git branch
   try {
     const branch = execSync("git rev-parse --abbrev-ref HEAD", {
-      cwd: process.cwd(),
-      encoding: "utf-8",
-      timeout: 5000,
+      cwd: process.cwd(), encoding: "utf-8", timeout: 5000,
     }).trim();
     if (branch.startsWith("worker/")) return branch.slice("worker/".length);
   } catch {}
-
-  // 3. Fallback
   return "operator";
 }
 
 const WORKER_NAME = detectWorkerName();
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// ── Generic Helpers ──────────────────────────────────────────────────
 
 function runScript(
-  cmd: string,
-  args: string[],
+  cmd: string, args: string[],
   opts: { cwd?: string; timeout?: number } = {}
 ): { stdout: string; stderr: string; exitCode: number } {
   const result = spawnSync("bash", [cmd, ...args], {
-    cwd: opts.cwd || PROJECT_ROOT,
-    encoding: "utf-8",
+    cwd: opts.cwd || PROJECT_ROOT, encoding: "utf-8",
     timeout: opts.timeout || 30_000,
     env: { ...process.env, PROJECT_ROOT },
   });
@@ -73,35 +80,7 @@ function runScript(
 }
 
 function readJsonFile(path: string): any {
-  try {
-    return JSON.parse(readFileSync(path, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-
-function readJsonlFile(path: string, limit?: number, since?: string): any[] {
-  try {
-    const lines = readFileSync(path, "utf-8").split("\n").filter(Boolean);
-    let entries = lines.map((l) => {
-      try { return JSON.parse(l); } catch { return null; }
-    }).filter(Boolean);
-
-    if (since) {
-      entries = entries.filter((e) => {
-        const ts = e._ts || e.ts || e.timestamp || "";
-        return ts >= since;
-      });
-    }
-
-    if (limit && limit > 0) {
-      entries = entries.slice(-limit);
-    }
-
-    return entries;
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(readFileSync(path, "utf-8")); } catch { return null; }
 }
 
 /** mkdir-based spinlock matching harness-jq.sh convention */
@@ -113,7 +92,6 @@ function acquireLock(lockPath: string, maxWaitMs = 10_000): boolean {
       return true;
     } catch {
       if (Date.now() - start > maxWaitMs) {
-        // Force break stale lock
         try { execSync(`rm -rf "${lockPath}"`, { timeout: 2000 }); } catch {}
         try { mkdirSync(lockPath, { recursive: false }); return true; } catch {}
         return false;
@@ -127,37 +105,435 @@ function releaseLock(lockPath: string) {
   try { execSync(`rm -rf "${lockPath}"`, { timeout: 2000 }); } catch {}
 }
 
+// ── Task CRUD Helpers ────────────────────────────────────────────────
+
+interface Task {
+  subject: string;
+  description: string;
+  activeForm: string;
+  status: "pending" | "in_progress" | "completed" | "deleted";
+  priority: "critical" | "high" | "medium" | "low";
+  recurring: boolean;
+  blocked_by: string[];
+  metadata: Record<string, string>;
+  cycles_completed: number;
+  owner: string | null;
+  created_at: string;
+  completed_at: string | null;
+  last_completed_at?: string | null;
+  deleted_at?: string | null;
+}
+
+function getTasksPath(worker: string): string {
+  return join(WORKERS_DIR, worker, "tasks.json");
+}
+
+function readTasks(worker: string): Record<string, Task> {
+  const path = getTasksPath(worker);
+  try {
+    const data = JSON.parse(readFileSync(path, "utf-8"));
+    return data && typeof data === "object" ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeTasks(worker: string, tasks: Record<string, Task>): void {
+  const lockPath = join(HARNESS_LOCK_DIR, `worker-tasks-${worker}`);
+  acquireLock(lockPath);
+  try {
+    const path = getTasksPath(worker);
+    // Ensure worker directory exists
+    const dir = join(WORKERS_DIR, worker);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(path, JSON.stringify(tasks, null, 2) + "\n");
+  } finally {
+    releaseLock(lockPath);
+  }
+}
+
+/** T001, T002, ... — zero-padded, 3+ digits, finds next available */
+function nextTaskId(tasks: Record<string, Task>): string {
+  const ids = Object.keys(tasks);
+  if (ids.length === 0) return "T001";
+  const nums = ids.map(id => parseInt(id.replace(/^T/, ""), 10)).filter(n => !isNaN(n));
+  const max = nums.length > 0 ? Math.max(...nums) : 0;
+  const next = max + 1;
+  return next < 1000 ? `T${String(next).padStart(3, "0")}` : `T${next}`;
+}
+
+function isTaskBlocked(tasks: Record<string, Task>, taskId: string): boolean {
+  const task = tasks[taskId];
+  if (!task) return false;
+  const deps = task.blocked_by || [];
+  return deps.length > 0 && deps.some(d => tasks[d]?.status !== "completed");
+}
+
+// ── Inbox Helpers ────────────────────────────────────────────────────
+
+interface InboxCursor {
+  offset: number;
+  last_read_at: string;
+}
+
+function getInboxPath(worker: string): string {
+  return join(WORKERS_DIR, worker, "inbox.jsonl");
+}
+
+function getCursorPath(worker: string): string {
+  return join(WORKERS_DIR, worker, "inbox-cursor.json");
+}
+
+function readInboxCursor(worker: string): InboxCursor | null {
+  try {
+    const data = JSON.parse(readFileSync(getCursorPath(worker), "utf-8"));
+    if (typeof data?.offset === "number") return data as InboxCursor;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeInboxCursor(worker: string, offset: number): void {
+  writeFileSync(getCursorPath(worker), JSON.stringify({
+    offset, last_read_at: new Date().toISOString(),
+  }) + "\n");
+}
+
+/** Read inbox from byte offset cursor — returns only new messages */
+function readInboxFromCursor(
+  worker: string,
+  opts: { limit?: number; since?: string; clear?: boolean } = {}
+): { messages: any[]; newOffset: number } {
+  const inboxPath = getInboxPath(worker);
+  if (!existsSync(inboxPath)) return { messages: [], newOffset: 0 };
+
+  const cursor = readInboxCursor(worker);
+  const startOffset = cursor?.offset ?? 0;
+
+  let fd: number;
+  try {
+    fd = openSync(inboxPath, "r");
+  } catch {
+    return { messages: [], newOffset: 0 };
+  }
+
+  try {
+    const stat = fstatSync(fd);
+    const fileSize = stat.size;
+
+    // File was truncated externally → reset to 0
+    const readFrom = fileSize < startOffset ? 0 : startOffset;
+    const bytesToRead = fileSize - readFrom;
+
+    if (bytesToRead <= 0) {
+      // No new data
+      if (opts.clear) {
+        truncateSync(inboxPath, 0);
+        writeInboxCursor(worker, 0);
+      }
+      return { messages: [], newOffset: fileSize };
+    }
+
+    const buffer = Buffer.alloc(bytesToRead);
+    readSync(fd, buffer, 0, bytesToRead, readFrom);
+
+    const newData = buffer.toString("utf-8");
+    let entries = newData.split("\n").filter(Boolean).map(line => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+
+    if (opts.since) {
+      entries = entries.filter(e => {
+        const ts = e._ts || e.ts || e.timestamp || "";
+        return ts >= opts.since!;
+      });
+    }
+
+    if (opts.limit && opts.limit > 0) {
+      entries = entries.slice(-opts.limit);
+    }
+
+    const newOffset = fileSize;
+
+    // Write cursor
+    writeInboxCursor(worker, opts.clear ? 0 : newOffset);
+
+    // Clear: truncate file after reading
+    if (opts.clear) {
+      try { truncateSync(inboxPath, 0); } catch {}
+    }
+
+    return { messages: entries, newOffset };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Write a message to a worker's inbox.jsonl (durable delivery) */
+function writeToInbox(
+  recipientName: string,
+  message: { content: string; summary?: string; from_name: string; [k: string]: any }
+): { ok: true } | { ok: false; error: string } {
+  const workerDir = join(WORKERS_DIR, recipientName);
+  if (!existsSync(workerDir)) {
+    return { ok: false, error: `Worker directory not found: ${recipientName}` };
+  }
+
+  const inboxPath = join(workerDir, "inbox.jsonl");
+  const payload = {
+    to: `worker/${recipientName}`,
+    from: `worker/${message.from_name}`,
+    from_name: message.from_name,
+    content: message.content,
+    summary: message.summary || message.content.slice(0, 60),
+    msg_type: "message",
+    channel: "worker-message",
+    _ts: new Date().toISOString(),
+  };
+
+  try {
+    appendFileSync(inboxPath, JSON.stringify(payload) + "\n");
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e.message };
+  }
+}
+
+/** Resolve recipient — worker name, "parent", or raw pane ID */
+function resolveRecipient(to: string): {
+  type: "worker" | "pane";
+  workerName?: string;
+  paneId?: string;
+  error?: string;
+} {
+  // Raw pane ID
+  if (to.startsWith("%")) {
+    return { type: "pane", paneId: to };
+  }
+
+  // "parent" — look up in pane registry
+  if (to === "parent") {
+    try {
+      const registry = readJsonFile(PANE_REGISTRY_PATH);
+      if (!registry) return { type: "worker", error: "Pane registry not found" };
+
+      // Find our pane by matching harness to WORKER_NAME
+      for (const [paneId, entry] of Object.entries(registry) as [string, any][]) {
+        if (entry.harness === `worker/${WORKER_NAME}` && entry.parent_pane) {
+          const parentEntry = registry[entry.parent_pane];
+          if (parentEntry?.harness) {
+            const parentName = parentEntry.harness.replace(/^worker\//, "");
+            return { type: "worker", workerName: parentName };
+          }
+        }
+      }
+      return { type: "worker", error: `No parent found for worker '${WORKER_NAME}'` };
+    } catch {
+      return { type: "worker", error: "Failed to read pane registry" };
+    }
+  }
+
+  // Worker name
+  return { type: "worker", workerName: to };
+}
+
+// ── Pane & Session Helpers ───────────────────────────────────────────
+
+/** Find this worker's pane. Prefers TMUX_PANE env (exact), falls back to registry search. */
+function findOwnPane(): { paneId: string; paneTarget: string } | null {
+  // Best: TMUX_PANE env var — exact pane ID
+  const tmuxPane = process.env.TMUX_PANE;
+  if (tmuxPane) {
+    // Try registry for pane_target
+    const registry = readJsonFile(PANE_REGISTRY_PATH);
+    if (registry?.[tmuxPane]?.pane_target) {
+      return { paneId: tmuxPane, paneTarget: registry[tmuxPane].pane_target };
+    }
+    // Not in registry — resolve pane_target from tmux directly
+    try {
+      const target = execSync(
+        `tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' | awk -v id="${tmuxPane}" '$1 == id {print $2}'`,
+        { encoding: "utf-8", timeout: 5000 }
+      ).trim();
+      if (target) return { paneId: tmuxPane, paneTarget: target };
+    } catch {}
+    // Last resort — just return the pane ID without target
+    return { paneId: tmuxPane, paneTarget: "" };
+  }
+
+  // Fallback: search registry by worker name (excludes children)
+  const registry = readJsonFile(PANE_REGISTRY_PATH);
+  if (!registry) return null;
+
+  for (const [paneId, entry] of Object.entries(registry) as [string, any][]) {
+    if (entry.harness === `worker/${WORKER_NAME}` &&
+        entry.task !== "child" &&
+        entry.project_root === PROJECT_ROOT) {
+      return { paneId, paneTarget: entry.pane_target || "" };
+    }
+  }
+  return null;
+}
+
+/** Read Claude session ID from the pane-map (written by statusline-command.sh) */
+function getSessionId(paneId: string): string | null {
+  const paneMapPath = join(HOME, ".claude/pane-map/by-pane", paneId);
+  try { return readFileSync(paneMapPath, "utf-8").trim(); } catch { return null; }
+}
+
+/** Read worker's model from permissions.json */
+function getWorkerModel(): string {
+  try {
+    const perms = readJsonFile(join(WORKERS_DIR, WORKER_NAME, "permissions.json"));
+    return perms?.model || "sonnet";
+  } catch { return "sonnet"; }
+}
+
+/** Compute the worktree directory path (PROJECT_ROOT/../ProjectName-w-WORKER) */
+function getWorktreeDir(): string {
+  const projectName = PROJECT_ROOT.split("/").pop()!;
+  return join(PROJECT_ROOT, "..", `${projectName}-w-${WORKER_NAME}`);
+}
+
+/** Generate the seed prompt content for a worker (same template as launch-flat-worker.sh) */
+function generateSeedContent(handoff?: string): string {
+  const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
+  const worktreeDir = getWorktreeDir();
+  const branch = `worker/${WORKER_NAME}`;
+
+  let seed = `You are worker **${WORKER_NAME}**.
+Worktree: ${worktreeDir} (branch: ${branch})
+Worker config: ${workerDir}/
+
+Read these files NOW in this order:
+1. ${workerDir}/mission.md — your goals and tasks
+2. ${workerDir}/state.json — current cycle count and status
+3. ${workerDir}/MEMORY.md — what you learned in previous cycles
+
+Then begin your cycle immediately.
+
+## Cycle Pattern
+
+Every cycle follows this sequence:
+
+1. **Drain inbox** — \`read_inbox(clear=true)\` — act on messages before anything else
+2. **Check tasks** — \`list_tasks(filter="pending")\` — find highest-priority unblocked work
+3. **Claim** — \`claim_task("T00N")\` — mark what you're working on
+4. **Do the work** — investigate, fix, test, commit, deploy, verify
+5. **Complete** — \`complete_task("T00N")\` — only after fully verified
+6. **Update state** — \`update_state("cycles_completed", N+1)\` then \`update_state("last_cycle_at", ISO)\`
+7. **Perpetual?** — if \`perpetual: true\`, sleep for \`sleep_duration\` seconds, then loop
+
+If your inbox has a message from Warren or chief-of-staff, prioritize it over your current task list.
+
+## MCP Tools (\`mcp__worker-fleet__*\`)
+
+| Tool | What it does |
+|------|-------------|
+| \`send_message(to, content, summary)\` | Send to a worker, "parent", or raw pane ID "%NN" |
+| \`broadcast(content, summary)\` | Send to ALL workers (use sparingly) |
+| \`read_inbox(limit?, since?, clear?)\` | Read your inbox; \`clear=true\` truncates after reading |
+| \`create_task(subject, priority?, ...)\` | Add a task to your task list |
+| \`claim_task(task_id)\` | Assign a task to yourself, set in_progress |
+| \`complete_task(task_id)\` | Mark done (recurring tasks auto-reset) |
+| \`list_tasks(filter?, worker?)\` | List tasks; \`worker="all"\` for cross-worker view |
+| \`get_worker_state(name?)\` | Read any worker's state.json |
+| \`update_state(key, value)\` | Update your state.json + emit bus event |
+| \`fleet_status()\` | Full fleet overview (all workers) |
+| \`deploy(service?)\` | Deploy to TEST server + auto health check |
+| \`health_check(target?)\` | Check server health: \`test\`, \`prod\`, or \`both\` |
+| \`smart_commit(message, files?, ...)\` | Commit with format validation; \`merge_request=true\` to signal chief-of-staff |
+| \`post_to_nexus(message, room?)\` | Post to Nexus chat (prefixed with your name) |
+| \`recycle(message?)\` | Self-recycle: write handoff, restart fresh with new context |
+| \`spawn_child(task?)\` | Fork yourself into a new pane to the right |
+| \`register_pane()\` | Register this pane in pane-registry (after recycle/manual launch) |
+
+These are native MCP tool calls — no bash wrappers needed.
+
+## Rules
+- **Fix everything.** Never just report issues — investigate, fix, deploy, document in MEMORY.md.
+- **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **${branch}** only. Never checkout main.
+- **Deploy**: TEST only. \`smart_commit\` then \`deploy(service="static")\`. The deploy tool auto-checks health. Never \`core\` without Warren approval.
+- **Verify before completing**: Tests pass + TypeScript clean + deploy succeeds + endpoint/UI verified.
+- **Perpetual workers**: Read ${PROJECT_ROOT}/.claude/workers/PERPETUAL-PROTOCOL.md on your first cycle for self-optimization guidance.`;
+
+  if (handoff) {
+    seed += `\n\n## Handoff from Previous Cycle\n\n${handoff}`;
+  }
+
+  // Also check for handoff.md on disk
+  const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
+  if (!handoff && existsSync(handoffPath)) {
+    try {
+      const handoffContent = readFileSync(handoffPath, "utf-8").trim();
+      if (handoffContent) {
+        seed += `\n\n## Handoff from Previous Cycle\n\n${handoffContent}`;
+      }
+    } catch {}
+  }
+
+  return seed;
+}
+
 // ── MCP Server ───────────────────────────────────────────────────────
 
 const server = new McpServer({
   name: "worker-fleet",
-  version: "1.0.0",
+  version: "2.0.0",
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// MESSAGING TOOLS (4)
+// MESSAGING TOOLS (3)
 // ═══════════════════════════════════════════════════════════════════
 
 server.tool(
   "send_message",
-  "Send a direct message to a specific worker (durable inbox + tmux instant delivery)",
+  `Send a direct message to a specific worker (durable inbox + tmux instant delivery)`,
   {
     to: z.string().describe("Worker name (e.g. 'chief-of-staff', 'chatbot-tools')"),
     content: z.string().describe("Message content"),
-    summary: z.string().optional().describe("Short preview (5-10 words)"),
+    summary: z.string().describe("Short preview (5-10 words)"),
   },
   async ({ to, content, summary }) => {
-    try {
-      const args = ["send", to, content];
-      if (summary) args.push("--summary", summary);
-      const result = runScript(WORKER_MESSAGE_SH, args);
-      if (result.exitCode !== 0) {
-        return { content: [{ type: "text", text: `Error: ${result.stderr || result.stdout}` }], isError: true };
-      }
-      return { content: [{ type: "text", text: result.stdout }] };
-    } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    const resolved = resolveRecipient(to);
+
+    if (resolved.error) {
+      return { content: [{ type: "text" as const, text: `Error: ${resolved.error}` }], isError: true };
     }
+
+    // Raw pane ID — tmux-only delivery (no inbox)
+    if (resolved.type === "pane") {
+      try {
+        execSync(
+          `tmux send-keys -t "${resolved.paneId}" ${JSON.stringify(`\n[msg from ${WORKER_NAME}] ${content}\n`)} ""`,
+          { timeout: 5000 }
+        );
+        return { content: [{ type: "text" as const, text: `Sent to pane ${resolved.paneId} (tmux-only, no inbox)` }] };
+      } catch (e: any) {
+        return { content: [{ type: "text" as const, text: `Error sending to pane: ${e.message}` }], isError: true };
+      }
+    }
+
+    // Worker name — durable inbox + best-effort bus
+    const recipientName = resolved.workerName!;
+
+    // Step 1: Write to inbox (critical — must succeed)
+    const inboxResult = writeToInbox(recipientName, { content, summary, from_name: WORKER_NAME });
+    if (!inboxResult.ok) {
+      return { content: [{ type: "text" as const, text: `Error: ${inboxResult.error}` }], isError: true };
+    }
+
+    // Step 2: Fire bus for tmux instant delivery (best-effort)
+    try {
+      const args = ["send", recipientName, content];
+      if (summary) args.push("--summary", summary);
+      runScript(WORKER_MESSAGE_SH, args, { timeout: 10_000 });
+    } catch {
+      // Bus failed — inbox already delivered, that's fine
+    }
+
+    return { content: [{ type: "text" as const, text: `Message sent to ${recipientName}` }] };
   }
 );
 
@@ -166,20 +542,41 @@ server.tool(
   "Send a message to all workers (use sparingly — costs scale with team size)",
   {
     content: z.string().describe("Message content"),
-    summary: z.string().optional().describe("Short preview (5-10 words)"),
+    summary: z.string().describe("Short preview (5-10 words)"),
   },
   async ({ content, summary }) => {
+    // Write to every worker's inbox (durable)
+    const failures: string[] = [];
+    const successes: string[] = [];
+
+    try {
+      const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
+        .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+        .map(d => d.name)
+        .filter(name => name !== WORKER_NAME); // Don't broadcast to self
+
+      for (const name of dirs) {
+        const result = writeToInbox(name, { content, summary, from_name: WORKER_NAME });
+        if (result.ok) {
+          successes.push(name);
+        } else {
+          failures.push(`${name}: ${result.error}`);
+        }
+      }
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error listing workers: ${e.message}` }], isError: true };
+    }
+
+    // Fire bus for tmux delivery (best-effort)
     try {
       const args = ["broadcast", content];
       if (summary) args.push("--summary", summary);
-      const result = runScript(WORKER_MESSAGE_SH, args);
-      if (result.exitCode !== 0) {
-        return { content: [{ type: "text", text: `Error: ${result.stderr || result.stdout}` }], isError: true };
-      }
-      return { content: [{ type: "text", text: result.stdout }] };
-    } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
-    }
+      runScript(WORKER_MESSAGE_SH, args, { timeout: 10_000 });
+    } catch {}
+
+    const msg = `Broadcast to ${successes.length} workers` +
+      (failures.length > 0 ? `\nFailed: ${failures.join(", ")}` : "");
+    return { content: [{ type: "text" as const, text: msg }] };
   }
 );
 
@@ -189,50 +586,34 @@ server.tool(
   {
     limit: z.number().optional().describe("Max messages to return (default: all)"),
     since: z.string().optional().describe("ISO timestamp — only messages after this time"),
+    clear: z.boolean().optional().describe("If true, clear inbox after reading (replaces clear_inbox)"),
   },
-  async ({ limit, since }) => {
+  async ({ limit, since, clear }) => {
     try {
-      const inboxPath = join(WORKERS_DIR, WORKER_NAME, "inbox.jsonl");
-      if (!existsSync(inboxPath)) {
-        return { content: [{ type: "text", text: "Inbox empty (file does not exist)" }] };
-      }
-      const messages = readJsonlFile(inboxPath, limit, since);
+      const { messages } = readInboxFromCursor(WORKER_NAME, { limit, since, clear });
+
       if (messages.length === 0) {
-        return { content: [{ type: "text", text: "Inbox empty" }] };
+        return { content: [{ type: "text" as const, text: clear ? "Inbox cleared (was empty)" : "No new messages" }] };
       }
-      const formatted = messages.map((m) => {
+
+      const formatted = messages.map(m => {
         const from = m.from_name || m.from || "?";
         const type = m.msg_type || "message";
         const text = m.content || m.message || "";
         const ts = m._ts || m.ts || "";
         return `[${type}] from ${from}${ts ? ` at ${ts}` : ""}: ${text}`;
       }).join("\n");
-      return { content: [{ type: "text", text: `${messages.length} messages:\n${formatted}` }] };
-    } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "clear_inbox",
-  "Mark all inbox messages as read (truncates inbox.jsonl)",
-  {},
-  async () => {
-    try {
-      const inboxPath = join(WORKERS_DIR, WORKER_NAME, "inbox.jsonl");
-      if (existsSync(inboxPath)) {
-        writeFileSync(inboxPath, "");
-      }
-      return { content: [{ type: "text", text: "Inbox cleared" }] };
+      const suffix = clear ? " (inbox cleared)" : "";
+      return { content: [{ type: "text" as const, text: `${messages.length} messages${suffix}:\n${formatted}` }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
 
 // ═══════════════════════════════════════════════════════════════════
-// TASK TOOLS (5)
+// TASK TOOLS (4) — native TS, no shell subprocess
 // ═══════════════════════════════════════════════════════════════════
 
 server.tool(
@@ -243,26 +624,60 @@ server.tool(
     description: z.string().optional().describe("Detailed description"),
     priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Priority level (default: medium)"),
     active_form: z.string().optional().describe("Present continuous label for spinner (e.g. 'Running tests')"),
-    blocks: z.string().optional().describe("Comma-separated task IDs this task blocks (e.g. 'T003,T004')"),
+    blocks: z.string().optional().describe("Comma-separated task IDs that this task blocks (e.g. 'T003,T004')"),
     blocked_by: z.string().optional().describe("Comma-separated task IDs that block this (e.g. 'T001,T002')"),
     recurring: z.boolean().optional().describe("If true, resets to pending when completed"),
   },
   async ({ subject, description, priority, active_form, blocks, blocked_by, recurring }) => {
     try {
-      const args = ["add", subject];
-      if (priority) args.push("--priority", priority);
-      if (description) args.push("--desc", description);
-      if (active_form) args.push("--active", active_form);
-      if (blocks) args.push("--blocks", blocks);
-      if (blocked_by) args.push("--after", blocked_by);
-      if (recurring) args.push("--recurring");
-      const result = runScript(WORKER_TASK_SH, args);
-      if (result.exitCode !== 0) {
-        return { content: [{ type: "text", text: `Error: ${result.stderr || result.stdout}` }], isError: true };
+      const tasks = readTasks(WORKER_NAME);
+      const taskId = nextTaskId(tasks);
+      const now = new Date().toISOString();
+
+      const blockedByList = blocked_by
+        ? blocked_by.split(",").map(s => s.trim()).filter(Boolean)
+        : [];
+
+      const task: Task = {
+        subject,
+        description: description || "",
+        activeForm: active_form || `Working on: ${subject}`,
+        status: "pending",
+        priority: (priority as Task["priority"]) || "medium",
+        recurring: recurring || false,
+        blocked_by: blockedByList,
+        metadata: {},
+        cycles_completed: 0,
+        owner: null,
+        created_at: now,
+        completed_at: null,
+      };
+
+      tasks[taskId] = task;
+
+      // Forward-blocking: add taskId to blocked_by of specified tasks
+      if (blocks) {
+        const blocksList = blocks.split(",").map(s => s.trim()).filter(Boolean);
+        for (const targetId of blocksList) {
+          if (tasks[targetId]) {
+            const existing = tasks[targetId].blocked_by || [];
+            if (!existing.includes(taskId)) {
+              tasks[targetId].blocked_by = [...existing, taskId];
+            }
+          }
+        }
       }
-      return { content: [{ type: "text", text: result.stdout }] };
+
+      writeTasks(WORKER_NAME, tasks);
+
+      let suffix = ` [${task.priority}]`;
+      if (recurring) suffix += " (recurring)";
+      if (blockedByList.length > 0) suffix += ` (after: ${blockedByList.join(",")})`;
+      if (blocks) suffix += ` (blocks: ${blocks})`;
+
+      return { content: [{ type: "text" as const, text: `Added ${taskId}: ${subject}${suffix}` }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
@@ -275,13 +690,33 @@ server.tool(
   },
   async ({ task_id }) => {
     try {
-      const result = runScript(WORKER_TASK_SH, ["claim", task_id]);
-      if (result.exitCode !== 0) {
-        return { content: [{ type: "text", text: `Error: ${result.stderr || result.stdout}` }], isError: true };
+      const tasks = readTasks(WORKER_NAME);
+      const task = tasks[task_id];
+
+      if (!task) {
+        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} not found` }], isError: true };
       }
-      return { content: [{ type: "text", text: result.stdout }] };
+      if (task.status === "completed") {
+        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} already completed` }], isError: true };
+      }
+      if (task.status === "deleted") {
+        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} has been deleted` }], isError: true };
+      }
+      if (isTaskBlocked(tasks, task_id)) {
+        const blockers = (task.blocked_by || []).filter(d => tasks[d]?.status !== "completed");
+        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} blocked by: ${blockers.join(", ")}` }], isError: true };
+      }
+      if (task.owner && task.owner !== "null" && task.owner !== WORKER_NAME) {
+        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} already claimed by ${task.owner}` }], isError: true };
+      }
+
+      task.status = "in_progress";
+      task.owner = WORKER_NAME;
+      writeTasks(WORKER_NAME, tasks);
+
+      return { content: [{ type: "text" as const, text: `Claimed ${task_id}: ${task.subject}` }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
@@ -294,13 +729,32 @@ server.tool(
   },
   async ({ task_id }) => {
     try {
-      const result = runScript(WORKER_TASK_SH, ["complete", task_id]);
-      if (result.exitCode !== 0) {
-        return { content: [{ type: "text", text: `Error: ${result.stderr || result.stdout}` }], isError: true };
+      const tasks = readTasks(WORKER_NAME);
+      const task = tasks[task_id];
+
+      if (!task) {
+        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} not found` }], isError: true };
       }
-      return { content: [{ type: "text", text: result.stdout }] };
+
+      const now = new Date().toISOString();
+
+      if (task.recurring) {
+        task.status = "pending";
+        task.owner = null;
+        task.completed_at = null;
+        task.last_completed_at = now;
+        task.cycles_completed = (task.cycles_completed || 0) + 1;
+        writeTasks(WORKER_NAME, tasks);
+        return { content: [{ type: "text" as const, text: `Completed ${task_id} (recurring — reset to pending, cycle #${task.cycles_completed})` }] };
+      }
+
+      task.status = "completed";
+      task.completed_at = now;
+      writeTasks(WORKER_NAME, tasks);
+
+      return { content: [{ type: "text" as const, text: `Completed ${task_id}` }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
@@ -309,8 +763,10 @@ server.tool(
   "list_tasks",
   "List tasks across workers — unified cross-worker view or filtered to one worker",
   {
-    filter: z.enum(["all", "pending", "in_progress", "blocked"]).optional().describe("Filter by status (default: all non-deleted)"),
-    worker: z.string().optional().describe("Specific worker name, or 'all' for cross-worker view (default: self)"),
+    filter: z.enum(["all", "pending", "in_progress", "blocked"]).optional()
+      .describe("Filter by status (default: all non-deleted)"),
+    worker: z.string().optional()
+      .describe("Specific worker name, or 'all' for cross-worker view (default: self)"),
   },
   async ({ filter, worker }) => {
     try {
@@ -318,10 +774,9 @@ server.tool(
       const workerName = worker || WORKER_NAME;
 
       if (workerName === "all") {
-        // Cross-worker: read all tasks.json files
         const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
-          .filter((d) => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
-          .map((d) => d.name);
+          .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+          .map(d => d.name);
         targetWorkers.push(...dirs);
       } else {
         targetWorkers.push(workerName);
@@ -331,68 +786,45 @@ server.tool(
       let totalCount = 0;
 
       for (const w of targetWorkers) {
-        const tasksPath = join(WORKERS_DIR, w, "tasks.json");
-        const tasks = readJsonFile(tasksPath);
-        if (!tasks || Object.keys(tasks).length === 0) continue;
+        const tasks = readTasks(w);
+        if (Object.keys(tasks).length === 0) continue;
 
-        const entries = Object.entries(tasks) as [string, any][];
-        const filtered = entries.filter(([, t]) => {
+        const entries = Object.entries(tasks) as [string, Task][];
+        const filtered = entries.filter(([taskId, t]) => {
           if (t.status === "deleted") return false;
-
-          // Compute blocked status
-          const deps: string[] = t.blocked_by || [];
-          const isBlocked = deps.length > 0 && deps.some((d: string) => tasks[d]?.status !== "completed");
-
-          if (filter === "pending") return t.status === "pending" && !isBlocked;
+          const blocked = isTaskBlocked(tasks, taskId);
+          if (filter === "pending") return t.status === "pending" && !blocked;
           if (filter === "in_progress") return t.status === "in_progress";
-          if (filter === "blocked") return isBlocked && t.status !== "completed";
-          return true; // "all" — non-deleted
+          if (filter === "blocked") return blocked && t.status !== "completed";
+          return true;
         });
 
         if (filtered.length === 0) continue;
 
         results.push(`## ${w}`);
         for (const [id, t] of filtered) {
-          const deps: string[] = t.blocked_by || [];
-          const isBlocked = deps.length > 0 && deps.some((d: string) => tasks[d]?.status !== "completed");
-          const status = isBlocked ? "blocked" : t.status;
-          const depsStr = deps.length > 0 ? ` [after:${deps.join(",")}]` : "";
-          const recStr = t.recurring ? " (recurring)" : "";
-          results.push(`  ${id} [${t.priority || "medium"}] ${status}: ${t.subject}${depsStr}${recStr}`);
+          const blocked = isTaskBlocked(tasks, id);
+          const status = blocked ? "blocked" : t.status;
+          const deps = (t.blocked_by || []).length > 0 ? ` [after:${t.blocked_by.join(",")}]` : "";
+          const rec = t.recurring ? " (recurring)" : "";
+          results.push(`  ${id} [${t.priority || "medium"}] ${status}: ${t.subject}${deps}${rec}`);
           totalCount++;
         }
       }
 
       if (results.length === 0) {
-        return { content: [{ type: "text", text: "No tasks found" }] };
+        return { content: [{ type: "text" as const, text: "No tasks found" }] };
       }
 
-      return { content: [{ type: "text", text: `${totalCount} tasks:\n${results.join("\n")}` }] };
+      return { content: [{ type: "text" as const, text: `${totalCount} tasks:\n${results.join("\n")}` }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "my_tasks",
-  "List your own tasks (shortcut for list_tasks with your worker name)",
-  {},
-  async () => {
-    try {
-      const result = runScript(WORKER_TASK_SH, ["list"]);
-      if (result.exitCode !== 0) {
-        return { content: [{ type: "text", text: `Error: ${result.stderr || result.stdout}` }], isError: true };
-      }
-      return { content: [{ type: "text", text: result.stdout || "No tasks" }] };
-    } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
 
 // ═══════════════════════════════════════════════════════════════════
-// STATE TOOLS (3)
+// STATE & FLEET TOOLS (3)
 // ═══════════════════════════════════════════════════════════════════
 
 server.tool(
@@ -406,12 +838,12 @@ server.tool(
       const targetName = name || WORKER_NAME;
       const statePath = join(WORKERS_DIR, targetName, "state.json");
       if (!existsSync(statePath)) {
-        return { content: [{ type: "text", text: `No state.json for worker '${targetName}'` }], isError: true };
+        return { content: [{ type: "text" as const, text: `No state.json for worker '${targetName}'` }], isError: true };
       }
       const state = readJsonFile(statePath);
-      return { content: [{ type: "text", text: JSON.stringify(state, null, 2) }] };
+      return { content: [{ type: "text" as const, text: JSON.stringify(state, null, 2) }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
@@ -429,7 +861,7 @@ server.tool(
       const lockPath = statePath + ".lock";
 
       if (!existsSync(statePath)) {
-        return { content: [{ type: "text", text: `No state.json for worker '${WORKER_NAME}'` }], isError: true };
+        return { content: [{ type: "text" as const, text: `No state.json for worker '${WORKER_NAME}'` }], isError: true };
       }
 
       acquireLock(lockPath);
@@ -444,10 +876,7 @@ server.tool(
       // Emit bus event (best-effort)
       try {
         const payload = JSON.stringify({
-          worker: WORKER_NAME,
-          key,
-          value,
-          channel: "worker-fleet-mcp",
+          worker: WORKER_NAME, key, value, channel: "worker-fleet-mcp",
         });
         execSync(
           `source "${CLAUDE_OPS}/lib/event-bus.sh" && bus_publish "agent.state-changed" '${payload.replace(/'/g, "'\\''")}'`,
@@ -455,9 +884,9 @@ server.tool(
         );
       } catch {}
 
-      return { content: [{ type: "text", text: `Updated state.${key} = ${JSON.stringify(value)}` }] };
+      return { content: [{ type: "text" as const, text: `Updated state.${key} = ${JSON.stringify(value)}` }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
@@ -470,17 +899,442 @@ server.tool(
     try {
       const result = runScript(CHECK_WORKERS_SH, ["--project", PROJECT_ROOT], { timeout: 15_000 });
       if (result.exitCode !== 0) {
-        return { content: [{ type: "text", text: `Error: ${result.stderr || result.stdout}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${result.stderr || result.stdout}` }], isError: true };
       }
-      return { content: [{ type: "text", text: result.stdout }] };
+      return { content: [{ type: "text" as const, text: result.stdout }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
 
 // ═══════════════════════════════════════════════════════════════════
-// GIT TOOLS (2)
+// DEPLOY & HEALTH TOOLS (2)
+// ═══════════════════════════════════════════════════════════════════
+
+server.tool(
+  "deploy",
+  "Deploy to test server (workers cannot deploy to prod). Runs deploy.sh with --skip-langfuse, then auto-checks health.",
+  {
+    service: z.enum(["static", "web", "core", "all"]).optional()
+      .describe("Which service to deploy (default: static). 'static' = zero downtime UI only. 'core' requires Warren approval."),
+  },
+  async ({ service }) => {
+    const svc = service || "static";
+
+    // Guard: workers cannot deploy to prod
+    if (WORKER_NAME === "chief-of-staff" || WORKER_NAME === "quick-fixer") {
+      // These workers have special deploy permissions but still only test via this tool
+    }
+
+    // Guard: core deploy needs Warren approval
+    if (svc === "core") {
+      return {
+        content: [{ type: "text" as const, text: "Error: --service core restarts the WeChat callback handler. Message Warren for approval first, then use bash directly." }],
+        isError: true,
+      };
+    }
+
+    try {
+      // Step 1: Deploy to test
+      const deployArgs = ["--skip-langfuse"];
+      if (svc !== "all") deployArgs.push("--service", svc);
+      const deployScript = join(PROJECT_ROOT, "scripts/deploy.sh");
+
+      const result = runScript(deployScript, deployArgs, { timeout: 300_000 }); // 5 min timeout
+
+      if (result.exitCode !== 0) {
+        return {
+          content: [{ type: "text" as const, text: `Deploy failed (service=${svc}):\n${result.stderr || result.stdout}` }],
+          isError: true,
+        };
+      }
+
+      // Step 2: Auto health check
+      let healthOutput = "";
+      try {
+        const healthResult = spawnSync("curl", ["-sf", "--max-time", "10", "https://test.baoyuansmartlife.com/health"], {
+          encoding: "utf-8", timeout: 15_000,
+        });
+        if (healthResult.status === 0) {
+          healthOutput = `\nHealth check: PASS`;
+        } else {
+          healthOutput = `\nHealth check: FAIL (${healthResult.stderr || "no response"})`;
+        }
+      } catch {
+        healthOutput = "\nHealth check: FAIL (timeout)";
+      }
+
+      return {
+        content: [{ type: "text" as const, text: `Deployed service=${svc} to test${healthOutput}\n\n${result.stdout.slice(-500)}` }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "health_check",
+  "Check test and/or prod server health (curl /health endpoint)",
+  {
+    target: z.enum(["test", "prod", "both"]).optional().describe("Which server to check (default: test)"),
+  },
+  async ({ target }) => {
+    const t = target || "test";
+    const results: string[] = [];
+
+    const checkHealth = (label: string, url: string): string => {
+      try {
+        const result = spawnSync("curl", ["-sf", "--max-time", "10", url], {
+          encoding: "utf-8", timeout: 15_000,
+        });
+        if (result.status === 0) {
+          // Parse health response for detail
+          try {
+            const data = JSON.parse(result.stdout);
+            const version = data.version || data.commit || "";
+            return `${label}: PASS${version ? ` (${version})` : ""}`;
+          } catch {
+            return `${label}: PASS`;
+          }
+        }
+        return `${label}: FAIL (status ${result.status})`;
+      } catch (e: any) {
+        return `${label}: FAIL (${e.message})`;
+      }
+    };
+
+    if (t === "test" || t === "both") {
+      results.push(checkHealth("test", "https://test.baoyuansmartlife.com/health"));
+    }
+    if (t === "prod" || t === "both") {
+      results.push(checkHealth("prod", "https://wx.baoyuansmartlife.com/health"));
+    }
+
+    return { content: [{ type: "text" as const, text: results.join("\n") }] };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// LIFECYCLE TOOLS (2) — recycle & spawn_child
+// ═══════════════════════════════════════════════════════════════════
+
+server.tool(
+  "recycle",
+  "Self-recycle: write handoff context, then restart as a fresh Claude session in the same pane. Use at end of a cycle or when context is stale.",
+  {
+    message: z.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
+  },
+  async ({ message }) => {
+    // 1. Find own pane
+    const ownPane = findOwnPane();
+    if (!ownPane) {
+      return { content: [{ type: "text" as const, text: "Error: Could not find own pane in registry. Are you running in tmux?" }], isError: true };
+    }
+
+    // 2. Get session ID for transcript reference
+    const sessionId = getSessionId(ownPane.paneId);
+    const worktreeDir = getWorktreeDir();
+    const pathSlug = worktreeDir.replace(/\//g, "-").replace(/^-/, "-");
+    const transcriptPath = sessionId
+      ? join(HOME, ".claude/projects", pathSlug, `${sessionId}.jsonl`)
+      : null;
+
+    // 3. Write handoff.md (includes session transcript reference)
+    const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
+    if (message || transcriptPath) {
+      try {
+        let handoffContent = message || "";
+        if (transcriptPath) {
+          handoffContent += `\n\nIf you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: ${transcriptPath}`;
+        }
+        writeFileSync(handoffPath, handoffContent.trim() + "\n");
+      } catch (e: any) {
+        return { content: [{ type: "text" as const, text: `Error writing handoff: ${e.message}` }], isError: true };
+      }
+    }
+
+    // 4. Get config
+    const model = getWorkerModel();
+    const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
+
+    // 5. Generate seed file (includes handoff + transcript path)
+    const seedHandoff = message || "";
+    const seedTranscript = transcriptPath
+      ? `\n\nIf you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: ${transcriptPath}`
+      : "";
+    const seedContent = generateSeedContent((seedHandoff + seedTranscript).trim() || undefined);
+    const seedFile = `/tmp/worker-${WORKER_NAME}-seed.txt`;
+    writeFileSync(seedFile, seedContent);
+
+    // 6. Create recycle script
+    // Key fix: use /exit via tmux instead of kill — keeps pane alive
+    const recycleScript = `/tmp/recycle-${WORKER_NAME}-${Date.now()}.sh`;
+    const claudeCmd = `claude --model ${model} --dangerously-skip-permissions --add-dir ${workerDir}`;
+
+    writeFileSync(recycleScript, `#!/bin/bash
+# Auto-generated recycle script for ${WORKER_NAME}
+set -uo pipefail
+PANE_ID="${ownPane.paneId}"
+PANE_TARGET="${ownPane.paneTarget}"
+SEED_FILE="${seedFile}"
+
+# Wait for MCP tool response to propagate to Claude TUI
+sleep 5
+
+# Send /exit to Claude (graceful — keeps pane alive with shell prompt)
+tmux send-keys -t "$PANE_ID" "/exit"
+tmux send-keys -t "$PANE_ID" -H 0d
+
+# Wait for Claude to exit and shell prompt to return (max 30s)
+WAIT=0
+while [ "$WAIT" -lt 30 ]; do
+  sleep 2; WAIT=$((WAIT+2))
+  # Check if Claude is still running in this pane
+  PANE_PID=$(tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null | awk -v id="$PANE_ID" '$1 == id {print $2}')
+  [ -z "$PANE_PID" ] && { echo "FATAL: pane $PANE_ID gone"; exit 1; }
+  CLAUDE_RUNNING=false
+  for pid in $(pgrep -P "$PANE_PID" 2>/dev/null); do
+    cmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
+    [[ "$cmd" == *claude* ]] && CLAUDE_RUNNING=true && break
+  done
+  [ "$CLAUDE_RUNNING" = "false" ] && break
+done
+
+# Small delay for shell prompt to stabilize
+sleep 2
+
+# Change to worktree directory
+tmux send-keys -t "$PANE_ID" "cd ${worktreeDir}"
+tmux send-keys -t "$PANE_ID" -H 0d
+sleep 1
+
+# Launch Claude
+tmux send-keys -t "$PANE_ID" "${claudeCmd}"
+tmux send-keys -t "$PANE_ID" -H 0d
+
+# Wait for TUI ready (poll for statusline, max 90s)
+WAIT=0
+until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -q "Context left"; do
+  sleep 3; WAIT=$((WAIT+3))
+  [ "$WAIT" -ge 90 ] && break
+done
+sleep 3
+
+# Inject seed
+tmux load-buffer "$SEED_FILE"
+tmux paste-buffer -t "$PANE_ID"
+sleep 2
+tmux send-keys -t "$PANE_ID" -H 0d
+
+# Cleanup
+rm -f "${recycleScript}"
+`);
+
+    // 7. Spawn recycle script in background (detached)
+    try {
+      execSync(`nohup bash "${recycleScript}" > /tmp/recycle-${WORKER_NAME}.log 2>&1 &`, {
+        shell: "/bin/bash", timeout: 5000,
+      });
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error spawning recycle: ${e.message}` }], isError: true };
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Recycling initiated. You will be restarted in ~10 seconds.\n` +
+          `Handoff: ${message ? "written to handoff.md" : "none"}\n` +
+          `Transcript: ${transcriptPath || "unknown"}\n` +
+          `Seed: ${seedFile}\n` +
+          `Do NOT send any more tool calls — /exit will be sent shortly.`,
+      }],
+    };
+  }
+);
+
+server.tool(
+  "spawn_child",
+  "Fork yourself into a new pane split to the right. The child inherits your full conversation context and can work independently.",
+  {
+    task: z.string().optional().describe("Task/instruction to inject into the child after it starts"),
+  },
+  async ({ task }) => {
+    // 1. Find own pane
+    const ownPane = findOwnPane();
+    if (!ownPane) {
+      return { content: [{ type: "text" as const, text: "Error: Could not find own pane in registry. Are you running in tmux?" }], isError: true };
+    }
+
+    // 2. Get session ID from pane-map
+    const sessionId = getSessionId(ownPane.paneId);
+    if (!sessionId) {
+      return { content: [{ type: "text" as const, text: `Error: No session ID found for pane ${ownPane.paneId}. Statusline may not have mapped it yet — wait a few seconds and retry.` }], isError: true };
+    }
+
+    // 3. Get model and construct flags
+    const model = getWorkerModel();
+    const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
+    const extraFlags = `--model ${model} --dangerously-skip-permissions --add-dir ${workerDir}`;
+
+    // 4. Split pane to the right (horizontal split)
+    let childPaneId: string;
+    try {
+      const splitResult = execSync(
+        `tmux split-window -h -t "${ownPane.paneTarget}" -d -P -F '#{pane_id}'`,
+        { encoding: "utf-8", timeout: 5000 }
+      ).trim();
+      childPaneId = splitResult;
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error splitting pane: ${e.message}` }], isError: true };
+    }
+
+    if (!childPaneId || !childPaneId.startsWith("%")) {
+      return { content: [{ type: "text" as const, text: `Error: unexpected child pane ID: ${childPaneId}` }], isError: true };
+    }
+
+    // 5. Register child via worker-register-child.sh
+    const registerScript = join(CLAUDE_OPS, "scripts/worker-register-child.sh");
+    try {
+      execSync(`bash "${registerScript}" "${childPaneId}" "${ownPane.paneId}"`, {
+        timeout: 10_000, encoding: "utf-8",
+      });
+    } catch (e: any) {
+      // Non-fatal — child can still work without registration
+      // But log the error
+    }
+
+    // 6. Create a spawn script that launches Claude in the child pane
+    const spawnScript = `/tmp/spawn-child-${WORKER_NAME}-${Date.now()}.sh`;
+    const forkCmd = `bash ${join(CLAUDE_OPS, "scripts/fork-worker.sh")} ${ownPane.paneId} ${sessionId} ${extraFlags}`;
+
+    let scriptContent = `#!/bin/bash
+# Auto-generated spawn script for ${WORKER_NAME} child
+set -uo pipefail
+CHILD_PANE="${childPaneId}"
+
+# Small delay for pane to be ready
+sleep 1
+
+# Send fork command to child pane
+tmux send-keys -t "$CHILD_PANE" "${forkCmd}"
+tmux send-keys -t "$CHILD_PANE" -H 0d
+`;
+
+    // If task provided, inject it after TUI ready
+    if (task) {
+      const taskFile = `/tmp/child-task-${WORKER_NAME}-${Date.now()}.txt`;
+      writeFileSync(taskFile, task);
+
+      scriptContent += `
+# Wait for TUI ready (max 120s — fork-session loads full conversation)
+# Use "Context left" from statusline as signal — more reliable than prompt character
+WAIT=0
+until tmux capture-pane -t "$CHILD_PANE" -p 2>/dev/null | grep -q "Context left"; do
+  sleep 3; WAIT=\$((WAIT+3))
+  [ "\$WAIT" -ge 120 ] && break
+done
+sleep 3
+
+# Inject task
+tmux load-buffer "${taskFile}"
+tmux paste-buffer -t "$CHILD_PANE"
+sleep 2
+tmux send-keys -t "$CHILD_PANE" -H 0d
+
+# Cleanup
+rm -f "${taskFile}"
+`;
+    }
+
+    scriptContent += `\nrm -f "${spawnScript}"\n`;
+    writeFileSync(spawnScript, scriptContent);
+
+    // 7. Spawn in background
+    try {
+      execSync(`nohup bash "${spawnScript}" > /tmp/spawn-child-${WORKER_NAME}.log 2>&1 &`, {
+        shell: "/bin/bash", timeout: 5000,
+      });
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error spawning child launcher: ${e.message}` }], isError: true };
+    }
+
+    const taskMsg = task ? `\nTask injected: "${task.slice(0, 80)}${task.length > 80 ? "..." : ""}"` : "";
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Spawned child in pane ${childPaneId} (split right of ${ownPane.paneTarget}).\n` +
+          `Session fork from: ${sessionId}\n` +
+          `Claude launching with: --model ${model} --fork-session${taskMsg}`,
+      }],
+    };
+  }
+);
+
+server.tool(
+  "register_pane",
+  "Register this pane in pane-registry as a worker pane. Call this after recycle or manual launch when spawn_child/recycle can't find your pane.",
+  {},
+  async () => {
+    const tmuxPane = process.env.TMUX_PANE;
+    if (!tmuxPane) {
+      return { content: [{ type: "text" as const, text: "Error: TMUX_PANE env var not set. Are you running in tmux?" }], isError: true };
+    }
+
+    // Resolve pane_target from tmux
+    let paneTarget = "";
+    let tmuxSession = "";
+    try {
+      const raw = execSync(
+        `tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index} #{session_name}' | awk -v id="${tmuxPane}" '$1 == id {print $2, $3}'`,
+        { encoding: "utf-8", timeout: 5000 }
+      ).trim();
+      const parts = raw.split(" ");
+      paneTarget = parts[0] || "";
+      tmuxSession = parts[1] || "";
+    } catch {}
+
+    // Write to pane-registry.json
+    const registryPath = PANE_REGISTRY_PATH;
+    if (!existsSync(registryPath)) {
+      writeFileSync(registryPath, "{}");
+    }
+
+    const entry = {
+      harness: `worker/${WORKER_NAME}`,
+      session_name: WORKER_NAME,
+      display: WORKER_NAME,
+      task: "worker",
+      done: 0,
+      total: 0,
+      pane_target: paneTarget,
+      project_root: PROJECT_ROOT,
+      tmux_session: tmuxSession,
+      registered_at: new Date().toISOString(),
+    };
+
+    try {
+      const registry = readJsonFile(registryPath) || {};
+      registry[tmuxPane] = entry;
+      writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error writing registry: ${e.message}` }], isError: true };
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Registered pane ${tmuxPane} (${paneTarget}) as worker/${WORKER_NAME}\n` +
+          `Project: ${PROJECT_ROOT}\n` +
+          `Registry: ${registryPath}`,
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// GIT TOOL (1)
 // ═══════════════════════════════════════════════════════════════════
 
 server.tool(
@@ -505,10 +1359,9 @@ server.tool(
       let output = result.stdout;
 
       if (result.exitCode !== 0) {
-        return { content: [{ type: "text", text: `Commit failed: ${result.stderr || result.stdout}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Commit failed: ${result.stderr || result.stdout}` }], isError: true };
       }
 
-      // Handle merge request signal
       if (merge_request && existsSync(REQUEST_MERGE_SH)) {
         const mrArgs: string[] = [];
         if (service_hint) mrArgs.push("--service", service_hint);
@@ -516,37 +1369,9 @@ server.tool(
         output += "\n" + (mrResult.stdout || mrResult.stderr);
       }
 
-      return { content: [{ type: "text", text: output }] };
+      return { content: [{ type: "text" as const, text: output }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "merge_request",
-  "Signal chief-of-staff that your branch is ready to merge into main",
-  {
-    description: z.string().optional().describe("Summary of changes for chief-of-staff"),
-    service_hint: z.enum(["static", "web", "core"]).optional().describe("Recommended deploy service type"),
-  },
-  async ({ description, service_hint }) => {
-    try {
-      if (!existsSync(REQUEST_MERGE_SH)) {
-        return { content: [{ type: "text", text: "Error: request-merge.sh not found" }], isError: true };
-      }
-
-      const args: string[] = [];
-      if (service_hint) args.push("--service", service_hint);
-      if (description) args.push("--desc", description);
-
-      const result = runScript(REQUEST_MERGE_SH, args);
-      if (result.exitCode !== 0) {
-        return { content: [{ type: "text", text: `Error: ${result.stderr || result.stdout}` }], isError: true };
-      }
-      return { content: [{ type: "text", text: result.stdout }] };
-    } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
@@ -567,9 +1392,7 @@ server.tool(
       const targetRoom = room || "nexus-qbg-zhu";
       const prefixedMessage = `[${WORKER_NAME}] ${message}`;
 
-      // Use the Nexus MCP server's Matrix HTTP API via curl
-      // Read credentials from ~/.nexus-config or env
-      const nexusConfig = join(process.env.HOME!, ".nexus-config");
+      const nexusConfig = join(HOME, ".nexus-config");
       let accessToken = process.env.NEXUS_ACCESS_TOKEN || "";
       let homeserver = process.env.NEXUS_HOMESERVER || "https://footemp.bar";
 
@@ -582,39 +1405,27 @@ server.tool(
       }
 
       if (!accessToken) {
-        // Fallback: use the Nexus MCP tool via shell
-        // This matches the nexus-messaging skill pattern
         return {
-          content: [{
-            type: "text",
-            text: `Nexus token not configured. Message not sent.\nIntended: [${WORKER_NAME}] ${message} → ${targetRoom}`,
-          }],
+          content: [{ type: "text" as const, text: `Nexus token not configured. Message not sent.\nIntended: [${WORKER_NAME}] ${message} → ${targetRoom}` }],
           isError: true,
         };
       }
 
-      // Matrix send message API
       const txnId = `m${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
       const roomAlias = targetRoom.startsWith("#") ? targetRoom : `#${targetRoom}:footemp.bar`;
 
-      // Resolve room alias to room ID
       const resolveResult = spawnSync("curl", [
-        "-sf",
-        "-H", `Authorization: Bearer ${accessToken}`,
+        "-sf", "-H", `Authorization: Bearer ${accessToken}`,
         `${homeserver}/_matrix/client/v3/directory/room/${encodeURIComponent(roomAlias)}`,
       ], { encoding: "utf-8", timeout: 10_000 });
 
       let roomId: string;
-      try {
-        roomId = JSON.parse(resolveResult.stdout).room_id;
-      } catch {
-        return { content: [{ type: "text", text: `Failed to resolve room '${targetRoom}'` }], isError: true };
+      try { roomId = JSON.parse(resolveResult.stdout).room_id; } catch {
+        return { content: [{ type: "text" as const, text: `Failed to resolve room '${targetRoom}'` }], isError: true };
       }
 
-      // Send message
       const sendResult = spawnSync("curl", [
-        "-sf",
-        "-X", "PUT",
+        "-sf", "-X", "PUT",
         "-H", `Authorization: Bearer ${accessToken}`,
         "-H", "Content-Type: application/json",
         "-d", JSON.stringify({ msgtype: "m.text", body: prefixedMessage }),
@@ -622,12 +1433,12 @@ server.tool(
       ], { encoding: "utf-8", timeout: 10_000 });
 
       if (sendResult.status !== 0) {
-        return { content: [{ type: "text", text: `Failed to send to Nexus: ${sendResult.stderr}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Failed to send to Nexus: ${sendResult.stderr}` }], isError: true };
       }
 
-      return { content: [{ type: "text", text: `Posted to ${targetRoom}: [${WORKER_NAME}] ${message}` }] };
+      return { content: [{ type: "text" as const, text: `Posted to ${targetRoom}: [${WORKER_NAME}] ${message}` }] };
     } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
@@ -641,7 +1452,20 @@ async function main() {
   await server.connect(transport);
 }
 
-main().catch((e) => {
-  console.error("worker-fleet MCP server fatal:", e);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((e) => {
+    console.error("worker-fleet MCP server fatal:", e);
+    process.exit(1);
+  });
+}
+
+// ── Exports for testing ──────────────────────────────────────────────
+export {
+  readTasks, writeTasks, nextTaskId, isTaskBlocked, getTasksPath,
+  writeToInbox, readInboxFromCursor, readInboxCursor, writeInboxCursor,
+  resolveRecipient, readJsonFile, acquireLock, releaseLock,
+  findOwnPane, getSessionId, getWorkerModel, getWorktreeDir, generateSeedContent,
+  _setWorkersDir,
+  WORKER_NAME, WORKERS_DIR, HARNESS_LOCK_DIR,
+  type Task, type InboxCursor,
+};

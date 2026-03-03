@@ -55,6 +55,31 @@ resolve_main_root() {
 
 BRANCH=$(current_branch)
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+# Override: resolve identity from pane-registry using SESSION_ID.
+# This is authoritative when Claude Code runs the hook from a wrong CWD.
+PANE_REGISTRY="${HARNESS_STATE_DIR:-$HOME/.boring/state}/pane-registry.json"
+if [ -n "$SESSION_ID" ] && [ -f "$PANE_REGISTRY" ]; then
+  _REG_HARNESS=$(jq -r --arg sid "$SESSION_ID" \
+    '[to_entries[] | select(.value.session_id == $sid)] | first | .value.harness // ""' \
+    "$PANE_REGISTRY" 2>/dev/null || echo "")
+  _REG_PROJECT_ROOT=$(jq -r --arg sid "$SESSION_ID" \
+    '[to_entries[] | select(.value.session_id == $sid)] | first | .value.project_root // ""' \
+    "$PANE_REGISTRY" 2>/dev/null || echo "")
+  # If registry says this is a flat worker, trust it over git-based detection.
+  if [[ "${_REG_HARNESS:-}" == worker/* ]]; then
+    _WN="${_REG_HARNESS#worker/}"
+    _PARENT=$(dirname "${_REG_PROJECT_ROOT:-.}")
+    _BASE=$(basename "${_REG_PROJECT_ROOT:-.}")
+    _WT="${_PARENT}/${_BASE}-w-${_WN}"
+    if [ -d "$_WT" ]; then
+      PROJECT_ROOT="$_WT"
+      BRANCH=$(git -C "$_WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "worker/$_WN")
+    else
+      BRANCH="worker/$_WN"
+    fi
+  fi
+fi
 SESSION_TYPE=""
 WORKER_NAME=""
 MAIN_ROOT=""

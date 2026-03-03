@@ -98,22 +98,56 @@ Worktree: $WORKTREE_DIR (branch: $BRANCH)
 Worker config: $PROJECT_ROOT/.claude/workers/$WORKER/
 
 Read these files NOW in this order:
-1. $WORKER_DIR/mission.md — your mission
-2. $WORKER_DIR/state.json — current state
-3. $WORKER_DIR/MEMORY.md — accumulated knowledge
+1. $WORKER_DIR/mission.md — your goals and tasks
+2. $WORKER_DIR/state.json — current cycle count and status
+3. $WORKER_DIR/MEMORY.md — what you learned in previous cycles
 
-Then begin your mission loop immediately.
+Then begin your cycle immediately.
 
-## Tools
-Use \`mcp__worker-fleet__*\` MCP tools for messaging, tasks, inbox, commits, state, and deploy signals. These are native tool calls — no bash wrappers needed.
+## Cycle Pattern
+
+Every cycle follows this sequence:
+
+1. **Drain inbox** — \`read_inbox(clear=true)\` — act on messages before anything else
+2. **Check tasks** — \`list_tasks(filter="pending")\` — find highest-priority unblocked work
+3. **Claim** — \`claim_task("T00N")\` — mark what you're working on
+4. **Do the work** — investigate, fix, test, commit, deploy, verify
+5. **Complete** — \`complete_task("T00N")\` — only after fully verified
+6. **Update state** — \`update_state("cycles_completed", N+1)\` then \`update_state("last_cycle_at", ISO)\`
+7. **Perpetual?** — if \`perpetual: true\`, sleep for \`sleep_duration\` seconds, then loop
+
+If your inbox has a message from Warren or chief-of-staff, prioritize it over your current task list.
+
+## MCP Tools (\`mcp__worker-fleet__*\`)
+
+| Tool | What it does |
+|------|-------------|
+| \`send_message(to, content, summary)\` | Send to a worker, "parent", or raw pane ID "%NN" |
+| \`broadcast(content, summary)\` | Send to ALL workers (use sparingly) |
+| \`read_inbox(limit?, since?, clear?)\` | Read your inbox; \`clear=true\` truncates after reading |
+| \`create_task(subject, priority?, ...)\` | Add a task to your task list |
+| \`claim_task(task_id)\` | Assign a task to yourself, set in_progress |
+| \`complete_task(task_id)\` | Mark done (recurring tasks auto-reset) |
+| \`list_tasks(filter?, worker?)\` | List tasks; \`worker="all"\` for cross-worker view |
+| \`get_worker_state(name?)\` | Read any worker's state.json |
+| \`update_state(key, value)\` | Update your state.json + emit bus event |
+| \`fleet_status()\` | Full fleet overview (all workers) |
+| \`deploy(service?)\` | Deploy to TEST server + auto health check. \`static\` (default), \`web\`, or \`all\` |
+| \`health_check(target?)\` | Check server health: \`test\` (default), \`prod\`, or \`both\` |
+| \`smart_commit(message, files?, ...)\` | Commit with format validation; \`merge_request=true\` to signal chief-of-staff |
+| \`post_to_nexus(message, room?)\` | Post to Nexus chat (prefixed with your name) |
+| \`recycle(message?)\` | Self-recycle: write handoff, restart fresh with new context |
+| \`spawn_child(task?)\` | Fork yourself into a new pane to the right |
+| \`register_pane()\` | Register this pane in pane-registry (after recycle/manual launch) |
+
+These are native MCP tool calls — no bash wrappers needed.
 
 ## Rules
 - **Fix everything.** Never just report issues — investigate, fix, deploy, document in MEMORY.md.
 - **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **$BRANCH** only. Never checkout main.
-- **Deploy**: TEST first (\`./scripts/deploy.sh --skip-langfuse --service static|web\`). Never \`--service core\` without Warren approval.
-- **Verify**: Tests + TypeScript + deploy + endpoint/UI check before marking any task done.
-- **State**: Update state.json each cycle (cycles_completed++, last_cycle_at). \`perpetual: true\` + \`sleep_duration\` controls watchdog respawn.
-- **Auto-notification**: Post-commit hook notifies Warren automatically.
+- **Deploy**: TEST only. \`smart_commit\` then \`deploy(service="static")\`. The deploy tool auto-checks health. Never \`core\` without Warren approval.
+- **Verify before completing**: Tests pass + TypeScript clean + deploy succeeds + endpoint/UI verified.
+- **Perpetual workers**: Read $PROJECT_ROOT/.claude/workers/PERPETUAL-PROTOCOL.md on your first cycle for self-optimization guidance.
 WSEED
 
 # Create tmux window for this worker (or reuse if session was just created)
