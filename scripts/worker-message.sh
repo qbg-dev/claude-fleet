@@ -4,11 +4,12 @@
 #
 # Usage:
 #   worker-message.sh send <worker-name> "<content>" [--summary "short preview"]
-#   worker-message.sh broadcast "<content>" [--summary "short preview"]
+#   worker-message.sh broadcast "<content>" [--primary-only] [--summary "short preview"]
 #   worker-message.sh shutdown <worker-name> ["<reason>"]
 #   worker-message.sh list                  # show all registered workers + panes
 #
-# Workers are identified by name (e.g. "chatbot-tools"), resolved via pane-registry.json.
+# Workers are identified by name (e.g. "chatbot-tools").
+# Pane resolution checks registry.json (flat workers) FIRST, then pane-registry.json (legacy).
 #
 # Delivery is two-layer:
 #   1. Instant  — tmux send-keys (best-effort, fires even if bus unavailable)
@@ -18,7 +19,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/harness-jq.sh"
+source "${SCRIPT_DIR}/../lib/fleet-jq.sh"
 
 # Source event-bus.sh for bus_publish (gracefully degrades if unavailable)
 _BUS_LIB="${BORING_DIR:-${CLAUDE_OPS_DIR:-$HOME/.boring}}/lib/event-bus.sh"
@@ -26,6 +27,10 @@ _BUS_AVAILABLE="false"
 if [ -f "$_BUS_LIB" ]; then
   source "$_BUS_LIB" 2>/dev/null && _BUS_AVAILABLE="true" || true
 fi
+
+# ── Flat registry (project-level registry.json — primary source for flat workers) ──
+# PROJECT_ROOT is passed as env var by the MCP when calling this script.
+FLAT_REGISTRY="${PROJECT_ROOT:+$PROJECT_ROOT/.claude/workers/registry.json}"
 
 # ── Detect own pane ID + display target ──
 _own_pane_id() {
@@ -41,19 +46,39 @@ _own_pane_id() {
 OWN_PANE=$(_own_pane_id 2>/dev/null || true)
 OWN_TARGET=$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' 2>/dev/null \
   | awk -v id="$OWN_PANE" '$1 == id {print $2; exit}')
-OWN_NAME=$(jq -r --arg p "$OWN_PANE" '.[$p].harness // empty' "$PANE_REGISTRY" 2>/dev/null \
-  | sed 's|^worker/||' || true)
 
-# Resolve parent for child panes — used in message signatures and payload
-PARENT_PANE=$(jq -r --arg p "$OWN_PANE" '.[$p].parent_pane // empty' "$PANE_REGISTRY" 2>/dev/null || echo "")
+# Resolve own name: registry.json first (flat workers), then pane-registry.json
+OWN_NAME=""
+if [ -n "${TMUX_PANE:-}" ] && [ -n "${FLAT_REGISTRY:-}" ] && [ -f "$FLAT_REGISTRY" ]; then
+  OWN_NAME=$(jq -r --arg pane "$TMUX_PANE" \
+    'to_entries[] | select(.value.pane_id == $pane) | .key' \
+    "$FLAT_REGISTRY" 2>/dev/null | head -1 || true)
+fi
+if [ -z "${OWN_NAME:-}" ] && [ -n "${OWN_PANE:-}" ] && [ -f "$PANE_REGISTRY" ]; then
+  OWN_NAME=$(jq -r --arg p "$OWN_PANE" \
+    '(.panes[$p].worker // (.[$p].harness // "" | ltrimstr("worker/"))) | select(. != "")' \
+    "$PANE_REGISTRY" 2>/dev/null || true)
+fi
+
+# Resolve parent for child panes — pane-registry.json only (flat workers have no children)
+PARENT_PANE=$(jq -r --arg p "$OWN_PANE" '(.panes[$p].parent_pane // .[$p].parent_pane // "") | select(. != "")' "$PANE_REGISTRY" 2>/dev/null || echo "")
 PARENT_NAME=""
 [ -n "$PARENT_PANE" ] && \
-  PARENT_NAME=$(jq -r --arg p "$PARENT_PANE" '.[$p].harness // ""' "$PANE_REGISTRY" 2>/dev/null \
-    | sed 's|^worker/||' || echo "")
+  PARENT_NAME=$(jq -r --arg p "$PARENT_PANE" '(.panes[$p].worker // (.[$p].harness // "" | ltrimstr("worker/"))) | select(. != "")' "$PANE_REGISTRY" 2>/dev/null || echo "")
 
 # Bus identity: "worker/$name" for worker panes, "operator" for human/main session
 FROM="${OWN_NAME:+worker/$OWN_NAME}"
 FROM="${FROM:-operator}"
+
+# Resolve own project root: PROJECT_ROOT env var (set by MCP) takes priority
+OWN_PROJECT="${PROJECT_ROOT:-}"
+if [ -z "$OWN_PROJECT" ] && [ -n "${OWN_NAME:-}" ] && [ -f "$PANE_REGISTRY" ]; then
+  OWN_PROJECT=$(jq -r --arg wn "$OWN_NAME" \
+    '[.workers | to_entries[] | select(.key | endswith(":" + $wn))] | first | .value.project_root // ""' \
+    "$PANE_REGISTRY" 2>/dev/null || echo "")
+fi
+[ -z "$OWN_PROJECT" ] && [ -n "${OWN_PANE:-}" ] && [ -f "$PANE_REGISTRY" ] && \
+  OWN_PROJECT=$(jq -r --arg p "$OWN_PANE" '.[$p].project_root // ""' "$PANE_REGISTRY" 2>/dev/null || echo "")
 
 # Fallback signature — used only when bus is unavailable
 if [ -n "$PARENT_NAME" ]; then
@@ -91,11 +116,33 @@ _bus_emit() {
 }
 
 # ── Resolve worker name → pane_id ──
+# Checks registry.json (flat workers) FIRST, then pane-registry.json (legacy harness).
 _worker_pane() {
   local name="$1"
-  jq -r --arg h "worker/$name" \
-    'to_entries[] | select(.value.harness == $h) | .key' \
-    "$PANE_REGISTRY" 2>/dev/null | head -1
+  local result=""
+
+  # PRIMARY: registry.json (flat workers — new system)
+  if [ -n "${FLAT_REGISTRY:-}" ] && [ -f "$FLAT_REGISTRY" ]; then
+    result=$(jq -r --arg n "$name" '.[$n].pane_id // ""' "$FLAT_REGISTRY" 2>/dev/null || echo "")
+  fi
+
+  # FALLBACK: pane-registry.json (legacy harness workers)
+  if [ -z "${result:-}" ] && [ -f "$PANE_REGISTRY" ]; then
+    # Try panes section first (unified format) — match worker name + project scope
+    if [ -n "${OWN_PROJECT:-}" ]; then
+      result=$(jq -r --arg wn "$name" \
+        '.panes | to_entries[] | select(.value.worker == $wn and .value.role == "worker") | .key' \
+        "$PANE_REGISTRY" 2>/dev/null | head -1)
+    fi
+    # Flat entries — match harness AND project_root
+    if [ -z "${result:-}" ]; then
+      result=$(jq -r --arg h "worker/$name" --arg proj "${OWN_PROJECT:-}" \
+        'to_entries[] | select(.key | startswith("%")) | select(.value.harness == $h and ((.value.project_root // "") == $proj or $proj == "")) | .key' \
+        "$PANE_REGISTRY" 2>/dev/null | head -1)
+    fi
+  fi
+
+  echo "${result:-}"
 }
 
 # ── Resolve pane_id → tmux target (e.g. w:1.0) ──
@@ -134,11 +181,11 @@ case "$CMD" in
       exit 1
     }
 
-    if ! _bus_emit "worker/$RECIPIENT" "$CONTENT" "$SUMMARY"; then
-      # Bus unavailable — fall back to direct tmux delivery
-      tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT"
-      tmux send-keys -t "$TARGET" -H 0d
-    fi
+    # Always do tmux instant delivery
+    tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT" 2>/dev/null || true
+    tmux send-keys -t "$TARGET" -H 0d 2>/dev/null || true
+    # Also emit to bus for durable side-effects (best-effort)
+    _bus_emit "worker/$RECIPIENT" "$CONTENT" "$SUMMARY" || true
     echo "Sent to $RECIPIENT ($TARGET)${SUMMARY:+ — $SUMMARY}"
     ;;
 
@@ -159,7 +206,6 @@ case "$CMD" in
     # With --primary-only: send only to root harness panes (harness="worker/$name").
     # Scoped by project: only broadcast to workers in the same project as the sender.
     SENT=0
-    OWN_PROJECT=$(jq -r --arg p "$OWN_PANE" '.[$p].project_root // ""' "$PANE_REGISTRY" 2>/dev/null || echo "")
     if [ "$PRIMARY_ONLY" = "true" ]; then
       JQ_FILTER='to_entries[]
         | select(.value.harness | startswith("worker/"))
@@ -179,6 +225,7 @@ case "$CMD" in
         | @tsv'
     fi
 
+    # 1) Legacy harness workers from pane-registry.json
     while IFS=$'\t' read -r pane_id name; do
       [ "$pane_id" = "$OWN_PANE" ] && continue
       TARGET=$(_pane_target "$pane_id")
@@ -195,14 +242,32 @@ case "$CMD" in
       else
         bus_to="worker/$local_name"
       fi
-      if ! _bus_emit "$bus_to" "$CONTENT" "$SUMMARY" "broadcast"; then
-        # Bus unavailable — fall back to direct tmux delivery
-        tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT"
-        tmux send-keys -t "$TARGET" -H 0d
-      fi
+      # Always do tmux instant delivery
+      tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT" 2>/dev/null || true
+      tmux send-keys -t "$TARGET" -H 0d 2>/dev/null || true
+      # Also emit to bus for durable side-effects (best-effort)
+      _bus_emit "$bus_to" "$CONTENT" "$SUMMARY" "broadcast" || true
       echo "  → $name ($TARGET)"
       SENT=$((SENT + 1))
     done < <(jq -r --arg proj "$OWN_PROJECT" "$JQ_FILTER" "$PANE_REGISTRY" 2>/dev/null | sort -u)
+
+    # 2) Flat workers from registry.json (primary source for new-style workers)
+    if [ -n "${FLAT_REGISTRY:-}" ] && [ -f "$FLAT_REGISTRY" ]; then
+      while IFS=$'\t' read -r pane_id worker_name; do
+        if [ -z "$pane_id" ] || [ "$pane_id" = "null" ]; then continue; fi
+        [ "$pane_id" = "$OWN_PANE" ] && continue
+        TARGET=$(_pane_target "$pane_id")
+        if [ -z "$TARGET" ]; then
+          echo "  ⚠ $worker_name ($pane_id): no active pane (skipped)"
+          continue
+        fi
+        tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT" 2>/dev/null || true
+        tmux send-keys -t "$TARGET" -H 0d 2>/dev/null || true
+        _bus_emit "worker/$worker_name" "$CONTENT" "$SUMMARY" "broadcast" || true
+        echo "  → $worker_name ($TARGET)"
+        SENT=$((SENT + 1))
+      done < <(jq -r 'to_entries[] | select(.value.pane_id != null and .value.pane_id != "") | [.value.pane_id, .key] | @tsv' "$FLAT_REGISTRY" 2>/dev/null)
+    fi
 
     SCOPE=$( [ "$PRIMARY_ONLY" = "true" ] && echo "primary workers" || echo "workers + children" )
     echo "Broadcast to $SENT $SCOPE${SUMMARY:+ — $SUMMARY}"
@@ -225,17 +290,23 @@ case "$CMD" in
     }
 
     MSG="SHUTDOWN REQUEST: Please wrap up your current task and stop. Reason: $REASON"
-    if ! _bus_emit "worker/$RECIPIENT" "$MSG" "shutdown" "shutdown"; then
-      tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $MSG"
-      tmux send-keys -t "$TARGET" -H 0d
-    fi
+    # Always do tmux instant delivery
+    tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $MSG" 2>/dev/null || true
+    tmux send-keys -t "$TARGET" -H 0d 2>/dev/null || true
+    # Also emit to bus for durable side-effects (best-effort)
+    _bus_emit "worker/$RECIPIENT" "$MSG" "shutdown" "shutdown" || true
     echo "Shutdown request sent to $RECIPIENT ($TARGET)"
     ;;
 
   list)
-    echo "Registered workers + children (pane-registry.json):"
+    echo "Registered workers + children:"
     echo ""
     { printf "WORKER\tPANE_ID\tTARGET\tTYPE\n"
+      # Flat workers from registry.json (primary — new system)
+      [ -n "${FLAT_REGISTRY:-}" ] && [ -f "$FLAT_REGISTRY" ] && \
+        jq -r 'to_entries[] | [.key, (.value.pane_id // "?"), (.value.pane_target // "?"), "flat"] | @tsv' \
+          "$FLAT_REGISTRY" 2>/dev/null | sort
+      # Legacy harness workers from pane-registry.json
       jq -r '
         (to_entries | map(select(.value.harness | startswith("worker/"))) | map(.key)) as $wids |
         to_entries[]
@@ -247,7 +318,7 @@ case "$CMD" in
             (.value.harness // ("child-of:" + (.value.parent_pane // "?")) | ltrimstr("worker/")),
             .key,
             (.value.pane_target // "?"),
-            (if (.value.harness | startswith("worker/")) then "primary" else "child" end)
+            (if (.value.harness | startswith("worker/")) then "legacy" else "child" end)
           ]
         | @tsv' "$PANE_REGISTRY" 2>/dev/null | sort
     } | column -t -s $'\t' || echo "(none registered)"

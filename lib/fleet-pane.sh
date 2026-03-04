@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════
-# harness-pane.sh — Shared pane discovery utilities
+# fleet-pane.sh — Shared pane discovery utilities
 # ══════════════════════════════════════════════════════════════════
 # Usage:
-#   source ~/.boring/lib/harness-pane.sh
+#   source ~/.boring/lib/fleet-pane.sh
 #
 # Requires:
 #   - tmux available
@@ -18,13 +18,36 @@ PANE_REGISTRY="${PANE_REGISTRY:-$HARNESS_STATE_DIR/pane-registry.json}"
 #
 # Single source of truth: registry.panes maps pane_id -> harness.
 # Reverse lookup: find the pane_id registered for this harness, verify it's alive.
+# Uses PROJECT_ROOT env var for project-scoped lookup (prevents cross-project matches).
 find_worker_pane() {
   local harness="$1"
   local pane_id ptarget ppid cpid
+  local _proj="${PROJECT_ROOT:-}"
+  local _wn="${harness#worker/}"
 
-  # Look up pane_id from pane-registry.json (keyed by pane_id, .harness = name)
-  if [ -f "$PANE_REGISTRY" ]; then
-    pane_id=$(jq -r --arg h "$harness" '[to_entries[] | select(.value.harness == $h) | .key] | first // ""' "$PANE_REGISTRY" 2>/dev/null || echo "")
+  # PRIMARY: registry.json (flat workers — new system)
+  local _flat_reg="${_proj:+$_proj/.claude/workers/registry.json}"
+  if [ -n "${_flat_reg:-}" ] && [ -f "$_flat_reg" ]; then
+    pane_id=$(jq -r --arg n "$_wn" '.[$n].pane_id // ""' "$_flat_reg" 2>/dev/null || echo "")
+  fi
+
+  # FALLBACK: Look up pane_id from pane-registry.json (legacy harness workers)
+  # Priority: panes section (unified) → flat entries (compat)
+  if [ -z "${pane_id:-}" ] && [ -f "$PANE_REGISTRY" ]; then
+    # Try panes section first
+    pane_id=$(jq -r --arg wn "$_wn" \
+      '[.panes | to_entries[] | select(.value.worker == $wn and .value.role == "worker") | .key] | first // ""' \
+      "$PANE_REGISTRY" 2>/dev/null || echo "")
+    # Flat entry fallback (project-scoped when PROJECT_ROOT is set)
+    if [ -z "${pane_id:-}" ] && [ -n "$_proj" ]; then
+      pane_id=$(jq -r --arg h "$harness" --arg proj "$_proj" \
+        '[to_entries[] | select(.key | startswith("%")) | select(.value.harness == $h and (.value.project_root // "") == $proj) | .key] | first // ""' \
+        "$PANE_REGISTRY" 2>/dev/null || echo "")
+    fi
+    # Last resort: unscoped flat entry (single-project environments)
+    if [ -z "${pane_id:-}" ] && [ -z "$_proj" ]; then
+      pane_id=$(jq -r --arg h "$harness" '[to_entries[] | select(.key | startswith("%")) | select(.value.harness == $h) | .key] | first // ""' "$PANE_REGISTRY" 2>/dev/null || echo "")
+    fi
   fi
 
   if [ -n "$pane_id" ]; then
