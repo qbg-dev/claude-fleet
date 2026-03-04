@@ -17,7 +17,16 @@ set -euo pipefail
 
 WORKTREE_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-WORKER_NAME="${BRANCH#worker/}"
+
+# Derive worker name: prefer WORKER_NAME env (for main-branch workers), then branch name
+if [ -n "${WORKER_NAME:-}" ]; then
+  : # Already set via env (main-window workers)
+elif [[ "$BRANCH" == worker/* ]]; then
+  WORKER_NAME="${BRANCH#worker/}"
+else
+  echo "ERROR: Cannot determine worker name — not on a worker/* branch and WORKER_NAME env not set"
+  exit 1
+fi
 
 # Find main repo root (worktree parent)
 MAIN_ROOT="$WORKTREE_ROOT"
@@ -26,7 +35,7 @@ if [ -f "$WORKTREE_ROOT/.git" ]; then
 fi
 
 WORKER_DIR="$MAIN_ROOT/.claude/workers/$WORKER_NAME"
-STATE_FILE="$WORKER_DIR/state.json"
+REGISTRY="$MAIN_ROOT/.claude/workers/registry.json"
 TEMPLATE="$MAIN_ROOT/.claude/workers/.commit-template.md"
 
 # ──────────────────────────────────────────────────────────────────────
@@ -79,12 +88,12 @@ if [[ "$BRANCH" != worker/* ]]; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────
-# Read state.json
+# Read cycle count from registry.json
 # ──────────────────────────────────────────────────────────────────────
 
 CYCLE=0
-if [ -f "$STATE_FILE" ]; then
-  CYCLE=$(jq -r '.cycles_completed // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+if [ -f "$REGISTRY" ]; then
+  CYCLE=$(jq -r --arg n "$WORKER_NAME" '.[$n].cycles_completed // 0' "$REGISTRY" 2>/dev/null || echo 0)
 fi
 
 # ──────────────────────────────────────────────────────────────────────
@@ -246,8 +255,9 @@ fi
 # ──────────────────────────────────────────────────────────────────────
 
 MODEL_NAME="sonnet"
-if [ -f "$WORKER_DIR/permissions.json" ]; then
-  MODEL_NAME=$(jq -r '.model // "sonnet"' "$WORKER_DIR/permissions.json" 2>/dev/null || echo "sonnet")
+if [ -f "$REGISTRY" ]; then
+  _REG_MODEL=$(jq -r --arg n "$WORKER_NAME" '.[$n].model // "sonnet"' "$REGISTRY" 2>/dev/null || echo "sonnet")
+  [ -n "$_REG_MODEL" ] && [ "$_REG_MODEL" != "null" ] && MODEL_NAME="$_REG_MODEL"
 fi
 
 # ──────────────────────────────────────────────────────────────────────
@@ -318,6 +328,11 @@ if [ -f "$STATE_FILE" ]; then
       "$STATE_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATE_FILE" || rm -f "$TMP"
   fi
   echo "Updated state.json (last_commit: $COMMIT_SHA)"
+
+  # Sync cache for watchdog (macOS TCC blocks launchd from ~/Desktop/)
+  _CACHE="$HOME/.boring/state/harness-runtime/worker/$WORKER_NAME/config-cache.json"
+  mkdir -p "$(dirname "$_CACHE")"
+  cp "$STATE_FILE" "$_CACHE" 2>/dev/null || true
 fi
 
 # ──────────────────────────────────────────────────────────────────────

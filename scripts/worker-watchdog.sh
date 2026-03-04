@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harness-watchdog.sh — Monitor registered harness agents; detect crashes vs graceful stops.
+# worker-watchdog.sh — Monitor registered harness agents; detect crashes vs graceful stops.
 #
 # Runs as a background daemon (via launchd or cron).
 # Every CHECK_INTERVAL seconds:
@@ -11,14 +11,14 @@
 #   6. Crash-loop guard: max MAX_CRASHES_PER_HR crashes → stop retrying, notify operator
 #
 # Usage:
-#   bash harness-watchdog.sh              # daemon mode (loops forever)
-#   bash harness-watchdog.sh --once       # single-pass (for testing)
-#   bash harness-watchdog.sh --status     # print current state table and exit
+#   bash worker-watchdog.sh              # daemon mode (loops forever)
+#   bash worker-watchdog.sh --once       # single-pass (for testing)
+#   bash worker-watchdog.sh --status     # print current state table and exit
 #
 # Requirements:
 #   - PROJECT_ROOT set (or auto-detected via git)
 #   - pane-registry.json populated by agents at startup
-#   - ~/.boring/lib/harness-jq.sh + event-bus.sh available
+#   - ~/.boring/lib/fleet-jq.sh + event-bus.sh available
 #
 # Crash-loop file: ~/.boring/state/harness-runtime/{canonical}/crash-loop
 # Crash count file: ~/.boring/state/harness-runtime/{canonical}/crash-count.json
@@ -34,7 +34,7 @@ LOG_FILE="${WATCHDOG_LOG:-${HOME}/.boring/state/watchdog.log}"
 # git rev-parse fails if cwd is not in a repo (e.g. watchdog started by launchd from /).
 # Hardcode the default project root; override via env if needed.
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-source "${HOME}/.boring/lib/harness-jq.sh"
+source "${HOME}/.boring/lib/fleet-jq.sh"
 source "${HOME}/.boring/lib/event-bus.sh" 2>/dev/null || true
 
 MODE="daemon"
@@ -265,8 +265,15 @@ _unstick_worker() {
   fi
 
   # 3. Build command from worker config (with resume if session available)
+  # For main-window workers (no worktree), prepend WORKER_NAME env
   local claude_cmd
-  claude_cmd=$(_build_claude_cmd "$worker_name" "$prev_session_id")
+  local unstick_window_check
+  unstick_window_check=$(jq -r --arg pid "$pane_id" '.[$pid].window // .panes[$pid].window // empty' "$PANE_REGISTRY" 2>/dev/null || echo "")
+  if [ -n "$unstick_window_check" ]; then
+    claude_cmd="export WORKER_NAME=$worker_name && $(_build_claude_cmd "$worker_name" "$prev_session_id")"
+  else
+    claude_cmd=$(_build_claude_cmd "$worker_name" "$prev_session_id")
+  fi
 
   if [ -n "$prev_session_id" ]; then
     _log "UNSTICK: $canonical — resuming session $prev_session_id in pane $pane_id"
@@ -274,21 +281,16 @@ _unstick_worker() {
     _log "UNSTICK: $canonical — no session_id found, fresh start in pane $pane_id"
   fi
 
-  # 4. Prepare seed file BEFORE launching Claude (avoids race condition)
-  local perpetual_protocol="$PROJECT_ROOT/.claude/workers/PERPETUAL-PROTOCOL.md"
+  # 4. Prepare seed file BEFORE launching Claude (shared template)
+  source "${HOME}/.claude-ops/lib/worker-seed.sh"
   local seed_file="/tmp/worker-${worker_name}-respawn.txt"
-  cat > "$seed_file" << RSEED
-Watchdog respawn, reason: idle ${idle_sec}s. You are worker **$worker_name**.
-
-Read these files NOW in this order:
-1. $worker_dir/mission.md — your mission
-2. ${perpetual_protocol} — self-optimization protocol
-3. $worker_dir/MEMORY.md — accumulated knowledge
-4. $worker_dir/state.json — current state
-5. $worker_dir/inbox.jsonl — pending messages
-
-Then start your next mission cycle. Do NOT stop to ask if you should continue.
-RSEED
+  if [ -n "$unstick_window_check" ]; then
+    # Main-window worker: use PROJECT_ROOT as worktree, "main" as branch
+    generate_worker_seed "$worker_name" "$worker_dir" "$PROJECT_ROOT" "main" "$PROJECT_ROOT" "idle ${idle_sec}s" > "$seed_file"
+  else
+    local _wt_dir="$PROJECT_ROOT/../$(basename "$PROJECT_ROOT")-w-${worker_name}"
+    generate_worker_seed "$worker_name" "$worker_dir" "$_wt_dir" "worker/$worker_name" "$PROJECT_ROOT" "idle ${idle_sec}s" > "$seed_file"
+  fi
 
   # 5. Launch Claude in the same pane
   tmux send-keys -t "$pane_id" "$claude_cmd" 2>/dev/null || true
@@ -470,8 +472,28 @@ check_agent() {
     fi
     # else: agent is awake and working — no action needed
 
+  elif $pane_alive && ! $process_alive; then
+    # ── Zombie pane: pane alive but Claude process exited without graceful-stop ──
+    # This happens when Claude crashes/exits but the shell in the tmux pane stays open.
+    # The pane shows a shell prompt instead of Claude TUI.
+    _log "ZOMBIE: $canonical (pane $pane_id) — pane alive but Claude process dead, no graceful-stop"
+    _publish_agent_event "agent.zombie" "$canonical" "Pane alive but Claude process dead"
+
+    local crash_count; crash_count=$(_increment_crash_count "$canonical")
+    if [ "$crash_count" -ge "$MAX_CRASHES_PER_HR" ]; then
+      local runtime; runtime=$(harness_runtime "$canonical")
+      touch "$runtime/crash-loop"
+      _log "CRASH-LOOP: $canonical — ${crash_count} crashes in last hour, stopping retries"
+      _publish_agent_event "agent.crash-loop" "$canonical" "${crash_count} crashes in last hour — stopped retrying"
+      notify "🚨 Crash loop: $canonical (${crash_count} crashes/hr) — manual intervention needed" "Watchdog Alert" 2>/dev/null || true
+      return
+    fi
+
+    # Respawn in-place (pane exists, _respawn_agent handles the pane-alive path)
+    _respawn_agent "$canonical" "$pane_id" "$pane_target" "zombie-recovery"
+
   else
-    # ── Crash (no graceful-stop flag, pane/process dead) ──
+    # ── Crash (no graceful-stop flag, pane AND process both dead) ──
     if ! $pane_alive && ! $process_alive; then
       _log "CRASH: $canonical (pane $pane_id) — no graceful-stop, pane/process dead"
       _publish_agent_event "agent.crash" "$canonical" "Pane and process died without graceful-stop"
@@ -479,6 +501,7 @@ check_agent() {
       # Increment crash counter and check for crash-loop
       local crash_count; crash_count=$(_increment_crash_count "$canonical")
       if [ "$crash_count" -ge "$MAX_CRASHES_PER_HR" ]; then
+        local runtime; runtime=$(harness_runtime "$canonical")
         touch "$runtime/crash-loop"
         _log "CRASH-LOOP: $canonical — ${crash_count} crashes in last hour, stopping retries"
         _publish_agent_event "agent.crash-loop" "$canonical" "${crash_count} crashes in last hour — stopped retrying"
@@ -519,25 +542,29 @@ _respawn_agent() {
         sleep 1
       fi
 
-      # Prepare seed file BEFORE launching
-      local perpetual_protocol="$PROJECT_ROOT/.claude/workers/PERPETUAL-PROTOCOL.md"
+      # Prepare seed file BEFORE launching (shared template)
+      source "${HOME}/.claude-ops/lib/worker-seed.sh"
       local prompt_file="/tmp/watchdog-prompt-${worker_name}.txt"
-      cat > "$prompt_file" << WSEED
-Watchdog respawn, reason: $reason. You are worker **$worker_name**.
-
-Read these files NOW in this order:
-1. $worker_dir/mission.md — your mission
-2. ${perpetual_protocol} — self-optimization protocol
-3. $worker_dir/MEMORY.md — accumulated knowledge
-4. $worker_dir/state.json — current state
-5. $worker_dir/inbox.jsonl — pending messages
-
-Then start your next mission cycle. Do NOT stop to ask if you should continue.
-WSEED
+      # Check if this is a main-window worker (has window field in registry)
+      local _respawn_window_check
+      _respawn_window_check=$(jq -r --arg pid "$pane_id" '.[$pid].window // .panes[$pid].window // empty' "$PANE_REGISTRY" 2>/dev/null || echo "")
+      if [ -n "$_respawn_window_check" ]; then
+        generate_worker_seed "$worker_name" "$worker_dir" "$PROJECT_ROOT" "main" "$PROJECT_ROOT" "$reason" > "$prompt_file"
+      else
+        local _wt_dir="$PROJECT_ROOT/../$(basename "$PROJECT_ROOT")-w-${worker_name}"
+        generate_worker_seed "$worker_name" "$worker_dir" "$_wt_dir" "worker/$worker_name" "$PROJECT_ROOT" "$reason" > "$prompt_file"
+      fi
 
       # Build command from config, resume previous session
+      # For main-window workers (no worktree), set WORKER_NAME env
       local claude_cmd
-      claude_cmd=$(_build_claude_cmd "$worker_name" "$prev_session_id")
+      local worker_window_check
+      worker_window_check=$(jq -r --arg pid "$pane_id" '.[$pid].window // .panes[$pid].window // empty' "$PANE_REGISTRY" 2>/dev/null || echo "")
+      if [ -n "$worker_window_check" ]; then
+        claude_cmd="export WORKER_NAME=$worker_name && $(_build_claude_cmd "$worker_name" "$prev_session_id")"
+      else
+        claude_cmd=$(_build_claude_cmd "$worker_name" "$prev_session_id")
+      fi
       tmux send-keys -t "$pane_id" "$claude_cmd" 2>/dev/null || true
       tmux send-keys -t "$pane_id" -H 0d 2>/dev/null || true
 
@@ -581,6 +608,96 @@ WSEED
       echo "⚡ $worker_name" > "/tmp/tmux_pane_status_${pane_id}" 2>/dev/null || true
       _publish_agent_event "agent.respawned" "$canonical" "Respawned after $reason (in-place)"
       return
+    fi
+
+    # Check if this worker belongs to a main window (no worktree, shared window)
+    local worker_window
+    worker_window=$(jq -r --arg pid "$pane_id" '.[$pid].window // .panes[$pid].window // empty' "$PANE_REGISTRY" 2>/dev/null || echo "")
+
+    if [ -n "$worker_window" ]; then
+      # Main-window worker — create new pane in existing window instead of new worktree
+      local window_target="${TARGET_SESSION:-w}:${worker_window}"
+      if tmux list-windows -t "${TARGET_SESSION:-w}" -F '#{window_name}' 2>/dev/null | grep -qF "$worker_window"; then
+        # Window exists — split a new pane in it
+        local new_pane
+        new_pane=$(tmux split-window -t "$window_target" -h -c "$PROJECT_ROOT" -d -P -F '#{pane_id}' 2>/dev/null || \
+                   tmux split-window -t "$window_target" -v -c "$PROJECT_ROOT" -d -P -F '#{pane_id}' 2>/dev/null || echo "")
+        if [ -n "$new_pane" ]; then
+          pane_registry_remove "$pane_id" 2>/dev/null || true
+          tmux select-pane -T "$worker_name" -t "$new_pane"
+
+          # Register new pane
+          local _new_target
+          _new_target=$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' \
+            | awk -v p="$new_pane" '$1==p{print $2}' 2>/dev/null || echo "")
+          local _now; _now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          local _proj_slug; _proj_slug=$(basename "$PROJECT_ROOT")
+          local _wk="${_proj_slug}:${worker_name}"
+          local tmp_reg; tmp_reg=$(mktemp)
+          jq --arg pid "$new_pane" --arg name "$worker_name" --arg target "${_new_target:-}" \
+            --arg sess "${TARGET_SESSION:-w}" --arg now "$_now" --arg win "$worker_window" \
+            --arg proj "$PROJECT_ROOT" --arg wk "$_wk" \
+            '.panes[$pid] = {worker: $name, role: "worker", pane_target: $target, tmux_session: $sess, session_id: "", parent_pane: null, registered_at: $now, window: $win} |
+             .[$pid] = {harness: ("worker/" + $name), session_name: $name, display: $name, task: "worker", pane_target: $target, project_root: $proj, tmux_session: $sess, window: $win}' \
+            "$PANE_REGISTRY" > "$tmp_reg" 2>/dev/null && mv "$tmp_reg" "$PANE_REGISTRY" || rm -f "$tmp_reg"
+
+          # Launch Claude in new pane
+          local worker_dir="$PROJECT_ROOT/.claude/workers/$worker_name"
+          local claude_cmd
+          claude_cmd="export WORKER_NAME=$worker_name && $(_build_claude_cmd "$worker_name" "")"
+          tmux send-keys -t "$new_pane" "$claude_cmd" 2>/dev/null || true
+          tmux send-keys -t "$new_pane" -H 0d 2>/dev/null || true
+
+          # Wait for TUI, inject seed
+          sleep 5
+          local wait=0
+          until tmux capture-pane -t "$new_pane" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; do
+            sleep 3; wait=$((wait + 3))
+            [ "$wait" -ge 90 ] && break
+          done
+          sleep 2
+
+          local perpetual_protocol="$PROJECT_ROOT/.claude/workers/PERPETUAL-PROTOCOL.md"
+          local prompt_file="/tmp/watchdog-prompt-${worker_name}.txt"
+          cat > "$prompt_file" << MWSEED
+Watchdog respawn, reason: $reason. You are worker **$worker_name** running on **main** branch (no worktree).
+Project root: $PROJECT_ROOT
+Worker config: $worker_dir/
+
+Read these files NOW:
+1. $worker_dir/mission.md — your mission
+2. ${perpetual_protocol} — self-optimization protocol
+3. $worker_dir/state.json — current state
+
+Then start your next mission cycle. Do NOT stop to ask if you should continue.
+MWSEED
+
+          local buf_name="wd-${new_pane#%}-$$"
+          tmux delete-buffer -b "$buf_name" 2>/dev/null || true
+          tmux load-buffer -b "$buf_name" "$prompt_file" 2>/dev/null || true
+          tmux paste-buffer -t "$new_pane" -b "$buf_name" -d 2>/dev/null || true
+          sleep 1
+          tmux send-keys -t "$new_pane" -H 0d 2>/dev/null || true
+          sleep 3
+          if tmux capture-pane -t "$new_pane" -p 2>/dev/null | tail -3 | grep -qE '❯'; then
+            tmux send-keys -t "$new_pane" -H 0d 2>/dev/null || true
+          fi
+          rm -f "$prompt_file" 2>/dev/null || true
+
+          _log "RESPAWN: $canonical (reason=$reason) — new pane $new_pane in window $worker_window"
+          _publish_agent_event "agent.respawned" "$canonical" "Respawned in main window after $reason"
+          return
+        fi
+      fi
+      # Window gone — recreate entire main window
+      local main_launch="$HOME/.claude-ops/scripts/launch-main-window.sh"
+      if [ -f "$main_launch" ]; then
+        pane_registry_remove "$pane_id" 2>/dev/null || true
+        bash "$main_launch" --project "$PROJECT_ROOT" &
+        _log "RESPAWN: $canonical (reason=$reason) — relaunched entire main window"
+        _publish_agent_event "agent.respawned" "$canonical" "Main window recreated after $reason"
+        return
+      fi
     fi
 
     # Pane dead — fall back to launch-flat-worker.sh (creates new window)

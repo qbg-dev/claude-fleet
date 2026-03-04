@@ -3,8 +3,8 @@
 # Generic upstream version — works with any project that has .claude/workers/{name}/.
 #
 # After each commit:
-# 1. Updates worker state.json with latest commit info
-# 2. Messages chief-of-staff via worker-message.sh (durable inbox delivery)
+# 1. Updates registry.json with latest commit info
+# 2. Messages commit_notify targets via durable inbox
 # 3. Sends desktop notification to Warren
 # 4. Writes to shared commit log (.commit-log.jsonl)
 # 5. Emits worker.commit bus event
@@ -23,23 +23,47 @@ if [ -f "$PROJECT_ROOT/.git" ]; then
   MAIN_ROOT=$(grep gitdir "$PROJECT_ROOT/.git" | sed 's/gitdir: //' | sed 's|/.git/worktrees/.*||')
 fi
 
-STATE_FILE="$MAIN_ROOT/.claude/workers/$WORKER_NAME/state.json"
+REGISTRY="$MAIN_ROOT/.claude/workers/registry.json"
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Update state.json with last_commit info
-if [ -f "$STATE_FILE" ]; then
+# Update registry.json with last_commit info
+if [ -f "$REGISTRY" ]; then
+  _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.boring/state/locks}/worker-registry"
+  mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
+  # Simple spinlock (max 5s)
+  _WAIT=0
+  while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
+    sleep 0.5; _WAIT=$((_WAIT + 1))
+    [ "$_WAIT" -ge 10 ] && break
+  done
   TMP=$(mktemp)
-  jq --arg sha "$COMMIT_SHA" --arg msg "$COMMIT_MSG" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '.last_commit_sha = $sha | .last_commit_msg = $msg | .last_commit_at = $ts' \
-    "$STATE_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATE_FILE" || rm -f "$TMP"
+  IS_FIX=0
+  echo "$COMMIT_MSG" | grep -qE '^fix\(' && IS_FIX=1
+  if [ "$IS_FIX" -eq 1 ]; then
+    jq --arg name "$WORKER_NAME" --arg sha "$COMMIT_SHA" --arg msg "$COMMIT_MSG" --arg ts "$NOW" \
+      'if .[$name] then .[$name].last_commit_sha = $sha | .[$name].last_commit_msg = $msg | .[$name].last_commit_at = $ts | .[$name].issues_fixed = ((.[$name].issues_fixed // 0) + 1) else . end' \
+      "$REGISTRY" > "$TMP" 2>/dev/null && mv "$TMP" "$REGISTRY" || rm -f "$TMP"
+  else
+    jq --arg name "$WORKER_NAME" --arg sha "$COMMIT_SHA" --arg msg "$COMMIT_MSG" --arg ts "$NOW" \
+      'if .[$name] then .[$name].last_commit_sha = $sha | .[$name].last_commit_msg = $msg | .[$name].last_commit_at = $ts else . end' \
+      "$REGISTRY" > "$TMP" 2>/dev/null && mv "$TMP" "$REGISTRY" || rm -f "$TMP"
+  fi
+  rmdir "$_LOCK_DIR" 2>/dev/null || true
 fi
 
-# Notify chief-of-staff via worker-message.sh (durable inbox + tmux delivery)
-WORKER_MSG_SCRIPT="$HOME/.claude-ops/scripts/worker-message.sh"
-if [ -x "$WORKER_MSG_SCRIPT" ]; then
-  bash "$WORKER_MSG_SCRIPT" send chief-of-staff \
-    "[$WORKER_NAME] committed $COMMIT_SHA on $BRANCH: $COMMIT_MSG" \
-    --summary "commit $COMMIT_SHA by $WORKER_NAME" 2>/dev/null || true
+# Read commit_notify targets from registry _config (default: merger)
+NOTIFY_TARGETS=""
+if [ -f "$REGISTRY" ]; then
+  NOTIFY_TARGETS=$(jq -r '._config.commit_notify[]' "$REGISTRY" 2>/dev/null || echo "")
 fi
+[ -z "$NOTIFY_TARGETS" ] && NOTIFY_TARGETS="merger"
+
+# Notify each target via durable inbox
+for TARGET in $NOTIFY_TARGETS; do
+  INBOX="$MAIN_ROOT/.claude/workers/$TARGET/inbox.jsonl"
+  [ -d "$MAIN_ROOT/.claude/workers/$TARGET" ] && \
+    echo "{\"from\":\"$WORKER_NAME\",\"ts\":\"$NOW\",\"type\":\"commit\",\"branch\":\"$BRANCH\",\"commit\":\"$COMMIT_SHA\",\"message\":\"$COMMIT_MSG\"}" >> "$INBOX" 2>/dev/null || true
+done
 
 # Also send desktop notification via notify helper (if available)
 if command -v notify &>/dev/null; then
@@ -48,7 +72,7 @@ fi
 
 # Write to shared commit log that chief-of-staff or any monitor can poll
 COMMIT_LOG="$MAIN_ROOT/.claude/workers/.commit-log.jsonl"
-echo "{\"worker\":\"$WORKER_NAME\",\"sha\":\"$COMMIT_SHA\",\"msg\":\"$COMMIT_MSG\",\"branch\":\"$BRANCH\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >> "$COMMIT_LOG" 2>/dev/null
+echo "{\"worker\":\"$WORKER_NAME\",\"sha\":\"$COMMIT_SHA\",\"msg\":\"$COMMIT_MSG\",\"branch\":\"$BRANCH\",\"ts\":\"$NOW\"}" >> "$COMMIT_LOG" 2>/dev/null
 
 # Emit worker.commit bus event (side-effects handle inbox + tmux delivery)
 _BUS_LIB="${CLAUDE_OPS_DIR:-${BORING_DIR:-$HOME/.boring}}/lib/event-bus.sh"
