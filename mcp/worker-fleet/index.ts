@@ -2,11 +2,10 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 16 tools in 6 categories:
+ * 14 tools in 5 categories:
  *   Messaging (2):  send_message (supports to="all" for broadcast), read_inbox
  *   Tasks (3):      create_task, update_task, list_tasks
  *   State (2):      get_worker_state, update_state
- *   Memory (2):     write_memory, read_memory
  *   Fleet (1):      fleet_status
  *   Lifecycle (4):  recycle, spawn_child, register_pane, check_config
  *   Management (1): create_worker
@@ -783,8 +782,6 @@ If your inbox has a message from Warren or chief-of-staff, prioritize it over yo
 | \`get_worker_state(name?)\` | Read any worker's state from registry.json |
 | \`update_state(key, value)\` | Update your state in registry.json + emit bus event |
 | \`fleet_status()\` | Full fleet overview (all workers) |
-| \`write_memory(content, mode, section?)\` | Write/update a section in MEMORY.md (mode: replace_section or overwrite) |
-| \`read_memory(section?)\` | Read MEMORY.md or a specific ## Section |
 | \`recycle(message?)\` | Self-recycle: write handoff, restart fresh with new context |
 | \`spawn_child(task?)\` | Fork yourself into a new pane to the right |
 | \`register_pane()\` | Register this pane in registry.json (after recycle/manual launch) |
@@ -794,7 +791,7 @@ These are native MCP tool calls — no bash wrappers needed.
 ## Rules
 - **Fix everything.** Never just report issues — investigate, fix, deploy, document in MEMORY.md.
 - **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **${branch}** only. Never checkout main.
-- **Deploy**: TEST only. Commit then run \`bash ~/Desktop/zPersonalProjects/Wechat/scripts/deploy.sh --skip-langfuse --service static\`. Never \`core\` without Warren approval.
+- **Deploy**: TEST only. See your mission.md for project-specific deploy commands.
 - **Verify before completing**: Tests pass + TypeScript clean + deploy succeeds + endpoint/UI verified.
 - **Report everything to chief-of-staff via MCP**: On any bug, error, test failure, completed task, or finding worth noting — use \`send_message(to="chief-of-staff", content="...", summary="...")\`. Never append to inbox.jsonl directly. Never silently move on.
 - **Send results back**: When your mission produces output (analysis, compiled data, recommendations) — send it to chief-of-staff via \`send_message\`.
@@ -803,11 +800,11 @@ These are native MCP tool calls — no bash wrappers needed.
 
 Each cycle: **Observe → Decide → Act → Measure → Adapt** — you're an LLM, not a cron job. Adapt.
 
-- **Build tools**: If you do something twice manually, write a script for it in \`.claude/scripts/{worker}/\`
-- **Adapt sleep**: You can call \`update_state("sleep_duration", N)\` to tune your cycle interval. Increase if nothing changes between cycles; decrease if you're missing things.
-- **Retrospective every 5 cycles**: Write what worked/didn't + strategy changes in MEMORY.md. Post summary to Nexus.
+- **Save learnings**: Update MEMORY.md using your file tools (Edit/Write). Path: \`${workerDir}/MEMORY.md\`
+- **Save scripts**: Write reusable scripts to \`.claude/scripts/${WORKER_NAME}/\` — not as one-offs.
+- **Adapt sleep**: Call \`update_state("sleep_duration", N)\` to tune your cycle interval.
 - **Discover new work**: Read server logs, other workers' MEMORY.md, Nexus for issues in your domain.
-- **Eliminate waste**: Skip checks that never change; cache expensive lookups; reduce frequency of stable checks.`;
+- **Eliminate waste**: Skip checks that never change; cache expensive lookups.`;
 
   if (handoff) {
     seed += `\n\n## Handoff from Previous Cycle\n\n${handoff}`;
@@ -1632,78 +1629,6 @@ function _replaceMemorySection(existing: string, section: string, content: strin
   const after = lines.slice(sectionEnd).join("\n");
   return (before ? before + "\n" : "") + newBlock + (after ? "\n" + after : "");
 }
-
-server.registerTool(
-  "write_memory",
-  {
-    description: "Write or update a section in this worker's MEMORY.md. Use mode='replace_section' to update an existing ## Section (creates it if missing), or mode='overwrite' to replace the entire file.",
-    inputSchema: {
-      content: z.string().describe("The content to write"),
-      mode: z.enum(["replace_section", "overwrite"]).describe("'replace_section': upsert a ## Section block by heading; 'overwrite': replace entire file"),
-      section: z.string().optional().describe("Section heading (without ##) — required for replace_section mode"),
-    },
-  },
-  async ({ content, mode, section }) => {
-    try {
-      const memoryPath = join(WORKERS_DIR, WORKER_NAME, "MEMORY.md");
-
-      if (mode === "overwrite") {
-        writeFileSync(memoryPath, content, "utf-8");
-        try { linkWorkerMemory(WORKER_NAME, memoryPath); } catch {}
-        return { content: [{ type: "text" as const, text: `Wrote MEMORY.md (${content.length} chars)` }] };
-      }
-
-      // replace_section mode
-      if (!section) {
-        return { content: [{ type: "text" as const, text: "Error: section is required for replace_section mode" }], isError: true };
-      }
-
-      const existing = existsSync(memoryPath) ? readFileSync(memoryPath, "utf-8") : "# Memory\n\n";
-      const hadSection = existing.split("\n").some(l => l.trimEnd() === `## ${section}`);
-      const result = _replaceMemorySection(existing, section, content);
-      writeFileSync(memoryPath, result, "utf-8");
-      try { linkWorkerMemory(WORKER_NAME, memoryPath); } catch {}
-      return { content: [{ type: "text" as const, text: `${hadSection ? "Updated" : "Added"} section '${section}' in MEMORY.md` }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
-
-server.registerTool(
-  "read_memory",
-  {
-    description: "Read this worker's MEMORY.md. Optionally read a specific ## Section only.",
-    inputSchema: {
-      section: z.string().optional().describe("Section heading (without ##) — if provided, returns only that section's content. Omit to read the entire file."),
-    },
-  },
-  async ({ section }) => {
-    try {
-      const memoryPath = join(WORKERS_DIR, WORKER_NAME, "MEMORY.md");
-      if (!existsSync(memoryPath)) {
-        return { content: [{ type: "text" as const, text: "(MEMORY.md does not exist yet)" }] };
-      }
-      const full = readFileSync(memoryPath, "utf-8");
-
-      if (!section) {
-        return { content: [{ type: "text" as const, text: full }] };
-      }
-
-      // Extract just the requested section
-      const lines = full.split("\n");
-      const startIdx = lines.findIndex(l => l.trimEnd() === `## ${section}`);
-      if (startIdx === -1) {
-        return { content: [{ type: "text" as const, text: `Section '${section}' not found in MEMORY.md` }], isError: true };
-      }
-      const endIdx = lines.findIndex((l, i) => i > startIdx && l.startsWith("## "));
-      const sectionLines = endIdx === -1 ? lines.slice(startIdx) : lines.slice(startIdx, endIdx);
-      return { content: [{ type: "text" as const, text: sectionLines.join("\n").trimEnd() }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
 
 // ═══════════════════════════════════════════════════════════════════
 // LIFECYCLE TOOLS (4) — recycle, spawn_child, register_pane, check_config

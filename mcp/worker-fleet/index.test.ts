@@ -486,6 +486,17 @@ describe("generateSeedContent", () => {
     expect(seed).toContain('"all"'); // send_message supports to="all"
   });
 
+  test("does not include write_memory or read_memory (workers use file tools)", () => {
+    const seed = generateSeedContent();
+    expect(seed).not.toContain("write_memory");
+    expect(seed).not.toContain("read_memory");
+  });
+
+  test("does not include stale Wechat deploy path", () => {
+    const seed = generateSeedContent();
+    expect(seed).not.toContain("Wechat/scripts/deploy.sh");
+  });
+
   test("does not reference smart_commit (removed)", () => {
     const seed = generateSeedContent();
     expect(seed).not.toContain("smart_commit");
