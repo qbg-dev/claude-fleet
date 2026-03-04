@@ -133,26 +133,17 @@ echo "You are worker **${WORKER_NAME}**. Worktree: \`$(pwd)\`. Branch: \`worker/
 echo "Worker config directory: \`${WORKER_DIR}/\`"
 echo ""
 
-# State — prefer registry.json (v3 workers), fall back to state.json (legacy)
+# State — registry.json only (state.json is deprecated)
 REGISTRY_FILE="$MAIN_ROOT/.claude/workers/registry.json"
 if [ -f "$REGISTRY_FILE" ]; then
   REGISTRY_ENTRY=$(jq -r --arg name "$WORKER_NAME" '.[$name] // empty' "$REGISTRY_FILE" 2>/dev/null || true)
 fi
 if [ -n "${REGISTRY_ENTRY:-}" ] && [ "$REGISTRY_ENTRY" != "null" ]; then
-  echo "### Current State (from registry.json)"
+  echo "### Current State"
   echo '```json'
   echo "$REGISTRY_ENTRY"
   echo '```'
   echo ""
-else
-  STATE_FILE="$WORKER_DIR/state.json"
-  if [ -f "$STATE_FILE" ] && [ -s "$STATE_FILE" ]; then
-    echo "### Current State (from state.json)"
-    echo '```json'
-    cat "$STATE_FILE"
-    echo '```'
-    echo ""
-  fi
 fi
 
 # Memory
