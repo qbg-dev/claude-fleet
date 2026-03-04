@@ -38,9 +38,9 @@ done
 
 echo "Forking session $PARENT_SESSION from parent pane $PARENT_PANE"
 
-# ── Self-register in registry.json if --name provided and not already registered ──
+# ── Self-register in registry.json (always, even without --name) ──
 # This makes the statusline show: 🔗 CHILD_NAME ← CHILD_PARENT
-if [ -n "$CHILD_NAME" ] && [ -n "${TMUX_PANE:-}" ]; then
+if [ -n "${TMUX_PANE:-}" ]; then
   # Find the registry.json for the current working directory
   _cwd="$(pwd)"
   _main_project="$_cwd"
@@ -48,6 +48,26 @@ if [ -n "$CHILD_NAME" ] && [ -n "${TMUX_PANE:-}" ]; then
     _main_project=$(sed 's|gitdir: ||; s|/\.git/worktrees/.*||' "$_cwd/.git" 2>/dev/null || echo "$_cwd")
   fi
   _REGISTRY="$_main_project/.claude/workers/registry.json"
+
+  # Auto-derive name from git branch if --name not given
+  if [ -z "$CHILD_NAME" ]; then
+    _branch=$(git -C "$_cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    _base_name="${_branch#worker/}"
+    [ -z "$_base_name" ] || [ "$_base_name" = "HEAD" ] && _base_name="fork-${TMUX_PANE#%}"
+    # If the base name is already in registry (i.e. we're a fork of that worker), append -fork
+    if [ -f "$_REGISTRY" ] && jq -e --arg n "$_base_name" '.[$n] | .pane_id != null' "$_REGISTRY" 2>/dev/null >/dev/null; then
+      CHILD_NAME="${_base_name}-fork"
+    else
+      CHILD_NAME="$_base_name"
+    fi
+  fi
+
+  # Auto-derive parent name from parent pane if --parent not given
+  if [ -z "$CHILD_PARENT" ] && [ -n "$PARENT_PANE" ] && [ -f "$_REGISTRY" ]; then
+    CHILD_PARENT=$(jq -r --arg p "$PARENT_PANE" \
+      'to_entries[] | select(.value.pane_id == $p) | .key' \
+      "$_REGISTRY" 2>/dev/null | head -1 || echo "")
+  fi
 
   if [ -f "$_REGISTRY" ]; then
     # Resolve pane_target from tmux
@@ -66,17 +86,20 @@ if [ -n "$CHILD_NAME" ] && [ -n "${TMUX_PANE:-}" ]; then
          --arg pane_target "${_pane_target:-}" \
          --arg tmux_session "${_tmux_session:-}" \
          --arg parent "${CHILD_PARENT:-}" \
+         --arg parent_pane "$PARENT_PANE" \
          'if .[$name] then
             .[$name].pane_id = $pane_id |
             .[$name].pane_target = $pane_target |
             .[$name].tmux_session = $tmux_session |
+            .[$name].parent_pane = $parent_pane |
             (if $parent != "" then .[$name].parent = $parent else . end)
           else
             .[$name] = {pane_id: $pane_id, pane_target: $pane_target,
                         tmux_session: $tmux_session, status: "active",
-                        parent: $parent, branch: ("worker/" + $name)}
+                        parent: $parent, parent_pane: $parent_pane,
+                        is_fork: true, branch: ("worker/" + $name)}
           end' "$_REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$_REGISTRY"
-      echo "Registered $CHILD_NAME (pane $TMUX_PANE) in registry.json"
+      echo "Registered $CHILD_NAME (pane $TMUX_PANE, parent: ${CHILD_PARENT:-?} / $PARENT_PANE) in registry.json"
     fi
   fi
 
