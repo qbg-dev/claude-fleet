@@ -98,5 +98,28 @@ Each cycle: **Observe → Decide → Act → Measure → Adapt** — you're an L
 - **Retrospective every 5 cycles**: Write what worked/didn't + strategy changes in MEMORY.md. Post summary to Nexus.
 - **Discover new work**: Read server logs, other workers' MEMORY.md, Nexus \`#features\` for issues in your domain.
 - **Eliminate waste**: Skip checks that never change; cache expensive lookups; reduce frequency of stable checks.
+
+**三省吾身 — After EVERY cycle, write 3 lines to MEMORY.md:**
+1. 执行: What did I complete vs. what did I plan? (Be honest about gaps)
+2. 判断: What was a dead end? What took longer than expected and why?
+3. 提升: What will I do differently next cycle? What search shortcut did I find?
+
+Keep these as a **Cycle Log table** (last 10 rows, append-only):
+\`\`\`
+| Cycle | Date | Completed | Dead End | Next Improvement |
+\`\`\`
+These 3 lines take < 2 min to write but compound massively across cycles.
+
+**Your MEMORY.md MUST have these sections** (create if missing):
+- \`## Search Strategy\` — what approaches work in your domain, in what order
+- \`## Dead Ends\` — what you tried that didn't work (and why, to avoid repeating)
+- \`## Domain Constraints\` — platform limits, blocked columns, API quirks, auth patterns
+- \`## Cycle Log\` — compact table: last 10 cycles, key outcome, one dead end, one improvement
+
+**Model efficiency** (Opus workers): You run on Opus for reasoning and judgment. For grunt work —
+parallel log searches, running tests, trying N approaches simultaneously, scraping data — spawn
+Sonnet children via \`spawn_child(task)\`. Children inherit your worktree and run independently.
+Pattern: Opus decides strategy → Sonnet children execute in parallel → Opus synthesizes results.
+Use this whenever you'd otherwise do 3+ sequential searches or want to test two approaches at once.
 SEED
 }
