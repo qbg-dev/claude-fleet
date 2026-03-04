@@ -661,6 +661,12 @@ function resolveRecipient(to: string): {
   return { type: "worker", workerName: to };
 }
 
+/** Send text + Enter to a tmux pane. Uses -H 0d for Enter (not literal \n which tmux ignores). */
+function tmuxSendMessage(paneId: string, text: string): void {
+  execSync(`tmux send-keys -t ${JSON.stringify(paneId)} ${JSON.stringify(text)} ""`, { timeout: 5000 });
+  execSync(`tmux send-keys -t ${JSON.stringify(paneId)} -H 0d`, { timeout: 5000 });
+}
+
 /** Check if a tmux pane is alive */
 function isPaneAlive(paneId: string): boolean {
   try {
@@ -1023,15 +1029,13 @@ server.registerTool(
       const successes: string[] = [];
       const failures: string[] = [];
       const dead: string[] = [];
-      const msg = JSON.stringify(`\n[msg from ${WORKER_NAME}] ${content}\n`);
-
       for (const pId of paneIds) {
         if (!isPaneAlive(pId)) {
           dead.push(pId);
           continue;
         }
         try {
-          execSync(`tmux send-keys -t "${pId}" ${msg} ""`, { timeout: 5000 });
+          tmuxSendMessage(pId, `[msg from ${WORKER_NAME}] ${content}`);
           successes.push(pId);
         } catch {
           failures.push(pId);
@@ -1051,10 +1055,7 @@ server.registerTool(
         return { content: [{ type: "text" as const, text: `Error: Pane ${resolved.paneId} is dead (not found in tmux)` }], isError: true };
       }
       try {
-        execSync(
-          `tmux send-keys -t "${resolved.paneId}" ${JSON.stringify(`\n[msg from ${WORKER_NAME}] ${content}\n`)} ""`,
-          { timeout: 5000 }
-        );
+        tmuxSendMessage(resolved.paneId!, `[msg from ${WORKER_NAME}] ${content}`);
         const label = to === "parent" ? `parent (pane ${resolved.paneId})` : `pane ${resolved.paneId}`;
         return { content: [{ type: "text" as const, text: `Sent to ${label} (tmux-only, no inbox)` }] };
       } catch (e: any) {
@@ -1085,7 +1086,7 @@ server.registerTool(
       const entry = registry[recipientName] as RegistryWorkerEntry | undefined;
       const paneId = entry?.pane_id;
       if (paneId && isPaneAlive(paneId)) {
-        execSync(`tmux send-keys -t "${paneId}" ${JSON.stringify(`\n[msg from ${WORKER_NAME}] ${content}\n`)} ""`, { timeout: 5000 });
+        tmuxSendMessage(paneId, `[msg from ${WORKER_NAME}] ${content}`);
       } else {
         // Fall back to worker-message.sh (uses legacy pane-registry.json)
         const args = ["send", recipientName, content];
