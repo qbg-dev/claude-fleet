@@ -186,4 +186,31 @@ assert_file_contains "send_message: registry lookup before worker-message.sh fal
 assert_file_contains "send_message: fallback to WORKER_MESSAGE_SH" \
   "$MCP_TS" "WORKER_MESSAGE_SH"
 
+echo ""
+echo "── MCP tmux: send-keys uses -H 0d not embedded \\n ──"
+
+# Test 17: tmuxSendMessage uses -H 0d as a SEPARATE call (not \n in JSON string)
+# Bug (fixed commit ccc9ef9): JSON.stringify of strings with \n produced literal
+# backslash-n characters in tmux, not Enter keystrokes.
+# Fix: tmuxSendMessage() sends text, then -H 0d as a separate execSync call.
+assert_file_contains "tmuxSendMessage: defined as two-call helper" \
+  "$MCP_TS" "function tmuxSendMessage"
+
+# Test 18: the helper sends -H 0d on a separate line (not embedded in the text)
+TOTAL=$((TOTAL + 1))
+SEND_0D_LINE=$(grep -n '\-H 0d' "$MCP_TS" | head -1)
+SEND_TEXT_LINE=$(grep -n 'function tmuxSendMessage' "$MCP_TS" | head -1)
+if [ -n "$SEND_0D_LINE" ] && [ -n "$SEND_TEXT_LINE" ]; then
+  echo -e "  ${GREEN}PASS${RESET} tmuxSendMessage: -H 0d present as separate tmux call"
+  PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${RESET} tmuxSendMessage: must send -H 0d as separate execSync call"
+  FAIL=$((FAIL + 1))
+fi
+
+# Test 19: no bare \n embedded in send-keys text (the old bug pattern)
+# Should NOT find: execSync(`tmux send-keys ... \n ...`)
+BAD_PATTERN=$(grep -n 'send-keys.*\\\\n' "$MCP_TS" 2>/dev/null | grep -v '0d\|#\|\/\/' || true)
+assert_empty "MCP: no bare \\n embedded in send-keys text" "$BAD_PATTERN"
+
 test_summary

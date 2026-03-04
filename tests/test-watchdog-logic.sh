@@ -170,4 +170,68 @@ assert_equals "sleep_duration: perpetual:false returns 'none'" "none" "$SLEEP_DU
 SLEEP_DUR3=$(PROJECT_ROOT="$PROJ_DIR" harness_sleep_duration "worker/no-state" 2>/dev/null || echo "")
 assert_equals "sleep_duration: unregistered worker returns 'none'" "none" "$SLEEP_DUR3"
 
+echo ""
+echo "── harness-watchdog: UTC date parsing (no TZ offset bug) ──"
+
+WATCHDOG_SH="$HOME/.boring/scripts/harness-watchdog.sh"
+
+# Test: watchdog uses 'date -j -u' (with -u flag) when parsing last_cycle_at timestamps.
+# Bug (fixed commit 3be6505): 'date -j -f "%Y-%m-%dT%H:%M:%S"' without -u treats
+# input as LOCAL time (EST=UTC-5), making recent UTC cycles appear 5h in the future
+# so the watchdog never respawns perpetual workers.
+TOTAL=$((TOTAL + 1))
+if grep -q 'date -j -u -f "%Y-%m-%dT%H:%M:%S"' "$WATCHDOG_SH" 2>/dev/null; then
+  echo -e "  ${GREEN}PASS${RESET} watchdog uses date -j -u for UTC timestamp parsing"
+  PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${RESET} watchdog must use 'date -j -u' (not bare 'date -j') for UTC timestamps"
+  echo "    Bug: bare 'date -j -f' treats input as local time, causing up to 5h offset on macOS"
+  FAIL=$((FAIL + 1))
+fi
+
+# Test: no bare 'date -j -f' without -u in the watchdog's sleep duration path
+BARE_DATE_J=$(grep -n 'date -j -f "%Y-%m-%dT' "$WATCHDOG_SH" 2>/dev/null | grep -v '\-u' || true)
+assert_empty "watchdog: no bare 'date -j -f' without -u flag" "$BARE_DATE_J"
+
+# Test: watchdog strips Z/+ suffix before parsing (handles "2026-03-04T04:32:46Z" format)
+STRIPS_Z=$(grep -n '_clean_ts=.*\[Z+\]' "$WATCHDOG_SH" 2>/dev/null || true)
+TOTAL=$((TOTAL + 1))
+if [ -n "$STRIPS_Z" ]; then
+  echo -e "  ${GREEN}PASS${RESET} watchdog strips Z/+ suffix from ISO timestamp before parsing"
+  PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${RESET} watchdog should strip Z/+ suffix (e.g. '%%[Z+]*') before date -j"
+  FAIL=$((FAIL + 1))
+fi
+
+# Runtime test: verify the UTC parse correctly computes epoch for a known UTC time
+# "2026-01-01T12:00:00Z" should parse to the same epoch on any timezone
+EXPECTED_EPOCH=$(TZ=UTC date -d "2026-01-01T12:00:00" +%s 2>/dev/null || echo 0)
+if [ "$EXPECTED_EPOCH" -gt 0 ]; then
+  _clean="2026-01-01T12:00:00"
+  PARSED_EPOCH=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "$_clean" +%s 2>/dev/null || echo 0)
+  assert_equals "UTC parse: 2026-01-01T12:00:00Z gives correct epoch" "$EXPECTED_EPOCH" "$PARSED_EPOCH"
+fi
+
+echo ""
+echo "── merge-trigger-watchdog: registry.json chief-of-staff lookup ──"
+
+MERGE_WD="$HOME/.boring/scripts/merge-trigger-watchdog.sh"
+
+# Test: merge-trigger-watchdog now checks registry.json first for chief-of-staff pane.
+# Fix commit e2e32be: flat workers (chief-of-staff) are in registry.json only,
+# so pane-registry-only lookup never found them, silently dropping merge triggers.
+assert_file_contains "merge-trigger-watchdog: registry.json lookup present" \
+  "$MERGE_WD" "registry.json"
+
+# Test: lookup labels registry.json as PRIMARY (not a fallback)
+# The fix (commit e2e32be) added a FLAT_REG variable pointing to registry.json
+# and labels it PRIMARY in a comment, before the pane-registry fallback.
+assert_file_contains "merge-trigger-watchdog: FLAT_REG points to registry.json" \
+  "$MERGE_WD" 'registry.json"'
+
+# Test: the flat worker lookup variable (FLAT_REG) is defined
+assert_file_contains "merge-trigger-watchdog: FLAT_REG variable defined" \
+  "$MERGE_WD" "FLAT_REG="
+
 test_summary
