@@ -1,19 +1,12 @@
 #!/usr/bin/env bash
 # deliver_tmux.sh — Deliver cell-message content to recipient's active tmux pane.
 #
-# Side-effect of "cell-message" events. Replaces the direct _send_to_pane call
-# in worker-message.sh, making tmux delivery bus-mediated.
-#
-# Signature format reflects sender's position in the worker tree:
-#   child pane  → [from w:8.1 (child of chief-of-staff)]
-#   root worker → [from w:5.0 (chatbot-tools)]
-#   operator    → [from w:1.0]
+# Side-effect of "cell-message" events. Resolves worker pane from registry.json.
 #
 # Recipient resolution:
-#   .to == "worker/name"  → look up by harness field in pane-registry
-#   .to == "%NNN"         → use pane ID directly (child panes in broadcast)
+#   .to == "worker/name"  → look up pane_id from registry.json
+#   .to == "%NNN"         → use pane ID directly
 set -euo pipefail
-source "$HOME/.boring/lib/harness-jq.sh"
 
 payload=$(cat)
 to=$(echo "$payload"      | jq -r '.to // ""'              2>/dev/null || echo "")
@@ -35,21 +28,24 @@ else
   SIG="[from unknown]"
 fi
 
-# ── Resolve recipient pane (project-scoped when possible) ──
+# ── Resolve recipient pane from registry.json ──
 from_project=$(echo "$payload" | jq -r '.from_project // ""' 2>/dev/null || echo "")
 if [[ "$to" == %* ]]; then
   # Bare pane ID (e.g. child panes in broadcast)
   PANE_ID="$to"
 else
-  # STRICT project-scoped lookup — no unscoped fallback to prevent cross-project leakage.
-  # If from_project is known, only deliver to same-project recipient.
-  # If from_project is empty, use PROJECT_ROOT as fallback scope.
   PANE_ID=""
-  _scope="${from_project:-${PROJECT_ROOT:-.}}"
-  if [ -n "$_scope" ]; then
-    PANE_ID=$(jq -r --arg h "$to" --arg proj "$_scope" \
-      'to_entries[] | select(.value.harness == $h and (.value.project_root // "") == $proj) | .key' \
-      "$PANE_REGISTRY" 2>/dev/null | head -1 || echo "")
+  # Extract worker name from "worker/name" format
+  _recip_name="${to#worker/}"
+  # Look up from registry.json
+  _scope="${from_project:-$(git rev-parse --show-toplevel 2>/dev/null || echo "")}"
+  # Resolve main repo root if in worktree
+  if [[ "$_scope" == *-w-* ]]; then
+    _scope=$(echo "$_scope" | sed 's|-w-[^/]*$||')
+  fi
+  _REGISTRY="${_scope}/.claude/workers/registry.json"
+  if [ -f "$_REGISTRY" ]; then
+    PANE_ID=$(jq -r --arg n "$_recip_name" '.[$n].pane_id // ""' "$_REGISTRY" 2>/dev/null || echo "")
   fi
 fi
 [ -z "$PANE_ID" ] && exit 0

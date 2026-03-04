@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# worker-session-register.sh — Register flat worker session_id in pane-registry.
+# worker-session-register.sh — Register flat worker session_id in registry.json.
 #
 # Runs as a UserPromptSubmit hook. Fires on every prompt but is fast and idempotent:
 # does nothing if not in a flat-worker worktree, or if session_id already registered.
@@ -20,27 +20,39 @@ INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 [ -z "$SESSION_ID" ] && exit 0
 
-PANE_REG="${HARNESS_STATE_DIR:-$HOME/.boring/state}/pane-registry.json"
-[ -f "$PANE_REG" ] || exit 0
-
 WORKER_NAME="${BRANCH#worker/}"
-CANONICAL="worker/$WORKER_NAME"
 
-# Find pane_id for this worker by canonical name
-PANE_ID=$(jq -r --arg c "$CANONICAL" \
-  'to_entries[] | select(.value.harness == $c) | .key' \
-  "$PANE_REG" 2>/dev/null | head -1)
-[ -z "$PANE_ID" ] && exit 0
+# Resolve project root from worktree
+_PROJ_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+# Worktree paths are like /path/ProjectName-w-worker — resolve real project root
+if [[ "$_PROJ_ROOT" == *-w-* ]]; then
+  _PROJ_ROOT=$(echo "$_PROJ_ROOT" | sed 's|-w-[^/]*$||')
+fi
+[ -z "$_PROJ_ROOT" ] && exit 0
+
+REGISTRY="$_PROJ_ROOT/.claude/workers/registry.json"
+[ -f "$REGISTRY" ] || exit 0
 
 # Idempotent: skip if session_id already set
-EXISTING=$(jq -r --arg p "$PANE_ID" '.[$p].session_id // empty' "$PANE_REG" 2>/dev/null)
-[ -n "$EXISTING" ] && exit 0
+EXISTING=$(jq -r --arg n "$WORKER_NAME" '.[$n].session_id // ""' "$REGISTRY" 2>/dev/null)
+[ -n "$EXISTING" ] && [ "$EXISTING" != "null" ] && [ "$EXISTING" != "" ] && exit 0
 
-# Write session_id into registry entry
+# Write session_id to registry.json
+_LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.boring/state/locks}/worker-registry"
+mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
+_WAIT=0
+while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
+  sleep 0.3; _WAIT=$((_WAIT + 1))
+  [ "$_WAIT" -ge 6 ] && break  # 3s max wait for hooks
+done
+
 TMP=$(mktemp)
-jq --arg p "$PANE_ID" --arg sid "$SESSION_ID" \
-  '.[$p].session_id = $sid' "$PANE_REG" > "$TMP" \
-  && mv "$TMP" "$PANE_REG" \
+jq --arg n "$WORKER_NAME" --arg sid "$SESSION_ID" \
+  '.[$n].session_id = $sid' \
+  "$REGISTRY" > "$TMP" \
+  && mv "$TMP" "$REGISTRY" \
   || rm -f "$TMP"
+
+rmdir "$_LOCK_DIR" 2>/dev/null || true
 
 exit 0
