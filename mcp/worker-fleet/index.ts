@@ -1649,6 +1649,7 @@ server.registerTool(
 
       if (mode === "overwrite") {
         writeFileSync(memoryPath, content, "utf-8");
+        try { linkWorkerMemory(WORKER_NAME, memoryPath); } catch {}
         return { content: [{ type: "text" as const, text: `Wrote MEMORY.md (${content.length} chars)` }] };
       }
 
@@ -1661,6 +1662,7 @@ server.registerTool(
       const hadSection = existing.split("\n").some(l => l.trimEnd() === `## ${section}`);
       const result = _replaceMemorySection(existing, section, content);
       writeFileSync(memoryPath, result, "utf-8");
+      try { linkWorkerMemory(WORKER_NAME, memoryPath); } catch {}
       return { content: [{ type: "text" as const, text: `${hadSection ? "Updated" : "Added"} section '${section}' in MEMORY.md` }] };
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
