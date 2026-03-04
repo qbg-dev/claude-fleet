@@ -2,11 +2,11 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 15 tools in 6 categories:
+ * 16 tools in 6 categories:
  *   Messaging (2):  send_message (supports to="all" for broadcast), read_inbox
  *   Tasks (3):      create_task, update_task, list_tasks
  *   State (2):      get_worker_state, update_state
- *   Memory (1):     write_memory
+ *   Memory (2):     write_memory, read_memory
  *   Fleet (1):      fleet_status
  *   Lifecycle (4):  recycle, spawn_child, register_pane, check_config
  *   Management (1): create_worker
@@ -783,6 +783,8 @@ If your inbox has a message from Warren or chief-of-staff, prioritize it over yo
 | \`get_worker_state(name?)\` | Read any worker's state from registry.json |
 | \`update_state(key, value)\` | Update your state in registry.json + emit bus event |
 | \`fleet_status()\` | Full fleet overview (all workers) |
+| \`write_memory(content, mode, section?)\` | Write/update a section in MEMORY.md (mode: replace_section or overwrite) |
+| \`read_memory(section?)\` | Read MEMORY.md or a specific ## Section |
 | \`recycle(message?)\` | Self-recycle: write handoff, restart fresh with new context |
 | \`spawn_child(task?)\` | Fork yourself into a new pane to the right |
 | \`register_pane()\` | Register this pane in registry.json (after recycle/manual launch) |
@@ -1660,6 +1662,41 @@ server.registerTool(
       const result = _replaceMemorySection(existing, section, content);
       writeFileSync(memoryPath, result, "utf-8");
       return { content: [{ type: "text" as const, text: `${hadSection ? "Updated" : "Added"} section '${section}' in MEMORY.md` }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+);
+
+server.registerTool(
+  "read_memory",
+  {
+    description: "Read this worker's MEMORY.md. Optionally read a specific ## Section only.",
+    inputSchema: {
+      section: z.string().optional().describe("Section heading (without ##) — if provided, returns only that section's content. Omit to read the entire file."),
+    },
+  },
+  async ({ section }) => {
+    try {
+      const memoryPath = join(WORKERS_DIR, WORKER_NAME, "MEMORY.md");
+      if (!existsSync(memoryPath)) {
+        return { content: [{ type: "text" as const, text: "(MEMORY.md does not exist yet)" }] };
+      }
+      const full = readFileSync(memoryPath, "utf-8");
+
+      if (!section) {
+        return { content: [{ type: "text" as const, text: full }] };
+      }
+
+      // Extract just the requested section
+      const lines = full.split("\n");
+      const startIdx = lines.findIndex(l => l.trimEnd() === `## ${section}`);
+      if (startIdx === -1) {
+        return { content: [{ type: "text" as const, text: `Section '${section}' not found in MEMORY.md` }], isError: true };
+      }
+      const endIdx = lines.findIndex((l, i) => i > startIdx && l.startsWith("## "));
+      const sectionLines = endIdx === -1 ? lines.slice(startIdx) : lines.slice(startIdx, endIdx);
+      return { content: [{ type: "text" as const, text: sectionLines.join("\n").trimEnd() }] };
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
