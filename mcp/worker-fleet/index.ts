@@ -1885,7 +1885,7 @@ tmux send-keys -t "$PANE_ID" -H 0d
 
 # Wait for TUI ready (poll for statusline, max 90s)
 WAIT=0
-until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -q "Context left"; do
+until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -qE "bypass permissions|Context left"; do
   sleep 3; WAIT=$((WAIT+3))
   [ "$WAIT" -ge 90 ] && break
 done
@@ -2021,9 +2021,9 @@ tmux send-keys -t "$CHILD_PANE" -H 0d
 
       scriptContent += `
 # Wait for TUI ready (max 120s — fork-session loads full conversation)
-# Use "Context left" from statusline as signal — more reliable than prompt character
+# Use statusline as signal — more reliable than prompt character
 WAIT=0
-until tmux capture-pane -t "$CHILD_PANE" -p 2>/dev/null | grep -q "Context left"; do
+until tmux capture-pane -t "$CHILD_PANE" -p 2>/dev/null | grep -qE "bypass permissions|Context left"; do
   sleep 3; WAIT=\$((WAIT+3))
   [ "\$WAIT" -ge 120 ] && break
 done
