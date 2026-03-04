@@ -1022,7 +1022,7 @@ const server = new McpServer({
 
 server.registerTool(
   "send_message",
-  { description: `Send a message to a worker or broadcast to all. to="all" sends to every worker (use sparingly). to="parent"/"children" for hierarchy. to="%NN" for raw pane. Otherwise worker name for durable inbox + tmux delivery.`, inputSchema: {
+  { description: `Primary inter-worker communication. Use whenever you need to coordinate with another worker, report findings to chief-of-staff, or notify your parent/children. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive — use sparingly). Use to="parent"/"children" for hierarchy traversal without knowing names.`, inputSchema: {
     to: z.string().describe("Worker name, 'parent', 'children', 'all' (broadcast to every worker), or raw pane ID '%NN'"),
     content: z.string().describe("Message content"),
     summary: z.string().describe("Short preview (5-10 words)"),
@@ -1169,7 +1169,7 @@ server.registerTool(
 
 server.registerTool(
   "read_inbox",
-  { description: "Read your inbox messages (durable messages from other workers)", inputSchema: {
+  { description: "Read messages sent to you by other workers or Warren. Call at the start of every cycle to act on pending instructions before checking tasks. Uses a cursor so repeated calls only return new messages — no data loss on restart. Use clear=true only if you want to explicitly purge old messages.", inputSchema: {
     limit: z.number().optional().describe("Max messages to return (default: all)"),
     since: z.string().optional().describe("ISO timestamp — only messages after this time"),
     clear: z.boolean().optional().describe("If true, clear inbox after reading (replaces clear_inbox)"),
@@ -1204,7 +1204,7 @@ server.registerTool(
 
 server.registerTool(
   "create_task",
-  { description: "Create a new task in your worker's task list", inputSchema: {
+  { description: "Track a unit of work you've identified. Use whenever you discover a bug, feature, or investigation that needs doing — even mid-cycle. Tasks survive recycles, can block each other, and give the team visibility into your queue. Prefer creating tasks over holding work in context.", inputSchema: {
     subject: z.string().describe("Task title (imperative form)"),
     description: z.string().optional().describe("Detailed description"),
     priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Priority level (default: medium)"),
@@ -1269,7 +1269,7 @@ server.registerTool(
 
 server.registerTool(
   "update_task",
-  { description: "Update a task's status, owner, subject, description, priority, or dependencies. Use status='in_progress' to claim, 'completed' to finish, 'deleted' to remove.", inputSchema: {
+  { description: "Advance a task through its lifecycle or reassign it. Claim work with status='in_progress' before starting (prevents double-work across workers). Mark 'completed' only after fully verified. Use 'deleted' to discard irrelevant tasks. Set add_blocked_by to express dependencies that gate execution.", inputSchema: {
     task_id: z.string().describe("Task ID (e.g. 'T001')"),
     status: z.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("New status"),
     subject: z.string().optional().describe("New subject"),
@@ -1371,7 +1371,7 @@ server.registerTool(
 
 server.registerTool(
   "list_tasks",
-  { description: "List tasks across workers — unified cross-worker view or filtered to one worker", inputSchema: {
+  { description: "Survey available work before starting a cycle. Use filter='pending' to find unblocked tasks ready to claim. Use worker='all' to see the full fleet's queue and avoid duplicating work another worker is already doing.", inputSchema: {
     filter: z.enum(["all", "pending", "in_progress", "blocked"]).optional()
       .describe("Filter by status (default: all non-deleted)"),
     worker: z.string().optional()
@@ -1447,7 +1447,7 @@ server.registerTool(
 
 server.registerTool(
   "get_worker_state",
-  { description: "Read a worker's state from registry.json (default: your own)", inputSchema: {
+  { description: "Read persisted state for any worker — cycles completed, sleep duration, last commit, custom metrics. Call at startup to resume where you left off. Omit name to read your own state.", inputSchema: {
     name: z.string().optional().describe("Worker name (default: self)"),
   } },
   async ({ name }) => {
@@ -1480,7 +1480,7 @@ server.registerTool(
 
 server.registerTool(
   "update_state",
-  { description: "Update a key in your own state (registry.json) and emit a bus event", inputSchema: {
+  { description: "Persist your own state across recycles — cycle count, sleep duration, custom metrics. Call after every cycle to stamp cycles_completed and last_cycle_at. The watchdog reads last_cycle_at to detect stuck workers, so always update it.", inputSchema: {
     key: z.string().describe("State key to update (e.g. 'status', 'cycles_completed')"),
     value: z.union([z.string(), z.number(), z.boolean()]).describe("New value"),
   } },
@@ -1532,7 +1532,7 @@ server.registerTool(
 
 server.registerTool(
   "fleet_status",
-  { description: "Get full fleet status (same output as check-flat-workers.sh)" },
+  { description: "Snapshot of every worker's health — pane alive, status, last cycle, recent commits. Use to understand the fleet before spawning children, to check if a recipient worker is actually running before messaging, or to diagnose why something isn't responding." },
   async () => {
     try {
       // All reads + prunes inside one lock to avoid TOCTOU race
@@ -1636,7 +1636,7 @@ function _replaceMemorySection(existing: string, section: string, content: strin
 
 server.registerTool(
   "recycle",
-  { description: "Self-recycle: write handoff context, notify parent/operator, then restart as a fresh Claude session in the same pane. Use at end of a cycle or when context is stale. Set final=true for last cycle (exit without restarting).", inputSchema: {
+  { description: "Restart yourself with a fresh context window in the same pane. Use when your context is getting full, at the end of a long cycle, or when you've completed your mission. Writes a handoff.md so the next instance knows what happened. Set final=true to exit without restarting (mission complete).", inputSchema: {
     message: z.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
     final: z.boolean().optional().describe("If true, this is the last cycle — exit cleanly without restarting. Use when work is complete."),
   } },
@@ -1826,7 +1826,7 @@ rm -f "${recycleScript}"
 
 server.registerTool(
   "spawn_child",
-  { description: "Fork yourself into a new pane split to the right. The child inherits your full conversation context and can work independently.", inputSchema: {
+  { description: "Parallelize work by forking into a new pane. Use when you have independent subtasks that would be faster done simultaneously — research + implementation, testing multiple approaches, or delegating grunt work to a Sonnet child while you reason on Opus. The child gets a task injected after launch.", inputSchema: {
     task: z.string().optional().describe("Task/instruction to inject into the child after it starts"),
   } },
   async ({ task }) => {
@@ -1967,7 +1967,7 @@ rm -f "${taskFile}"
 
 server.registerTool(
   "register_pane",
-  { description: "Register this pane in registry.json as a worker pane. Call this after recycle or manual launch when spawn_child/recycle can't find your pane." },
+  { description: "Announce yourself to the fleet by recording your pane ID in registry.json. Call once at startup if you were launched manually or if check_config reports your pane is missing from the registry. Without this, send_message and fleet_status can't find you." },
   async () => {
     const tmuxPane = process.env.TMUX_PANE;
     if (!tmuxPane) {
@@ -2026,7 +2026,7 @@ server.registerTool(
 
 server.registerTool(
   "check_config",
-  { description: "Run diagnostics on worker configuration. Checks: env vars, worker dir, mission.md, registry.json entry, tasks.json, inbox, git hooks, git branch, worktree, required scripts. Returns issues with fix suggestions." },
+  { description: "Diagnose why things aren't working. Checks your environment, registry entry, required files, git branch, and worktree. Returns specific issues with fix suggestions. Run when something feels wrong — missing messages, watchdog not picking you up, tools misbehaving." },
   async () => {
     const issues = getCachedDiagnostics();
     if (issues.length === 0) {
@@ -2182,7 +2182,7 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
 
 server.registerTool(
   "create_worker",
-  { description: "Create a new worker with mission, config, and optional auto-launch", inputSchema: {
+  { description: "Spin up a new persistent worker with its own mission, memory, and task list. Use when you've identified a domain of work that warrants a dedicated agent — ongoing monitoring, specialized repair, continuous optimization. Set launch=true to start it immediately in a new tmux pane.", inputSchema: {
     name: z.string().describe("Worker name in kebab-case (e.g. 'chatbot-fix')"),
     mission: z.string().describe("Full mission.md content (markdown)"),
     model: z.enum(["sonnet", "opus", "haiku"]).optional().describe("LLM model (default: sonnet)"),
