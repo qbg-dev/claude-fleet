@@ -37,7 +37,6 @@ if [ -f "$PROJECT_ROOT/.git" ]; then
 fi
 
 [ -z "$HARNESS" ] && { echo '{}'; exit 0; }
-PANE_REG="${HARNESS_STATE_DIR:-$HOME/.boring/state}/pane-registry.json"
 
 # Derive permissions.json path from harness field in pane registry.
 # Three patterns:
