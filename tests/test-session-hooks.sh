@@ -128,4 +128,62 @@ assert_file_contains "v3 fallback guarded by BRANCH check" \
 assert_file_contains "v3 fallback uses PROJECT_ROOT variable" \
   "$PRECOMPACT_SH" '"$PROJECT_ROOT/.claude/workers/registry.json"'
 
+echo ""
+echo "── fork-worker: registry.json branch field ──"
+
+FORK_SH="$HOME/.boring/scripts/fork-worker.sh"
+
+# Test 12: fork-worker creates new entries with correct branch (not hardcoded chief-of-staff)
+# Bug: was hardcoded "worker/chief-of-staff" regardless of --name argument
+TOTAL=$((TOTAL + 1))
+if grep -q '"worker/" + \$name' "$FORK_SH" 2>/dev/null; then
+  echo -e "  ${GREEN}PASS${RESET} fork-worker: new entries use dynamic branch (\"worker/\" + \$name)"
+  PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${RESET} fork-worker: new entries must use dynamic branch — not hardcoded 'chief-of-staff'"
+  echo "    File: $FORK_SH line with branch field in new-entry jq block"
+  FAIL=$((FAIL + 1))
+fi
+
+# Test 13: fork-worker: existing entry update path does NOT overwrite branch
+HITS=$(grep -n 'branch.*worker/chief-of-staff' "$FORK_SH" 2>/dev/null | grep -v '^#' | grep -v 'example' || true)
+assert_empty "fork-worker: no hardcoded 'worker/chief-of-staff' branch in registration code" "$HITS"
+
+# Test 14: fork-worker: runtime test — jq new-entry produces correct branch field
+FAKE_REG="$TMPDIR_TEST/registry.json"
+echo '{}' > "$FAKE_REG"
+FAKE_PANE="%42"
+FAKE_TARGET="test:1.0"
+CHILD_NAME_TEST="my-custom-worker"
+jq --arg name "$CHILD_NAME_TEST" \
+   --arg pane_id "$FAKE_PANE" \
+   --arg pane_target "$FAKE_TARGET" \
+   --arg tmux_session "test" \
+   --arg parent "chief-of-staff" \
+   'if .[$name] then
+      .[$name].pane_id = $pane_id |
+      .[$name].pane_target = $pane_target |
+      .[$name].tmux_session = $tmux_session |
+      (if $parent != "" then .[$name].parent = $parent else . end)
+    else
+      .[$name] = {pane_id: $pane_id, pane_target: $pane_target,
+                  tmux_session: $tmux_session, status: "active",
+                  parent: $parent, branch: ("worker/" + $name)}
+    end' "$FAKE_REG" > "$FAKE_REG.tmp" && mv "$FAKE_REG.tmp" "$FAKE_REG"
+BRANCH_RESULT=$(jq -r --arg n "$CHILD_NAME_TEST" '.[$n].branch' "$FAKE_REG" 2>/dev/null)
+assert_equals "fork-worker: new entry branch = worker/<name>" "worker/$CHILD_NAME_TEST" "$BRANCH_RESULT"
+
+echo ""
+echo "── send_message: registry.json direct delivery ──"
+
+MCP_TS="$HOME/.boring/mcp/worker-fleet/index.ts"
+
+# Test 15: send_message reads pane_id from registry before falling back to worker-message.sh
+assert_file_contains "send_message: registry lookup before worker-message.sh fallback" \
+  "$MCP_TS" "const paneId = entry?.pane_id"
+
+# Test 16: send_message: falls back to worker-message.sh when no pane_id
+assert_file_contains "send_message: fallback to WORKER_MESSAGE_SH" \
+  "$MCP_TS" "WORKER_MESSAGE_SH"
+
 test_summary

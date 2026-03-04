@@ -74,7 +74,7 @@ if [ -n "$CHILD_NAME" ] && [ -n "${TMUX_PANE:-}" ]; then
           else
             .[$name] = {pane_id: $pane_id, pane_target: $pane_target,
                         tmux_session: $tmux_session, status: "active",
-                        parent: $parent, branch: "worker/chief-of-staff"}
+                        parent: $parent, branch: ("worker/" + $name)}
           end' "$_REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$_REGISTRY"
       echo "Registered $CHILD_NAME (pane $TMUX_PANE) in registry.json"
     fi
