@@ -43,7 +43,7 @@ mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
 _WAIT=0
 while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
   sleep 0.3; _WAIT=$((_WAIT + 1))
-  [ "$_WAIT" -ge 6 ] && break  # 3s max wait for hooks
+  [ "$_WAIT" -ge 6 ] && exit 0  # Timeout: skip write rather than proceed without lock
 done
 
 TMP=$(mktemp)
