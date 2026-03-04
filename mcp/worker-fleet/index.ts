@@ -801,7 +801,7 @@ These are native MCP tool calls — no bash wrappers needed.
 Each cycle: **Observe → Decide → Act → Measure → Adapt** — you're an LLM, not a cron job. Adapt.
 
 - **Save learnings**: Update MEMORY.md using your file tools (Edit/Write). Path: \`${workerDir}/MEMORY.md\`
-- **Save scripts**: Write reusable scripts to \`.claude/scripts/${WORKER_NAME}/\` — not as one-offs.
+- **Scripts first**: Before writing inline commands, check \`.claude/scripts/${WORKER_NAME}/\` for existing scripts to reuse. If you do something twice, save it as a script there. Scripts persist across recycles; one-off bash commands don't.
 - **Adapt sleep**: Call \`update_state("sleep_duration", N)\` to tune your cycle interval.
 - **Discover new work**: Read server logs, other workers' MEMORY.md, Nexus for issues in your domain.
 - **Eliminate waste**: Skip checks that never change; cache expensive lookups.`;
