@@ -2,8 +2,8 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 16 tools in 6 categories:
- *   Messaging (3):  send_message, broadcast, read_inbox
+ * 15 tools in 6 categories:
+ *   Messaging (2):  send_message (supports to="all" for broadcast), read_inbox
  *   Tasks (3):      create_task, update_task, list_tasks
  *   State (2):      get_worker_state, update_state
  *   Memory (1):     write_memory
@@ -775,8 +775,7 @@ If your inbox has a message from Warren or chief-of-staff, prioritize it over yo
 
 | Tool | What it does |
 |------|-------------|
-| \`send_message(to, content, summary)\` | Send to a worker, "parent", "children", or raw pane ID "%NN" |
-| \`broadcast(content, summary)\` | Send to ALL workers (use sparingly) |
+| \`send_message(to, content, summary)\` | Send to a worker, "parent", "children", raw pane "%NN", or **"all"** (broadcast to every worker) |
 | \`read_inbox(limit?, since?, clear?)\` | Read your inbox; \`clear=true\` truncates after reading |
 | \`create_task(subject, priority?, ...)\` | Add a task to your task list |
 | \`update_task(task_id, status?, subject?, owner?, ...)\` | Update task status/fields — claim, complete, delete, reassign |
@@ -787,7 +786,6 @@ If your inbox has a message from Warren or chief-of-staff, prioritize it over yo
 | \`recycle(message?)\` | Self-recycle: write handoff, restart fresh with new context |
 | \`spawn_child(task?)\` | Fork yourself into a new pane to the right |
 | \`register_pane()\` | Register this pane in registry.json (after recycle/manual launch) |
-| \`check_config()\` | Run diagnostics on worker config — fix issues it reports |
 
 These are native MCP tool calls — no bash wrappers needed.
 
@@ -987,7 +985,7 @@ function runDiagnostics(): DiagnosticIssue[] {
 
 // ── Cached diagnostics — 3 min TTL, lazy on first tool call ─────────
 let _diagCache: { issues: DiagnosticIssue[]; ts: number } | null = null;
-const DIAG_CACHE_TTL_MS = 3 * 60_000; // 3 minutes
+const DIAG_CACHE_TTL_MS = 10_000; // 10 seconds
 let _firstCallDone = false;
 
 function getCachedDiagnostics(): DiagnosticIssue[] {
@@ -1025,12 +1023,55 @@ const server = new McpServer({
 
 server.registerTool(
   "send_message",
-  { description: `Send a direct message to a specific worker (durable inbox + tmux instant delivery)`, inputSchema: {
-    to: z.string().describe("Worker name (e.g. 'chief-of-staff', 'chatbot-tools'), 'parent' (operator/spawner), 'children' (all registered children from registry.json), or raw pane ID '%NN'"),
+  { description: `Send a message to a worker or broadcast to all. to="all" sends to every worker (use sparingly). to="parent"/"children" for hierarchy. to="%NN" for raw pane. Otherwise worker name for durable inbox + tmux delivery.`, inputSchema: {
+    to: z.string().describe("Worker name, 'parent', 'children', 'all' (broadcast to every worker), or raw pane ID '%NN'"),
     content: z.string().describe("Message content"),
     summary: z.string().describe("Short preview (5-10 words)"),
   } },
   async ({ to, content, summary }) => {
+    // Broadcast path: to="all" sends to every worker's inbox
+    if (to === "all") {
+      const failures: string[] = [];
+      const successes: string[] = [];
+      try {
+        const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
+          .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+          .map(d => d.name)
+          .filter(name => name !== WORKER_NAME);
+        for (const name of dirs) {
+          const result = writeToInbox(name, { content, summary, from_name: WORKER_NAME });
+          if (result.ok) successes.push(name);
+          else failures.push(`${name}: ${result.error}`);
+        }
+      } catch (e: any) {
+        return { content: [{ type: "text" as const, text: `Error listing workers: ${e.message}` }], isError: true };
+      }
+      // Fire bus for tmux delivery (best-effort)
+      try {
+        const args = ["broadcast", content];
+        if (summary) args.push("--summary", summary);
+        runScript(WORKER_MESSAGE_SH, args, { timeout: 10_000 });
+      } catch {}
+      // Remote workers via relay (best-effort)
+      let remoteCount = 0;
+      try {
+        const remote = await relayFetch("GET", "/workers");
+        if (remote) {
+          for (const [proj, workers] of Object.entries(remote) as [string, string[]][]) {
+            for (const w of workers) {
+              if (w === WORKER_NAME || successes.includes(w)) continue;
+              const r = await relayFetch("POST", "/msg", { project: proj, worker: w, content, summary, from_name: WORKER_NAME });
+              if (r?.ok) remoteCount++;
+            }
+          }
+        }
+      } catch {}
+      let msg = `Broadcast to ${successes.length} local workers`;
+      if (remoteCount > 0) msg += ` + ${remoteCount} remote`;
+      if (failures.length > 0) msg += `\nFailed: ${failures.join(", ")}`;
+      return { content: [{ type: "text" as const, text: msg }] };
+    }
+
     const resolved = resolveRecipient(to);
 
     if (resolved.error) {
@@ -1126,66 +1167,6 @@ server.registerTool(
   }
 );
 
-server.registerTool(
-  "broadcast",
-  { description: "Send a message to all workers (use sparingly — costs scale with team size)", inputSchema: {
-    content: z.string().describe("Message content"),
-    summary: z.string().describe("Short preview (5-10 words)"),
-  } },
-  async ({ content, summary }) => {
-    // Write to every worker's inbox (durable)
-    const failures: string[] = [];
-    const successes: string[] = [];
-
-    try {
-      const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
-        .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
-        .map(d => d.name)
-        .filter(name => name !== WORKER_NAME); // Don't broadcast to self
-
-      for (const name of dirs) {
-        const result = writeToInbox(name, { content, summary, from_name: WORKER_NAME });
-        if (result.ok) {
-          successes.push(name);
-        } else {
-          failures.push(`${name}: ${result.error}`);
-        }
-      }
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error listing workers: ${e.message}` }], isError: true };
-    }
-
-    // Fire bus for tmux delivery (best-effort)
-    try {
-      const args = ["broadcast", content];
-      if (summary) args.push("--summary", summary);
-      runScript(WORKER_MESSAGE_SH, args, { timeout: 10_000 });
-    } catch {}
-
-    // Also broadcast to remote workers via relay (best-effort)
-    let remoteCount = 0;
-    try {
-      const remote = await relayFetch("GET", "/workers");
-      if (remote) {
-        for (const [proj, workers] of Object.entries(remote) as [string, string[]][]) {
-          for (const w of workers) {
-            if (w === WORKER_NAME) continue; // skip self
-            if (successes.includes(w)) continue; // already sent locally
-            const r = await relayFetch("POST", "/msg", {
-              project: proj, worker: w, content, summary, from_name: WORKER_NAME,
-            });
-            if (r?.ok) remoteCount++;
-          }
-        }
-      }
-    } catch {}
-
-    let msg = `Broadcast to ${successes.length} local workers`;
-    if (remoteCount > 0) msg += ` + ${remoteCount} remote`;
-    if (failures.length > 0) msg += `\nFailed: ${failures.join(", ")}`;
-    return { content: [{ type: "text" as const, text: msg }] };
-  }
-);
 
 server.registerTool(
   "read_inbox",

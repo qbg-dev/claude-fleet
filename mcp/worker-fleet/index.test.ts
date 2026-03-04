@@ -475,9 +475,15 @@ describe("generateSeedContent", () => {
     expect(seed).not.toContain("state.json");
   });
 
-  test("includes check_config in tool table", () => {
+  test("does not include check_config in tool table (intentionally removed)", () => {
     const seed = generateSeedContent();
-    expect(seed).toContain("check_config");
+    expect(seed).not.toContain("check_config");
+  });
+
+  test("does not include broadcast as separate tool (folded into send_message to='all')", () => {
+    const seed = generateSeedContent();
+    expect(seed).not.toContain("broadcast(content");
+    expect(seed).toContain('"all"'); // send_message supports to="all"
   });
 
   test("does not reference smart_commit (removed)", () => {
