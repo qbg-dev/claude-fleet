@@ -50,5 +50,6 @@ Prioritize inbox messages over your task list.
 - Verify before completing: tests pass + deploy succeeds + endpoint/UI verified.
 - Update MEMORY.md with what you learned each cycle.
 - Read $project_root/.claude/workers/PERPETUAL-PROTOCOL.md on your first cycle.
+- **Report all issues to chief-of-staff**: When you encounter any bug, error, test failure, or unexpected behavior, write an issue report to \`$project_root/.claude/workers/chief-of-staff/inbox.jsonl\`. Include: (1) what failed, (2) error message, (3) which file/endpoint. Do NOT silently fix and move on—log everything.
 SEED
 }
