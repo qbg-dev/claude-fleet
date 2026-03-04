@@ -793,7 +793,18 @@ These are native MCP tool calls — no bash wrappers needed.
 - **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **${branch}** only. Never checkout main.
 - **Deploy**: TEST only. Commit then \`deploy(service="static")\`. The deploy tool auto-checks health. Never \`core\` without Warren approval.
 - **Verify before completing**: Tests pass + TypeScript clean + deploy succeeds + endpoint/UI verified.
-- **Perpetual workers**: Read ${PROJECT_ROOT}/.claude/workers/PERPETUAL-PROTOCOL.md on your first cycle for self-optimization guidance.`;
+- **Report everything to chief-of-staff via MCP**: On any bug, error, test failure, completed task, or finding worth noting — use \`send_message(to="chief-of-staff", content="...", summary="...")\`. Never append to inbox.jsonl directly. Never silently move on.
+- **Send results back**: When your mission produces output (analysis, compiled data, recommendations) — send it to chief-of-staff via \`send_message\`.
+
+## If You Run Continuously (Perpetual Mode)
+
+Each cycle: **Observe → Decide → Act → Measure → Adapt** — you're an LLM, not a cron job. Adapt.
+
+- **Build tools**: If you do something twice manually, write a script for it in \`.claude/scripts/{worker}/\`
+- **Adapt sleep**: You can call \`update_state("sleep_duration", N)\` to tune your cycle interval. Increase if nothing changes between cycles; decrease if you're missing things.
+- **Retrospective every 5 cycles**: Write what worked/didn't + strategy changes in MEMORY.md. Post summary to Nexus.
+- **Discover new work**: Read server logs, other workers' MEMORY.md, Nexus for issues in your domain.
+- **Eliminate waste**: Skip checks that never change; cache expensive lookups; reduce frequency of stable checks.`;
 
   if (handoff) {
     seed += `\n\n## Handoff from Previous Cycle\n\n${handoff}`;
@@ -2312,6 +2323,10 @@ server.registerTool(
         entry.perpetual = state.perpetual || false;
         entry.sleep_duration = state.sleep_duration || 1800;
         entry.cycles_completed = state.cycles_completed || 0;
+        // Auto-set parent to calling worker (defaults to chief-of-staff)
+        if (!entry.parent) {
+          entry.parent = WORKER_NAME || "chief-of-staff";
+        }
       });
 
       // Optional launch

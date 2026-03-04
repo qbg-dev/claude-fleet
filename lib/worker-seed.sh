@@ -86,7 +86,8 @@ If your inbox has a message from Warren or chief-of-staff, prioritize it over yo
 - **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **$branch** only. Never checkout main.
 - **Deploy**: TEST only. Commit then \`deploy(service="static")\`. Never \`core\` without Warren approval.
 - **Verify before completing**: Tests pass + TypeScript clean + deploy succeeds + endpoint/UI verified.
-- **Report issues to chief-of-staff**: On any bug, error, or test failure, append to \`$project_root/.claude/workers/chief-of-staff/inbox.jsonl\`. Include: (1) what failed, (2) error, (3) file/endpoint. Log everything — do NOT silently move on.
+- **Report everything to chief-of-staff via MCP**: On any bug, error, test failure, completed task, or finding worth noting — use \`send_message(to="chief-of-staff", content="...", summary="...")\`. Never append to inbox.jsonl directly. Never silently move on.
+- **Send results back**: When your mission produces output (analysis, compiled data, recommendations) — send it to chief-of-staff via \`send_message\`.
 
 ## If You Run Continuously (Perpetual Mode)
 
