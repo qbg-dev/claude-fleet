@@ -186,7 +186,7 @@ _build_claude_cmd() {
   local disallowed; disallowed=$(jq -r --arg n "$worker" '.[$n].disallowed_tools // [] | join(",")' "$REGISTRY" 2>/dev/null)
 
   local worker_dir="$PROJECT_ROOT/.claude/workers/$worker"
-  local cmd="claude --model $model"
+  local cmd="CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model $model"
   [ "$perm_mode" = "bypassPermissions" ] && cmd="$cmd --dangerously-skip-permissions"
   [ -n "$disallowed" ] && cmd="$cmd --disallowed-tools \"$disallowed\""
   cmd="$cmd --add-dir $worker_dir"
@@ -244,13 +244,25 @@ _resume_in_pane() {
   (
     sleep 8
     local wait=0
+    local tui_ready=false
     until tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; do
       sleep 3; wait=$((wait + 3))
-      if [ "$wait" -ge 90 ]; then
-        _log "RESUME-WARN: $worker — TUI prompt not detected after 98s, injecting seed anyway"
+      if [ "$wait" -ge 60 ]; then
         break
       fi
     done
+
+    # Hard gate: verify TUI is actually ready before pasting seed
+    if tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; then
+      tui_ready=true
+    fi
+
+    if [ "$tui_ready" = "false" ]; then
+      _log "RESUME-WARN: $worker — TUI not ready after $((wait + 8))s, skipping seed (next watchdog pass will retry)"
+      rm -f "$seed_file" 2>/dev/null || true
+      return
+    fi
+
     sleep 2
 
     local buf_name="wd-${pane_id#%}-$$"
@@ -302,9 +314,21 @@ _relaunch_claude() {
   tmux send-keys -t "$pane" "$claude_cmd"
   tmux send-keys -t "$pane" -H 0d
 
-  # Inject seed after Claude TUI starts (background)
+  # Inject seed after Claude TUI starts (background, with TUI gate)
   (
-    sleep 20
+    sleep 10
+    local wait=0
+    until tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; do
+      sleep 3; wait=$((wait + 3))
+      [ "$wait" -ge 60 ] && break
+    done
+
+    if ! tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; then
+      _log "RELAUNCH-WARN: $worker — TUI not ready after $((wait + 10))s, skipping seed"
+      return
+    fi
+
+    sleep 2
     if [ -f "${HOME}/.claude-ops/lib/worker-seed.sh" ]; then
       source "${HOME}/.claude-ops/lib/worker-seed.sh"
       local seed_file="/tmp/worker-${worker}-watchdog-seed.txt"
@@ -363,6 +387,23 @@ check_worker() {
       return
     fi
 
+    # ── Bare-shell detection (soft crash loop guard) ──
+    # If pane is alive but Claude TUI never started, we have a failed respawn
+    local full_pane_content
+    full_pane_content=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^$' | tail -30)
+    if ! echo "$full_pane_content" | grep -qE 'bypass permissions|Thinking|Reading|Searching|Editing|Writing|Running|>\s'; then
+      # No Claude TUI indicators at all — likely bare shell from failed respawn
+      if [ "$perpetual" = "true" ]; then
+        _log "BARE-SHELL: $worker (pane $pane_id) — Claude not running, clean restart"
+        _kill_claude_in_pane "$pane_id"
+        sleep 5
+        local wt_dir
+        wt_dir=$(jq -r --arg n "$worker" '.[$n].worktree // empty' "$REGISTRY" 2>/dev/null)
+        _relaunch_claude "$worker" "$pane_id" "${wt_dir:-$PROJECT_ROOT}"
+        return 1  # signal respawn happened (for stagger)
+      fi
+    fi
+
     # Check for graceful sleep (worker used recycle MCP tool or finished cycle)
     # Detect: Claude TUI at prompt + worker's last_cycle_at + sleep_duration elapsed
     local last_cycle_at; last_cycle_at=$(jq -r --arg n "$worker" '.[$n].last_cycle_at // empty' "$REGISTRY" 2>/dev/null)
@@ -384,10 +425,11 @@ check_worker() {
             # Clear stuck marker
             local runtime; runtime=$(_worker_runtime "$worker")
             rm -f "$runtime/stuck-candidate" 2>/dev/null || true
+            return 1  # signal respawn happened (for stagger)
           else
             _log "SKIP: $worker — perpetual:false, not respawning"
           fi
-          return
+          return 0
         fi
         # Still within sleep window — don't treat as stuck
         return
@@ -412,11 +454,12 @@ check_worker() {
         # Clear stuck marker
         local runtime; runtime=$(_worker_runtime "$worker")
         rm -f "$runtime/stuck-candidate" 2>/dev/null || true
+        return 1  # signal respawn happened (for stagger)
       else
         _log "SKIP: $worker — stuck but perpetual:false, not respawning"
       fi
     fi
-    return
+    return 0
   fi
 
   # ── Pane is dead ──
@@ -447,7 +490,7 @@ check_worker() {
   if ! tmux has-session -t "$session" 2>/dev/null; then
     _log "RESPAWN-FULL: $worker — session '$session' gone, using launch-flat-worker.sh"
     PROJECT_ROOT="$PROJECT_ROOT" bash "$LAUNCH_SCRIPT" "$worker" &
-    return
+    return 1  # signal respawn happened (for stagger)
   fi
 
   # Check if the window still exists
@@ -468,10 +511,12 @@ check_worker() {
     _relaunch_claude "$worker" "$new_pane" "$wt_dir"
 
     _log "RESPAWN-SPLIT: $worker into window '$window' (pane $new_pane)"
+    return 1  # signal respawn happened (for stagger)
   else
     # Window gone — full relaunch via launch-flat-worker.sh
     _log "RESPAWN-FULL: $worker — window '$window' gone, using launch-flat-worker.sh"
     PROJECT_ROOT="$PROJECT_ROOT" bash "$LAUNCH_SCRIPT" "$worker" &
+    return 1  # signal respawn happened (for stagger)
   fi
 }
 
@@ -524,7 +569,12 @@ run_once() {
   [ ! -f "$REGISTRY" ] && return
 
   while IFS= read -r worker; do
-    check_worker "$worker" 2>/dev/null || true
+    if ! check_worker "$worker" 2>/dev/null; then
+      # Respawn happened — stagger before processing next worker
+      local stagger=$(( RANDOM % 10 + 8 ))
+      _log "STAGGER: sleeping ${stagger}s after respawning $worker"
+      sleep "$stagger"
+    fi
   done < <(jq -r 'keys[]' "$REGISTRY" 2>/dev/null || true)
 }
 

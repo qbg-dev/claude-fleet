@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# launch-flat-worker.sh — Launch a flat worker agent in its own tmux window.
+# launch-flat-worker.sh — Launch a flat worker agent in a tmux window (group or solo).
 # Generic upstream version — works with any project that has .claude/workers/{name}/.
 #
-# Usage: bash launch-flat-worker.sh <WORKER> [--window <win>] [--project <root>]
+# Window groups: If permissions.json has "window": "<group>", the worker joins that
+# named window (split + tiled). Otherwise it gets its own window named after itself.
+#
+# Reads config from: .claude/workers/registry.json + .claude/workers/{name}/permissions.json
+# Writes pane info to: .claude/workers/registry.json
+#
+# Usage: bash launch-flat-worker.sh <WORKER> [--session <sess>] [--window <group>] [--project <root>]
 # Example: bash launch-flat-worker.sh dashboard-fix
-#          bash launch-flat-worker.sh my-worker --project /path/to/repo
+#          bash launch-flat-worker.sh bi-optimizer --window optimizers
+#          bash launch-flat-worker.sh my-worker --session w2 --project /path/to/repo
 set -euo pipefail
 
 WORKER="${1:?WORKER name required (e.g. dashboard-fix, chief-of-staff)}"
@@ -13,11 +20,13 @@ shift
 # Defaults
 TARGET_SESSION="w"
 PROJECT_ROOT="${PROJECT_ROOT:-}"
+CLI_WINDOW=""
 
 # Parse optional args
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --window) TARGET_SESSION="$2"; shift 2 ;;
+    --session) TARGET_SESSION="$2"; shift 2 ;;
+    --window)  CLI_WINDOW="$2"; shift 2 ;;
     --project) PROJECT_ROOT="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
@@ -30,14 +39,47 @@ fi
 
 PROJECT_NAME="$(basename "$PROJECT_ROOT")"
 WORKER_DIR="$PROJECT_ROOT/.claude/workers/$WORKER"
-PERMS="$WORKER_DIR/permissions.json"
+REGISTRY="$PROJECT_ROOT/.claude/workers/registry.json"
 BRANCH="worker/$WORKER"
 WORKTREE_DIR="$PROJECT_ROOT/../${PROJECT_NAME}-w-$WORKER"
 
 [ ! -d "$WORKER_DIR" ] && { echo "ERROR: worker dir not found: $WORKER_DIR"; exit 1; }
 
-# Read permissions
-MODEL=$(jq -r '.model // "sonnet"' "$PERMS" 2>/dev/null || echo "sonnet")
+# Read worker config from permissions.json (source of truth), fall back to registry.json
+PERMS="$WORKER_DIR/permissions.json"
+MODEL="sonnet"
+PERM_MODE="bypassPermissions"
+WINDOW_GROUP=""
+
+if [ -f "$PERMS" ]; then
+  # permissions.json is the source of truth for worker config
+  _P_MODEL=$(jq -r '.model // empty' "$PERMS" 2>/dev/null || echo "")
+  [ -n "$_P_MODEL" ] && MODEL="$_P_MODEL"
+  _P_PERM=$(jq -r '.permission_mode // empty' "$PERMS" 2>/dev/null || echo "")
+  [ -n "$_P_PERM" ] && PERM_MODE="$_P_PERM"
+  WINDOW_GROUP=$(jq -r '.window // empty' "$PERMS" 2>/dev/null || echo "")
+fi
+
+# Fall back to registry.json for model/perm if not in permissions.json
+if [ -f "$REGISTRY" ]; then
+  if [ "$MODEL" = "sonnet" ]; then
+    _REG_MODEL=$(jq -r --arg n "$WORKER" '.[$n].model // empty' "$REGISTRY" 2>/dev/null || echo "")
+    [ -n "$_REG_MODEL" ] && MODEL="$_REG_MODEL"
+  fi
+  if [ "$PERM_MODE" = "bypassPermissions" ]; then
+    _REG_PERM=$(jq -r --arg n "$WORKER" '.[$n].permission_mode // empty' "$REGISTRY" 2>/dev/null || echo "")
+    [ -n "$_REG_PERM" ] && PERM_MODE="$_REG_PERM"
+  fi
+  # Read tmux session from registry _config
+  _REG_SESS=$(jq -r '._config.tmux_session // empty' "$REGISTRY" 2>/dev/null || echo "")
+  [ -n "$_REG_SESS" ] && TARGET_SESSION="$_REG_SESS"
+fi
+
+# CLI --window overrides permissions.json
+[ -n "$CLI_WINDOW" ] && WINDOW_GROUP="$CLI_WINDOW"
+
+# Default: window name = worker name (every worker has a window value)
+[ -z "$WINDOW_GROUP" ] && WINDOW_GROUP="$WORKER"
 
 # Ensure tmux session exists
 if ! tmux has-session -t "$TARGET_SESSION" 2>/dev/null; then
@@ -55,8 +97,9 @@ if [ ! -d "$WORKTREE_DIR" ]; then
 fi
 
 # Copy untracked config files that worktrees don't inherit from git
+# Always overwrite .mcp.json so worktrees pick up fixes (e.g. absolute bun path)
 for UNTRACKED_CFG in .mcp.json; do
-  if [ -f "$PROJECT_ROOT/$UNTRACKED_CFG" ] && [ ! -f "$WORKTREE_DIR/$UNTRACKED_CFG" ]; then
+  if [ -f "$PROJECT_ROOT/$UNTRACKED_CFG" ]; then
     cp "$PROJECT_ROOT/$UNTRACKED_CFG" "$WORKTREE_DIR/$UNTRACKED_CFG"
   fi
 done
@@ -90,126 +133,92 @@ if [ -f "$HOOK_SRC" ]; then
   chmod +x "$HOOKS_DIR/post-commit"
 fi
 
-# Seed file
+# Install commit-msg hook for auto-trailers (Worker:, Cycle:)
+COMMIT_MSG_SRC="$PROJECT_ROOT/.claude/scripts/worker-commit-msg-hook.sh"
+if [ ! -f "$COMMIT_MSG_SRC" ]; then
+  COMMIT_MSG_SRC="${HOME}/.claude-ops/scripts/worker-commit-msg-hook.sh"
+fi
+if [ -f "$COMMIT_MSG_SRC" ]; then
+  WORKTREE_GIT_DIR=${WORKTREE_GIT_DIR:-$(git -C "$WORKTREE_DIR" rev-parse --git-dir 2>/dev/null)}
+  HOOKS_DIR="${WORKTREE_GIT_DIR}/hooks"
+  mkdir -p "$HOOKS_DIR"
+  cp "$COMMIT_MSG_SRC" "$HOOKS_DIR/commit-msg"
+  chmod +x "$HOOKS_DIR/commit-msg"
+fi
+
+# Seed file (shared template)
+source "${HOME}/.claude-ops/lib/worker-seed.sh"
 SEED_FILE="/tmp/worker-${WORKER}-seed.txt"
-cat > "$SEED_FILE" << WSEED
-You are worker **$WORKER**.
-Worktree: $WORKTREE_DIR (branch: $BRANCH)
-Worker config: $PROJECT_ROOT/.claude/workers/$WORKER/
+generate_worker_seed "$WORKER" "$WORKER_DIR" "$WORKTREE_DIR" "$BRANCH" "$PROJECT_ROOT" > "$SEED_FILE"
 
-Read these files NOW in this order:
-1. $WORKER_DIR/mission.md — your goals and tasks
-2. $WORKER_DIR/state.json — current cycle count and status
-3. $WORKER_DIR/MEMORY.md — what you learned in previous cycles
-
-Then begin your cycle immediately.
-
-## Cycle Pattern
-
-Every cycle follows this sequence:
-
-1. **Drain inbox** — \`read_inbox(clear=true)\` — act on messages before anything else
-2. **Check tasks** — \`list_tasks(filter="pending")\` — find highest-priority unblocked work
-3. **Claim** — \`claim_task("T00N")\` — mark what you're working on
-4. **Do the work** — investigate, fix, test, commit, deploy, verify
-5. **Complete** — \`complete_task("T00N")\` — only after fully verified
-6. **Update state** — \`update_state("cycles_completed", N+1)\` then \`update_state("last_cycle_at", ISO)\`
-7. **Perpetual?** — if \`perpetual: true\`, sleep for \`sleep_duration\` seconds, then loop
-
-If your inbox has a message from Warren or chief-of-staff, prioritize it over your current task list.
-
-## MCP Tools (\`mcp__worker-fleet__*\`)
-
-| Tool | What it does |
-|------|-------------|
-| \`send_message(to, content, summary)\` | Send to a worker, "parent", or raw pane ID "%NN" |
-| \`broadcast(content, summary)\` | Send to ALL workers (use sparingly) |
-| \`read_inbox(limit?, since?, clear?)\` | Read your inbox; \`clear=true\` truncates after reading |
-| \`create_task(subject, priority?, ...)\` | Add a task to your task list |
-| \`claim_task(task_id)\` | Assign a task to yourself, set in_progress |
-| \`complete_task(task_id)\` | Mark done (recurring tasks auto-reset) |
-| \`list_tasks(filter?, worker?)\` | List tasks; \`worker="all"\` for cross-worker view |
-| \`get_worker_state(name?)\` | Read any worker's state.json |
-| \`update_state(key, value)\` | Update your state.json + emit bus event |
-| \`fleet_status()\` | Full fleet overview (all workers) |
-| \`deploy(service?)\` | Deploy to TEST server + auto health check. \`static\` (default), \`web\`, or \`all\` |
-| \`health_check(target?)\` | Check server health: \`test\` (default), \`prod\`, or \`both\` |
-| \`smart_commit(message, files?, ...)\` | Commit with format validation; \`merge_request=true\` to signal chief-of-staff |
-| \`post_to_nexus(message, room?)\` | Post to Nexus chat (prefixed with your name) |
-| \`recycle(message?)\` | Self-recycle: write handoff, restart fresh with new context |
-| \`spawn_child(task?)\` | Fork yourself into a new pane to the right |
-| \`register_pane()\` | Register this pane in pane-registry (after recycle/manual launch) |
-| \`check_config()\` | Run diagnostics on worker config — fix issues it reports |
-
-These are native MCP tool calls — no bash wrappers needed.
-
-## Rules
-- **Fix everything.** Never just report issues — investigate, fix, deploy, document in MEMORY.md.
-- **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **$BRANCH** only. Never checkout main.
-- **Deploy**: TEST only. \`smart_commit\` then \`deploy(service="static")\`. The deploy tool auto-checks health. Never \`core\` without Warren approval.
-- **Verify before completing**: Tests pass + TypeScript clean + deploy succeeds + endpoint/UI verified.
-- **Perpetual workers**: Read $PROJECT_ROOT/.claude/workers/PERPETUAL-PROTOCOL.md on your first cycle for self-optimization guidance.
-WSEED
-
-# Create tmux window for this worker (or reuse if session was just created)
+# Create or join tmux window based on WINDOW_GROUP
 if [ "$CREATED_SESSION" -eq 1 ]; then
-  # Session was just created with a default window — rename it
+  # Session was just created with a default window — rename it to our window group
   WORKER_PANE=$(tmux list-panes -t "$TARGET_SESSION" -F '#{pane_id}' | head -1)
-  tmux rename-window -t "$TARGET_SESSION" "$WORKER"
+  tmux rename-window -t "$TARGET_SESSION" "$WINDOW_GROUP"
   tmux send-keys -t "$WORKER_PANE" "cd $WORKTREE_DIR"
   tmux send-keys -t "$WORKER_PANE" -H 0d
+elif tmux list-windows -t "$TARGET_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$WINDOW_GROUP"; then
+  # Window exists — split into it + re-tile
+  WORKER_PANE=$(tmux split-window -t "$TARGET_SESSION:$WINDOW_GROUP" -c "$WORKTREE_DIR" -d -P -F '#{pane_id}')
+  tmux select-layout -t "$TARGET_SESSION:$WINDOW_GROUP" tiled
 else
-  # Create new window in existing session
-  WORKER_PANE=$(tmux new-window -t "$TARGET_SESSION" -n "$WORKER" -c "$WORKTREE_DIR" -d -P -F '#{pane_id}')
+  # Create new window with this group name
+  WORKER_PANE=$(tmux new-window -t "$TARGET_SESSION" -n "$WINDOW_GROUP" -c "$WORKTREE_DIR" -d -P -F '#{pane_id}')
 fi
 
 tmux select-pane -T "$WORKER" -t "$WORKER_PANE"
 
-# Register worker pane in pane-registry (unified format: workers + panes + flat compat)
-PANE_REG="${HARNESS_STATE_DIR:-${HOME}/.boring/state}/pane-registry.json"
-[ ! -f "$PANE_REG" ] && echo '{"workers":{},"panes":{}}' > "$PANE_REG"
-
+# Register worker pane in registry.json
 _PANE_TARGET=$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' \
   | awk -v p="$WORKER_PANE" '$1==p{print $2}' 2>/dev/null || echo "")
-_PROJ_SLUG=$(basename "$PROJECT_ROOT")
-_WORKER_KEY="${_PROJ_SLUG}:${WORKER}"
 _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Read permissions.json for config
-_MODEL=$(jq -r '.model // "sonnet"' "$PERMS" 2>/dev/null || echo "sonnet")
-_PERM_MODE=$(jq -r '.permission_mode // "bypassPermissions"' "$PERMS" 2>/dev/null || echo "bypassPermissions")
-_DISALLOWED=$(jq -c '.disallowedTools // []' "$PERMS" 2>/dev/null || echo "[]")
+if [ -f "$REGISTRY" ]; then
+  _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.boring/state/locks}/worker-registry"
+  mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
+  _WAIT=0
+  while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
+    sleep 0.5; _WAIT=$((_WAIT + 1))
+    [ "$_WAIT" -ge 10 ] && break
+  done
+  # Cache full config from permissions.json into registry
+  _PERMS_JSON="{}"
+  [ -f "$PERMS" ] && _PERMS_JSON=$(cat "$PERMS" 2>/dev/null || echo "{}")
 
-# Read existing state.json / tasks.json for bootstrap
-_STATE=$(cat "$WORKER_DIR/state.json" 2>/dev/null || echo '{"status":"idle","cycles_completed":0}')
-_TASKS=$(cat "$WORKER_DIR/tasks.json" 2>/dev/null || echo '{}')
+  TMP_REG=$(mktemp)
+  jq --arg name "$WORKER" --arg pid "$WORKER_PANE" --arg target "${_PANE_TARGET:-}" \
+    --arg sess "$TARGET_SESSION" --arg branch "$BRANCH" \
+    --arg wt "$WORKTREE_DIR" --arg now "$_NOW" --arg win "$WINDOW_GROUP" \
+    --arg model "$MODEL" --arg perm "$PERM_MODE" \
+    --argjson perms "$_PERMS_JSON" \
+    '.[$name] = (.[$name] // {}) * $perms |
+     .[$name].pane_id = $pid |
+     .[$name].pane_target = $target |
+     .[$name].tmux_session = $sess |
+     .[$name].branch = $branch |
+     .[$name].worktree = $wt |
+     .[$name].window = $win |
+     .[$name].model = $model |
+     .[$name].permission_mode = $perm |
+     .[$name].session_id = ""' \
+    "$REGISTRY" > "$TMP_REG" 2>/dev/null && mv "$TMP_REG" "$REGISTRY" || rm -f "$TMP_REG"
+  rmdir "$_LOCK_DIR" 2>/dev/null || true
+fi
 
-TMP_REG=$(mktemp)
-jq --arg pid "$WORKER_PANE" --arg name "$WORKER" --arg target "${_PANE_TARGET:-}" \
-  --arg proj "$PROJECT_ROOT" --arg sess "$TARGET_SESSION" \
-  --arg wk "$_WORKER_KEY" --arg wdir "$WORKER_DIR" --arg wtdir "$WORKTREE_DIR" \
-  --arg branch "$BRANCH" --arg model "$_MODEL" --arg perm_mode "$_PERM_MODE" \
-  --argjson disallowed "$_DISALLOWED" --argjson state "$_STATE" --argjson tasks "$_TASKS" \
-  --arg now "$_NOW" \
-  '.workers //= {} | .panes //= {} |
-  .workers[$wk] = ((.workers[$wk] // {}) * {
-    project_root: $proj, worker_dir: $wdir, worktree: $wtdir, branch: $branch,
-    config: {model: $model, permission_mode: $perm_mode, disallowedTools: $disallowed}
-  }) |
-  (if (.workers[$wk].state // null) == null then .workers[$wk].state = $state else . end) |
-  (if (.workers[$wk].tasks // null) == null then .workers[$wk].tasks = $tasks else . end) |
-  .panes[$pid] = {
-    worker: $name, role: "worker", pane_target: $target, tmux_session: $sess,
-    session_id: "", parent_pane: null, registered_at: $now
-  } |
-  .[$pid] = {
-    harness: ("worker/" + $name), session_name: $name, display: $name,
-    task: "worker", done: 0, total: 0, pane_target: $target,
-    project_root: $proj, tmux_session: $sess
-  }' "$PANE_REG" > "$TMP_REG" 2>/dev/null && mv "$TMP_REG" "$PANE_REG" || rm -f "$TMP_REG"
+# Read disallowed_tools from permissions.json
+DISALLOWED_TOOLS=""
+if [ -f "$PERMS" ]; then
+  _DT=$(jq -r '.disallowed_tools // [] | join(",")' "$PERMS" 2>/dev/null || echo "")
+  [ -n "$_DT" ] && DISALLOWED_TOOLS="$_DT"
+fi
 
 # Launch Claude
-CLAUDE_CMD="claude --model $MODEL --dangerously-skip-permissions"
+CLAUDE_CMD="CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model $MODEL"
+if [ "$PERM_MODE" = "bypassPermissions" ]; then
+  CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
+fi
+[ -n "$DISALLOWED_TOOLS" ] && CLAUDE_CMD="$CLAUDE_CMD --disallowed-tools \"$DISALLOWED_TOOLS\""
 CLAUDE_CMD="$CLAUDE_CMD --add-dir $PROJECT_ROOT/.claude/workers/$WORKER"
 tmux send-keys -t "$WORKER_PANE" "$CLAUDE_CMD"
 tmux send-keys -t "$WORKER_PANE" -H 0d
@@ -242,4 +251,4 @@ if tmux capture-pane -t "$WORKER_PANE" -p 2>/dev/null | grep -qE '❯'; then
   echo "(Retried Enter for $WORKER)"
 fi
 
-echo "Launched worker/$WORKER in pane $WORKER_PANE (session: $TARGET_SESSION, worktree: $WORKTREE_DIR)"
+echo "Launched worker/$WORKER in pane $WORKER_PANE (session: $TARGET_SESSION, window: $WINDOW_GROUP, worktree: $WORKTREE_DIR)"
