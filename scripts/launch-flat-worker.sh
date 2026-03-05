@@ -214,7 +214,7 @@ if [ -f "$PERMS" ]; then
 fi
 
 # Launch Claude
-CLAUDE_CMD="CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model $MODEL"
+CLAUDE_CMD="CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME=$WORKER claude --model $MODEL"
 if [ "$PERM_MODE" = "bypassPermissions" ]; then
   CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
 fi

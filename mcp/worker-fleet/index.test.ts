@@ -444,6 +444,19 @@ describe("resolveRecipient", () => {
     expect(["pane", "worker"]).toContain(result.type);
     expect(result.paneId || result.workerName || result.error).toBeTruthy();
   });
+
+  test("parent fallback error mentions mission_authority, not 'operator'", () => {
+    // When parent resolution fails (no live pane), error should NOT say 'operator'
+    const result = resolveRecipient("parent");
+    if (result.error) {
+      expect(result.error).not.toContain("operator entry");
+      expect(result.error).toContain("parent field not set");
+    }
+    // If resolved to a worker, should not be "operator" (legacy name)
+    if (result.type === "worker") {
+      expect(result.workerName).not.toBe("operator");
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

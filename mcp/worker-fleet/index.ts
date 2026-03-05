@@ -618,15 +618,19 @@ function resolveRecipient(to: string): {
         }
         return { type: "pane", error: `Parent '${parentName}' for worker '${WORKER_NAME}' has no live pane` };
       }
-      // 2. Fallback: look for "operator" entry
-      const opEntry = registry["operator"] as RegistryWorkerEntry | undefined;
-      if (opEntry?.pane_id && isPaneAlive(opEntry.pane_id)) {
-        if (existsSync(join(WORKERS_DIR, "operator"))) {
-          return { type: "worker", workerName: "operator" };
+      // 2. Fallback: use mission_authority from _config (modern equivalent of "operator")
+      const config = registry._config as RegistryConfig;
+      const authorityName = config?.mission_authority;
+      if (authorityName && authorityName !== WORKER_NAME) {
+        const authEntry = registry[authorityName] as RegistryWorkerEntry | undefined;
+        if (authEntry?.pane_id && isPaneAlive(authEntry.pane_id)) {
+          if (existsSync(join(WORKERS_DIR, authorityName))) {
+            return { type: "worker", workerName: authorityName };
+          }
+          return { type: "pane", paneId: authEntry.pane_id };
         }
-        return { type: "pane", paneId: opEntry.pane_id };
       }
-      return { type: "pane", error: `No parent found for worker '${WORKER_NAME}' (no parent field set, no operator entry)` };
+      return { type: "pane", error: `No parent found for worker '${WORKER_NAME}' (parent field not set in registry, mission_authority '${authorityName || "unset"}' has no live pane)` };
     } catch {
       return { type: "pane", error: "Failed to read registry" };
     }
@@ -2038,6 +2042,42 @@ server.registerTool(
     if (registered) parts.push(`pane registered: ${tmuxPane} (${paneTarget})`);
     if (cycles_completed !== undefined) parts.push(`cycles: ${cycles_completed}`);
     if (extra) parts.push(`custom: ${Object.keys(extra).join(", ")}`);
+
+    // ── Heartbeat linter — flag misconfiguration immediately ──────────
+    const warnings: string[] = [];
+
+    if (WORKER_NAME === "operator") {
+      warnings.push("⚠ WORKER_NAME is 'operator' (fallback) — WORKER_NAME env var was not set at launch. Your pane was registered as 'operator' which will conflict with other workers. Re-launch via launch-flat-worker.sh or set WORKER_NAME=<your-name> before starting Claude.");
+    }
+
+    if (!tmuxPane) {
+      warnings.push("⚠ TMUX_PANE not set — you are NOT registered in the fleet. Watchdog cannot monitor you, send_message will not reach you, fleet_status won't show you. Launch via launch-flat-worker.sh.");
+    } else if (!isPaneAlive(tmuxPane)) {
+      warnings.push(`⚠ TMUX_PANE=${tmuxPane} is set but the pane is not alive in tmux. Your pane ID may be stale.`);
+    }
+
+    // Check registry state
+    try {
+      const reg = readRegistry();
+      const myEntry = reg[WORKER_NAME] as RegistryWorkerEntry | undefined;
+      if (!myEntry) {
+        warnings.push(`⚠ Worker '${WORKER_NAME}' not found in registry.json — heartbeat should have created it. Check file permissions on ${REGISTRY_PATH}.`);
+      } else {
+        if (!myEntry.parent) {
+          const config = reg._config as RegistryConfig;
+          const auth = config?.mission_authority || "chief-of-staff";
+          warnings.push(`⚠ No parent set in registry for '${WORKER_NAME}'. send_message(to="parent") will fall back to mission_authority ('${auth}'). Set parent explicitly: update_state("parent", "${auth}").`);
+        }
+        if (!myEntry.pane_id) {
+          warnings.push(`⚠ No pane_id registered for '${WORKER_NAME}' — watchdog and messaging cannot reach you.`);
+        }
+      }
+    } catch {}
+
+    if (warnings.length > 0) {
+      parts.push(`\n\n${warnings.join("\n")}`);
+    }
+
     return { content: [{ type: "text" as const, text: parts.join(" | ") }] };
   }
 );
