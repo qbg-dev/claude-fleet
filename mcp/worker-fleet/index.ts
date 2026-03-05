@@ -2153,6 +2153,10 @@ interface CreateWorkerInput {
   model?: "sonnet" | "opus" | "haiku";
   perpetual?: boolean;
   sleep_duration?: number;
+  disallowed_tools?: string[];
+  window?: string;
+  parent?: string;
+  permission_mode?: string;
   taskEntries?: Array<{ subject: string; description?: string; priority?: string }>;
 }
 
@@ -2170,7 +2174,7 @@ interface CreateWorkerResult {
 
 /** Core logic for creating a worker's directory and files. Exported for testing. */
 function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
-  const { name, mission, model, perpetual, sleep_duration, taskEntries = [] } = input;
+  const { name, mission, model, perpetual, sleep_duration, disallowed_tools, window: windowGroup, parent, permission_mode, taskEntries = [] } = input;
 
   // Validate
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
@@ -2202,19 +2206,22 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
   // mission.md
   writeFileSync(join(workerDir, "mission.md"), mission.trim() + "\n");
 
-  // Config (no longer written to permissions.json — stored in registry.json)
+  // Config (stored in registry.json, not permissions.json)
   const selectedModel = model || "sonnet";
+  const defaultDisallowed = [
+    "Bash(git checkout main*)",
+    "Bash(git merge*)",
+    "Bash(git push*)",
+    "Bash(git reset --hard*)",
+    "Bash(git clean*)",
+    "Bash(rm -rf*)",
+  ];
   const permissions = {
     model: selectedModel,
-    permission_mode: "bypassPermissions",
-    disallowedTools: [
-      "Bash(git checkout main*)",
-      "Bash(git merge*)",
-      "Bash(git push*)",
-      "Bash(git reset --hard*)",
-      "Bash(git clean*)",
-      "Bash(rm -rf*)",
-    ],
+    permission_mode: permission_mode || "bypassPermissions",
+    disallowedTools: disallowed_tools ?? defaultDisallowed,
+    window: windowGroup || null,
+    parent: parent || null,
   };
 
   // State (no longer written to state.json — stored in registry.json)
@@ -2263,10 +2270,14 @@ server.registerTool(
     model: z.enum(["sonnet", "opus", "haiku"]).optional().describe("LLM model (default: sonnet)"),
     perpetual: z.boolean().optional().describe("Run in perpetual loop (default: false)"),
     sleep_duration: z.number().optional().describe("Seconds between cycles, only if perpetual (default: 1800)"),
+    disallowed_tools: z.string().optional().describe("JSON array of disallowed tool patterns (default: safe git/rm guards). Example: [\"Bash(git push*)\",\"Edit\",\"Bash(*deploy*)\"]"),
+    window: z.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers in the same group share a tiled layout."),
+    parent: z.string().optional().describe("Parent worker name (default: auto-set to calling worker)"),
+    permission_mode: z.string().optional().describe("Claude permission mode (default: bypassPermissions)"),
     launch: z.boolean().optional().describe("Auto-launch in tmux after creation (default: false)"),
     tasks: z.string().optional().describe("JSON array of tasks: [{subject, description?, priority?}]"),
   } },
-  async ({ name, mission, model, perpetual, sleep_duration, launch, tasks: tasksJson }) => {
+  async ({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, parent, permission_mode, launch, tasks: tasksJson }) => {
     try {
       // Parse tasks JSON if provided
       let taskEntries: Array<{ subject: string; description?: string; priority?: string }> = [];
@@ -2287,8 +2298,22 @@ server.registerTool(
         }
       }
 
+      // Parse disallowed_tools JSON if provided
+      let disallowedTools: string[] | undefined;
+      if (disallowedToolsJson) {
+        try {
+          const parsed = JSON.parse(disallowedToolsJson);
+          if (!Array.isArray(parsed) || !parsed.every((t: any) => typeof t === "string")) {
+            return { content: [{ type: "text" as const, text: `Error: disallowed_tools must be a JSON array of strings` }], isError: true };
+          }
+          disallowedTools = parsed;
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: `Error parsing disallowed_tools JSON: ${e.message}` }], isError: true };
+        }
+      }
+
       // Create files
-      const result = createWorkerFiles({ name, mission, model, perpetual, sleep_duration, taskEntries });
+      const result = createWorkerFiles({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, parent, permission_mode, taskEntries });
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: `Error: ${result.error}` }], isError: true };
       }
@@ -2305,8 +2330,14 @@ server.registerTool(
         entry.perpetual = state.perpetual || false;
         entry.sleep_duration = state.sleep_duration || 1800;
         entry.cycles_completed = state.cycles_completed || 0;
-        // Auto-set parent to calling worker (defaults to chief-of-staff)
-        if (!entry.parent) {
+        // Window group
+        if (permissions.window) {
+          entry.window = permissions.window;
+        }
+        // Parent: explicit param > calling worker > chief-of-staff
+        if (permissions.parent) {
+          entry.parent = permissions.parent;
+        } else if (!entry.parent) {
           entry.parent = WORKER_NAME || "chief-of-staff";
         }
       });
@@ -2318,7 +2349,11 @@ server.registerTool(
         if (!existsSync(launchScript)) {
           launchInfo = `\n  Launch: FAILED — script not found: ${launchScript}`;
         } else {
-          const launchResult = spawnSync("bash", [launchScript, name, "--project", PROJECT_ROOT], {
+          const launchArgs = [launchScript, name, "--project", PROJECT_ROOT];
+          if (permissions.window) {
+            launchArgs.push("--window", permissions.window);
+          }
+          const launchResult = spawnSync("bash", launchArgs, {
             encoding: "utf-8",
             timeout: 120_000,
             env: { ...process.env, PROJECT_ROOT },
@@ -2344,6 +2379,9 @@ server.registerTool(
         `Created worker/${name}:`,
         `  Dir: .claude/workers/${name}/`,
         `  Model: ${selectedModel} | Perpetual: ${isPerpetual}`,
+        permissions.window ? `  Window: ${permissions.window}` : null,
+        `  Parent: ${permissions.parent || WORKER_NAME || "chief-of-staff"}`,
+        permissions.disallowedTools.length > 0 ? `  Disallowed: ${permissions.disallowedTools.length} rules` : `  Disallowed: none (full access)`,
         `  Tasks: ${taskSummary}`,
         launchInfo.trim() ? `  ${launchInfo.trim()}` : null,
       ].filter(Boolean).join("\n");

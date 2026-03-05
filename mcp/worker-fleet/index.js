@@ -21213,7 +21213,7 @@ server.registerTool("check_config", { description: "Diagnose why things aren't w
   };
 });
 function createWorkerFiles(input) {
-  const { name, mission, model, perpetual, sleep_duration, taskEntries = [] } = input;
+  const { name, mission, model, perpetual, sleep_duration, disallowed_tools, window: windowGroup, parent, permission_mode, taskEntries = [] } = input;
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
     return { ok: false, error: `Name must be kebab-case (got '${name}')` };
   }
@@ -21243,17 +21243,20 @@ function createWorkerFiles(input) {
   writeFileSync(join(workerDir, "mission.md"), mission.trim() + `
 `);
   const selectedModel = model || "sonnet";
+  const defaultDisallowed = [
+    "Bash(git checkout main*)",
+    "Bash(git merge*)",
+    "Bash(git push*)",
+    "Bash(git reset --hard*)",
+    "Bash(git clean*)",
+    "Bash(rm -rf*)"
+  ];
   const permissions = {
     model: selectedModel,
-    permission_mode: "bypassPermissions",
-    disallowedTools: [
-      "Bash(git checkout main*)",
-      "Bash(git merge*)",
-      "Bash(git push*)",
-      "Bash(git reset --hard*)",
-      "Bash(git clean*)",
-      "Bash(rm -rf*)"
-    ]
+    permission_mode: permission_mode || "bypassPermissions",
+    disallowedTools: disallowed_tools ?? defaultDisallowed,
+    window: windowGroup || null,
+    parent: parent || null
   };
   const isPerpetual = perpetual || false;
   const state = {
@@ -21295,9 +21298,13 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
   model: exports_external.enum(["sonnet", "opus", "haiku"]).optional().describe("LLM model (default: sonnet)"),
   perpetual: exports_external.boolean().optional().describe("Run in perpetual loop (default: false)"),
   sleep_duration: exports_external.number().optional().describe("Seconds between cycles, only if perpetual (default: 1800)"),
+  disallowed_tools: exports_external.string().optional().describe('JSON array of disallowed tool patterns (default: safe git/rm guards). Example: ["Bash(git push*)","Edit","Bash(*deploy*)"]'),
+  window: exports_external.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers in the same group share a tiled layout."),
+  parent: exports_external.string().optional().describe("Parent worker name (default: auto-set to calling worker)"),
+  permission_mode: exports_external.string().optional().describe("Claude permission mode (default: bypassPermissions)"),
   launch: exports_external.boolean().optional().describe("Auto-launch in tmux after creation (default: false)"),
   tasks: exports_external.string().optional().describe("JSON array of tasks: [{subject, description?, priority?}]")
-} }, async ({ name, mission, model, perpetual, sleep_duration, launch, tasks: tasksJson }) => {
+} }, async ({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, parent, permission_mode, launch, tasks: tasksJson }) => {
   try {
     let taskEntries = [];
     if (tasksJson) {
@@ -21316,7 +21323,19 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
         return { content: [{ type: "text", text: `Error parsing tasks JSON: ${e.message}` }], isError: true };
       }
     }
-    const result = createWorkerFiles({ name, mission, model, perpetual, sleep_duration, taskEntries });
+    let disallowedTools;
+    if (disallowedToolsJson) {
+      try {
+        const parsed = JSON.parse(disallowedToolsJson);
+        if (!Array.isArray(parsed) || !parsed.every((t) => typeof t === "string")) {
+          return { content: [{ type: "text", text: `Error: disallowed_tools must be a JSON array of strings` }], isError: true };
+        }
+        disallowedTools = parsed;
+      } catch (e) {
+        return { content: [{ type: "text", text: `Error parsing disallowed_tools JSON: ${e.message}` }], isError: true };
+      }
+    }
+    const result = createWorkerFiles({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, parent, permission_mode, taskEntries });
     if (!result.ok) {
       return { content: [{ type: "text", text: `Error: ${result.error}` }], isError: true };
     }
@@ -21331,7 +21350,12 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
       entry.perpetual = state.perpetual || false;
       entry.sleep_duration = state.sleep_duration || 1800;
       entry.cycles_completed = state.cycles_completed || 0;
-      if (!entry.parent) {
+      if (permissions.window) {
+        entry.window = permissions.window;
+      }
+      if (permissions.parent) {
+        entry.parent = permissions.parent;
+      } else if (!entry.parent) {
         entry.parent = WORKER_NAME || "chief-of-staff";
       }
     });
@@ -21342,7 +21366,11 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
         launchInfo = `
   Launch: FAILED \u2014 script not found: ${launchScript}`;
       } else {
-        const launchResult = spawnSync("bash", [launchScript, name, "--project", PROJECT_ROOT], {
+        const launchArgs = [launchScript, name, "--project", PROJECT_ROOT];
+        if (permissions.window) {
+          launchArgs.push("--window", permissions.window);
+        }
+        const launchResult = spawnSync("bash", launchArgs, {
           encoding: "utf-8",
           timeout: 120000,
           env: { ...process.env, PROJECT_ROOT }
@@ -21366,6 +21394,9 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
       `Created worker/${name}:`,
       `  Dir: .claude/workers/${name}/`,
       `  Model: ${selectedModel} | Perpetual: ${isPerpetual}`,
+      permissions.window ? `  Window: ${permissions.window}` : null,
+      `  Parent: ${permissions.parent || WORKER_NAME || "chief-of-staff"}`,
+      permissions.disallowedTools.length > 0 ? `  Disallowed: ${permissions.disallowedTools.length} rules` : `  Disallowed: none (full access)`,
       `  Tasks: ${taskSummary}`,
       launchInfo.trim() ? `  ${launchInfo.trim()}` : null
     ].filter(Boolean).join(`
