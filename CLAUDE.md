@@ -1,81 +1,66 @@
-# ~/.boring — Development Guide
+# claude-ops — Development Guide
 
-This is the agent operations infrastructure. Everything here is shared across all projects and harnesses. See `README.md` for the directory map.
+Agent fleet infrastructure for Claude Code. See `README.md` for full architecture.
 
 ## Key Concepts
 
-**Harness**: A disposable task graph that an agent evolves through. Has a manifest, progress file, and optional waves.
+**Worker**: A Claude Code session running in a tmux pane, on its own git worktree, with a mission file defining what it does. Configured in `{project}/.claude/workers/registry.json`.
 
-**Manifest** (`harness/manifests/{name}/manifest.json`): Registry entry for a harness. Contains:
-- `harness` — unique name (kebab-case)
-- `project_root` — absolute path to the project
-- `status` — `"active"` or `"done"`
-- `files.progress` — relative path (from project_root) to the progress.json file
-- `files.*` — other harness files (harness_md, best_practices, context_injections, goal, journal)
-- `reports_dir` — optional, where wave reports are written
+**Registry** (`{project}/.claude/workers/registry.json`): Single source of truth for all workers in a project. Contains `_config` (project-level settings) + one entry per worker (model, permissions, status, branch, tmux pane, cycle count, custom metrics).
 
-**Progress file** (`files.progress` in manifest): The canonical state of the harness. Standard schema:
-```json
-{
-  "harness": "name",
-  "mission": "What this harness accomplishes",
-  "status": "active",
-  "tasks": { "task-id": { "status": "pending|in_progress|completed", "description": "...", "steps": [], "completed_steps": [], "blockedBy": [], "owner": null, "metadata": {} } },
-  "waves": [{ "id": 1, "name": "...", "tasks": ["task-id"], "status": "completed" }],
-  "learnings": [{ "id": "...", "text": "..." }],
-  "commits": [],
-  "state": {}
-}
+**Mission** (`{project}/.claude/workers/{name}/mission.md`): The worker's prompt. Defines cycle protocol, sleep schedule, reporting rules, and self-examination (三省吾身).
+
+**Worker Fleet MCP** (`mcp/worker-fleet/index.ts`): TypeScript MCP server providing 14 tools for inter-worker messaging, state management, task tracking, and fleet status. Loaded via `.mcp.json` in each project.
+
+**Watchdog** (`scripts/harness-watchdog.sh`): launchd daemon that detects stuck/crashed workers and respawns them. Three-layer stuck detection: (running) guard → scrollback hash diff → known blocking patterns.
+
+## Directory Structure
+
 ```
-
-Two file location conventions exist:
-- **Newer**: `.claude/harness/{name}/progress.json` (co-located with harness files)
-- **Older**: `claude_files/{name}-progress.json` (flat in claude_files)
-
-Both work because the manifest records the exact relative path. The scaffold uses the newer convention.
+~/.claude-ops/
+├── mcp/
+│   ├── worker-fleet/        # MCP server (14 tools, ~2400 lines TS)
+│   │   ├── index.ts         # Source
+│   │   └── index.js         # Built (bun build --target=node)
+│   └── relay-server/        # Cross-machine relay
+├── scripts/                 # Launch, watchdog, hooks, utilities
+├── hooks/                   # Claude Code hooks (PreToolUse, PostToolUse, Stop)
+├── lib/                     # Shared shell libraries
+├── bus/                     # Event bus state + side-effects
+├── state/                   # Runtime state (watchdog logs, crash counts)
+└── tests/                   # Test suite
+```
 
 ## Development Workflows
 
-### Creating a new harness
+### Adding a script
+Put in `scripts/`. Make it project-agnostic (use `PROJECT_ROOT` env var or `git rev-parse --show-toplevel`). The launch script copies project-local hooks first, falls back to upstream.
+
+### Modifying the MCP server
+Edit `mcp/worker-fleet/index.ts`, then rebuild:
 ```bash
-bash ~/.boring/scripts/scaffold.sh my-feature /path/to/project
+cd ~/.claude-ops/mcp/worker-fleet
+bun build index.ts --target=node --outfile=index.js
 ```
-This creates the manifest, progress.json (from template), harness.md, start/seed/continue scripts, and registers it.
 
 ### Running tests
 ```bash
-bash ~/.boring/tests/run-all.sh
-```
-
-### Control Plane
-K8s-inspired daemon that monitors agent health, runs sweeps, and reconciles state.
-```bash
-nohup bash ~/.boring/scripts/control-plane.sh &  # start
-bash ~/.boring/scripts/control-plane.sh --stop    # stop
-cat ~/.boring/state/health.json | jq .              # status
-```
-
-### Monitor Agent
-Polls a target tmux pane, detects stuck agents, sends nudges.
-```bash
-bash ~/.boring/scripts/monitor-agent.sh --pane <monitor-pane> <target-pane> [interval] [mission]
+bash ~/.claude-ops/tests/run-all.sh
 ```
 
 ## Code Conventions
 
-- **Shell scripts**: Source `lib/harness-jq.sh` for task graph queries. Use `locked_jq_write` for atomic JSON updates.
-- **Tests**: Shell tests in `tests/` use `helpers.sh` for fixtures.
-- **Hooks**: Admission hooks run before tool calls, operator hooks run after. Both live in `hooks/`.
-- **Sweeps**: Modular cron scripts in `sweeps.d/`, each with its own interval and RBAC manifest in `sweeps.d/permissions/`.
+- Shell scripts: `set -euo pipefail`. Use `jq` for JSON. Lock registry with `mkdir`-based locks.
+- MCP server: TypeScript with Zod schemas. Identity from `WORKER_NAME` env or git branch.
+- Hooks: admission hooks (PreToolUse) inject context, publisher hooks (PostToolUse) emit events, gates (Stop) control lifecycle.
+- tmux: Never use literal `Enter` — always `tmux send-keys -H 0d`. Never `tmux display-message -p '#{pane_id}'` (returns focused pane, not current).
 
 ## File Ownership
 
-| Location | Owned by | Persists across |
-|----------|----------|-----------------|
-| `~/.boring/` | Infrastructure (this repo) | All projects, all sessions |
-| `{project}/claude_files/` | Project state | Project lifetime |
-| `{project}/.claude/harness/` | Harness files (newer convention) | Harness lifetime |
-| `~/.boring/state/sessions/` | Per-session runtime state | Session lifetime (GC'd after 24h) |
-| `~/.boring/state/harness-runtime/` | Per-harness runtime flags | Until harness deregistered |
-| `~/.boring/state/pane-registry.json` | Consolidated pane metadata | Pruned when panes die |
-| `~/.boring/harness/manifests/` | Harness registry | Until deregistered |
+| Location | Owned by | Purpose |
+|----------|----------|---------|
+| `~/.claude-ops/` | This repo (upstream infra) | Shared across all projects |
+| `{project}/.claude/workers/` | Project | Worker config, missions, inboxes |
+| `{project}/.mcp.json` | Project | Wires MCP server into Claude sessions |
+| `~/.claude-ops/state/` | Runtime | Watchdog logs, crash counts, scrollback hashes |
+| `~/.claude/projects/{slug}/memory/` | Claude Code auto-memory | Per-worktree persistent memory |

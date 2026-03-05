@@ -1,238 +1,229 @@
-# boring — Agent Harness Infrastructure for Claude Code
+# claude-ops — Worker Fleet Infrastructure for Claude Code
 
-[![Tests](https://github.com/qbg-dev/boring/actions/workflows/ci.yml/badge.svg)](https://github.com/qbg-dev/boring/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+Infrastructure layer for running autonomous Claude Code agent fleets. Turns Claude sessions into persistent, recoverable workers with their own missions, permissions, and memory. Uses Claude Code's native hooks, settings, MCP, and session model.
 
-**boring** is an infrastructure layer for Claude Code. It turns Claude sessions into persistent, recoverable agents, wires them together for multi-agent coordination, and decouples each agent's identity from the session owner—so an agent running inside your Claude Code environment carries its own mission, access policy, and knowledge scope, independent of your personal context. It uses Claude Code's native hooks, settings, and session model. It is inspired by gastown: [TODO, add link,] but is more boring.
+## Core Idea
 
-In **boring**, every agent is either a **coordinator** or a **worker**. Coordinators manage task graphs and delegate to workers. Workers claim tasks, execute them, and report back through an **event bus**. Every tool call flows through Claude Code hooks that log events, inject context, and keep agents on task. A **watchdog** respawns agents after graceful stops or crashes. You can interrupt at any point, steer the agent with a message, and it picks up where it left off.
-
-**Flat workers** are a simpler alternative: independent Claude sessions with their own tmux windows, git worktrees, and `mission.md`—no module-manager layer required. Three typed templates make it easy to spin up the right kind of agent:
-
-| Type | Access | Lifecycle | Use case |
-|------|--------|-----------|----------|
-| **implementer** | Full read-write | One-shot | Features, bug fixes |
-| **monitor** | Read-only | Perpetual | Production observation, anomaly detection |
-| **coordinator** | Full + git merge/push | Perpetual | Branch merges, prod deploys, triage |
-
-Monitor workers report findings to the coordinator (chief-of-staff) rather than fixing them, preserving a clean read-only boundary. New flat workers must pass a **Phase 0 vision gate**—creating a `vision.html` artifact showing Before/After, approach, and acceptance criteria—before beginning implementation.
-
-Every Claude session running under boring is registered in `pane-registry.json`—a live map of who is running, in which tmux pane, with which harness. Coordinators and workers can be composed at arbitrary depth; in practice the pattern is one **central coordinator** per repo with one **module-manager** per workstream, each owning its own task graph:
+Each worker is a Claude Code session running in a tmux pane, on its own git worktree, with its own branch. Workers are configured by a `registry.json` + `mission.md` in the project repo. This repo provides the upstream infrastructure: launch scripts, watchdog, MCP server, hooks.
 
 ```
-central-coordinator
-├── module-manager/auth    tasks: [jwt, sessions, ...]
-├── module-manager/api     tasks: [routes, validation, ...]
-└── module-manager/infra   tasks: [deploy, monitoring, ...]
+~/.claude-ops/                    (this repo — project-agnostic infrastructure)
+  scripts/launch-flat-worker.sh   Launch a worker (worktree + tmux + Claude)
+  scripts/harness-watchdog.sh     Daemon: detect stuck/crashed, respawn
+  mcp/worker-fleet/index.ts       MCP server (14 tools for messaging, state, fleet)
+  mcp/relay-server/index.ts       Cross-machine relay for remote workers
+
+{project}/                        (project-specific config)
+  .claude/workers/registry.json   Single source of truth for all workers
+  .claude/workers/{name}/
+    mission.md                    What this worker does
+    inbox.jsonl                   Incoming messages (durable)
+  .mcp.json                      Wires worker-fleet MCP into Claude sessions
 ```
 
-**Hooks** instrument every tool call and session boundary—logging events to the bus, injecting context, and enforcing permissions.
+## How to Launch a Worker
 
-- **PreToolUse** — injects inbox messages, policy rules, and phase state as context before each tool call
-- **PostToolUse** — publishes every tool call and file edit to the event bus
-- **Stop** — blocks the session while tasks remain; writes a graceful-stop sentinel for long-running agents; the watchdog reads this sentinel to respawn
-- **Permissions** — each agent carries a `permissions.json` listing disallowed tools; the hook enforces it at call time
-
-**The event bus** (`bus/stream.jsonl`) is an append-only JSONL log. Every tool call, message, and lifecycle event lands here. Side-effects in `bus/schema.json` wire event types to behaviors: `cell-message` delivers to the recipient's inbox and records in the sender's outbox; `notification` fires a terminal alert; `worker.regression` notifies the coordinator.
-
-**Each agent has four things and nothing more:**
-
-```
-agents/module-manager/
-├── MEMORY.md           # persistent knowledge across sessions
-├── mission.md          # scope, constraints, escalation path
-├── inbox.jsonl         # messages received from other agents
-├── outbox.jsonl        # messages sent to other agents
-├── config.json         # model, rotation command
-└── permissions.json    # disallowed tools for this agent
-```
-
-`mission.md` defines what the agent is and what it's allowed to do; `permissions.json` enforces which tools and paths it can reach. Two agents under the same Claude Code installation can have entirely different identities, knowledge scopes, and access policies—one can post to a public API with no access to your personal context, while another has full access to your codebase. The session owner's global context (e.g. `~/.claude/CLAUDE.md`) is loaded at startup, but sensitive data can be moved to a blocked path (e.g. `~/.claude/sensitive/`) so agents that shouldn't have it can't reach it via the Read tool.
-
-A **harness** wraps the agent with its task graph and shared context:
-
-```
-.claude/harness/{name}/
-├── tasks.json          # task graph — pending / in_progress / completed
-├── harness.md          # terrain map: key files, conventions, scope
-├── acceptance.md       # pass/fail criteria
-└── agents/
-    └── module-manager/ # the agent owning this harness
-```
-
-## Quick Start
+### 1. Create worker directory and mission
 
 ```bash
-# 1. Install
-curl -fsSL https://raw.githubusercontent.com/qbg-dev/boring/main/install.sh | bash
+mkdir -p .claude/workers/my-worker
+cat > .claude/workers/my-worker/mission.md << 'EOF'
+# my-worker — What It Does
 
-# 2. Scaffold a harness in your project
-bash ~/.boring/scripts/scaffold.sh my-feature /path/to/project
+## Mission
+Describe what this agent does each cycle.
 
-# 3. Edit the task graph
-$EDITOR /path/to/project/.claude/harness/my-feature/tasks.json
-
-# 4. Generate a seed prompt and launch
-bash /path/to/project/.claude/scripts/my-feature-seed.sh > /tmp/seed.txt
-cat /tmp/seed.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6
-
-# 5. Check status
-bash ~/.boring/scripts/harness-watchdog.sh --status
+## Cycle Protocol
+1. Step one
+2. Step two
+3. Commit, request merge, sleep
+EOF
 ```
 
-## tmux Layout
+### 2. Add to registry
 
-Each agent role maps to a tmux primitive. Module-managers get **windows**; their workers get **panes** within that window. This is enforced structurally—the two launch paths use different tmux commands:
-
-- `harness-launch.sh` (module-manager): `tmux new-window -d -t "${TMUX_SESSION}:" -n "$HARNESS"`
-- `worker-dispatch.sh` (worker): `tmux split-window -v -d -t "h:${MODULE}"`
-
-The result is a natural visual hierarchy:
-
-```
-tmux session "h"
-├── window 0 "mod-platform"           module-manager (%539)
-│   ├── pane 0: manager
-│   ├── pane 1: worker auth-handler
-│   └── pane 2: worker api-routes
-├── window 1 "mod-tenant"             module-manager (%501)
-│   ├── pane 0: manager
-│   └── pane 1: worker migration
-└── window 2 "hq-v3"                  coordinator (%534)
-    ├── pane 0: coordinator
-    └── pane 1: monitor (horizontal split)
-```
-
-`pane-registry.json` tracks the hierarchy with `agent_role` and `parent` fields, so the watchdog and hooks always know which manager owns which worker:
-
-```json
+```jsonc
+// .claude/workers/registry.json
 {
-  "%539": {
-    "harness": "mod-platform",
-    "agent_role": "module-manager",
-    "pane_target": "h:0.0"
+  "_config": {
+    "commit_notify": ["merger"],
+    "merge_authority": "merger",
+    "tmux_session": "w",
+    "project_name": "my-project"
   },
-  "%540": {
-    "harness": "auth-handler",
-    "agent_role": "worker",
-    "parent": "mod-platform",
-    "pane_target": "h:0.1"
+  "my-worker": {
+    "model": "sonnet",                    // or "opus"
+    "permission_mode": "bypassPermissions",
+    "disallowed_tools": [                 // safety sandbox
+      "Bash(git push*)",
+      "Bash(rm -rf*)",
+      "Bash(*deploy-prod*)"
+    ],
+    "status": "idle",
+    "perpetual": true,                    // sleep/wake forever
+    "sleep_duration": 3600,               // seconds between cycles
+    "branch": "worker/my-worker",
+    "window": "workers",                  // tmux window group
+    "parent": "chief-of-staff"
   }
 }
 ```
 
-Workers run in isolated git worktrees to avoid `.git/index.lock` contention. Monitors use horizontal splits (`-h`) to sit alongside the pane they observe.
+### 3. Set up .mcp.json
 
-## Human Control
-
-boring is designed for collaborative workflows where you stay in control:
-
-- **Interrupt any time**: type in the tmux pane; the agent reads and adapts
-- **Send a message**: `hq_send` delivers to the agent's inbox; PreToolUse injects it on the next tool call
-- **Edit the task graph**: plain JSON—add, remove, or reprioritize tasks mid-session
-- **Override the stop gate**: `touch ~/.boring/state/sessions/{id}/allow-stop`
-
-Agents working through a task graph are organized into **waves**—sequential batches of tasks where all tasks in wave N must be completed and reviewed before wave N+1 begins. At each wave boundary, the system enforces a **wave gate**: a synthetic task injected into the dependency graph that blocks the next wave's tasks until the gate is satisfied.
-
-The gate requires the agent to:
-
-1. Commit the wave's work with a conventional message
-2. Deploy and inspect every feature in Chrome
-3. Take screenshots
-4. Generate a self-contained HTML **wave report** from a starter template
-5. Open the report and notify the operator
-6. Wait for human confirmation before proceeding
-
-Enforcement happens at three levels. The **dependency graph** prevents the agent from picking up next-wave tasks (they're `blockedBy` the gate task). The **Stop hook** prevents the agent from quitting while tasks remain. And **content validation** checks that the report HTML exists on disk and contains required sections (Summary, Tasks Completed, etc.)—the agent can't mark the gate done without a real artifact.
-
-Wave reports live at `~/.boring/harness/reports/{harness}/wave-{N}.html` and serve as the permanent audit trail of what each agent did, when, and what it looked like.
-
-## Directory Structure
-
-```
-~/.boring/
-├── bin/                  # CLI tools (claude-mux, report-issue, ...)
-├── bus/                  # Event bus state (stream.jsonl, schema.json, cursors/)
-│   └── side-effects/     # Pluggable side-effect scripts
-├── harness/
-│   └── manifests/        # Per-harness registry (manifest.json)
-├── hooks/
-│   ├── dispatch/         # Stop hook modules
-│   ├── gates/            # Stop gate + tool policy enforcement
-│   ├── interceptors/     # PreToolUse context injection
-│   ├── operators/        # PostToolUse checks (no-mock-data, etc.)
-│   └── publishers/       # PostToolUse + prompt event publishers
-├── lib/                  # Shared libraries (harness-jq.sh, event-bus.sh, ...)
-├── scripts/              # CLI scripts (scaffold.sh, watchdog, monitor, ...)
-├── sweeps.d/             # Cron-style maintenance sweeps
-├── templates/            # Scaffold templates (.tmpl files)
-│   └── flat-worker/
-│       └── types/        # Agent type templates (implementer, monitor, coordinator)
-├── tests/                # Test suite
-
-```
-
-## Manual Installation
-
-```bash
-git clone git@github.com:qbg-dev/boring.git ~/.boring
-```
-
-Add hooks to your Claude Code `settings.json` (`~/.claude/settings.json`):
-
-```json
+```jsonc
+// .mcp.json (project root — gives workers fleet communication tools)
 {
-  "hooks": {
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.boring/hooks/interceptors/pre-tool-context-injector.sh"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.boring/hooks/publishers/post-tool-publisher.sh"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.boring/hooks/gates/stop-harness-dispatch.sh"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.boring/hooks/publishers/prompt-publisher.sh"
-          }
-        ]
-      }
-    ]
+  "mcpServers": {
+    "worker-fleet": {
+      "command": "/path/to/bun",
+      "args": ["run", "/path/to/.claude-ops/mcp/worker-fleet/index.ts"],
+      "env": { "PROJECT_ROOT": "/path/to/project" }
+    }
   }
 }
 ```
 
-## Running Tests
+### 4. Launch
 
 ```bash
-bash ~/.boring/tests/run-all.sh
+bash ~/.claude-ops/scripts/launch-flat-worker.sh my-worker
+```
+
+This:
+1. Creates git worktree `../my-project-w-my-worker/` on branch `worker/my-worker`
+2. Copies `.mcp.json` into worktree
+3. Installs git hooks (post-commit notifies merger, commit-msg adds Worker: trailers)
+4. Creates/joins tmux window group, splits pane
+5. Starts Claude Code with permission sandboxing
+6. Generates and injects seed prompt
+7. Registers pane in `registry.json`
+
+## Architecture
+
+### tmux as the Substrate
+
+All workers live in one tmux session, organized by window groups:
+
+```
+Session: w
+  Window: main        → chief-of-staff, merger, patrol
+  Window: optimizers  → bi-optimizer, kefu-optimizer, sql-library-builder
+  Window: monitors    → infra-monitor, auth-monitor
+```
+
+Workers in the same window share a tiled layout. Watchdog monitors all panes from a single daemon.
+
+### Worker Fleet MCP Server
+
+14 tools in 5 categories, loaded via `.mcp.json`:
+
+| Category | Tools |
+|----------|-------|
+| **Messaging** | `send_message` (to worker, "parent", "children", "all"), `read_inbox` |
+| **Tasks** | `create_task`, `update_task`, `list_tasks` |
+| **State** | `get_worker_state`, `update_state` |
+| **Fleet** | `fleet_status` |
+| **Lifecycle** | `recycle`, `spawn_child`, `heartbeat`, `check_config`, `create_worker` |
+
+Identity auto-detected from `WORKER_NAME` env or git branch name.
+
+Messaging is durable: writes to `inbox.jsonl` first (survives restarts), then delivers via tmux (instant).
+
+### Memory Through Worktrees
+
+Each worker's git worktree has a different filesystem path, so Claude Code's auto-memory (`~/.claude/projects/{path-slug}/memory/`) gives each one isolated persistent memory automatically:
+
+```
+Worker: bi-optimizer
+  Worktree: project-w-bi-optimizer/
+  Memory:   ~/.claude/projects/-...-project-w-bi-optimizer/memory/MEMORY.md
+
+Worker: patrol
+  Worktree: project-w-patrol/
+  Memory:   ~/.claude/projects/-...-project-w-patrol/memory/MEMORY.md
+```
+
+Workers accumulate domain knowledge across cycles. By cycle 50, they have deep operational knowledge a fresh session wouldn't have.
+
+### Watchdog
+
+`harness-watchdog.sh` runs as a launchd daemon, checking every 30 seconds:
+
+| State | Detection | Action |
+|-------|-----------|--------|
+| Active | `(running)` in statusline | Skip |
+| Idle >10min | Scrollback hash unchanged | Resume session |
+| Stuck | Tool-call timestamp stale | Kill + respawn |
+| Dead pane | Pane missing from tmux | Re-split + relaunch |
+| Crash-loop | >3 crashes/hour | Stop, notify human |
+
+Three-layer stuck detection:
+1. `(running)` guard — skip if executing bash
+2. Scrollback hash diff — `md5(last 30 lines)` vs previous check
+3. Known blocking patterns — `"Waiting for task"`, `"hook error"`
+
+### Permission Sandboxing
+
+Workers get `--disallowed-tools` from registry. Examples:
+
+- **Read-only observer**: `disallowed_tools: ["Edit", "Write", "Bash(git commit*)"]`
+- **No deploy**: `disallowed_tools: ["Bash(*deploy-prod*)", "Bash(*deploy.sh*)"]`
+- **Standard worker**: `disallowed_tools: ["Bash(git push*)", "Bash(rm -rf*)", "Bash(git reset --hard*)"]`
+
+### Cross-Machine Relay
+
+`mcp/relay-server/index.ts` bridges messaging between machines (e.g., laptop + Mac Mini over Tailscale). Workers call `send_message()` normally; the MCP server routes through the relay if the recipient is remote.
+
+## Worker Types
+
+| Type | Lifecycle | Access | Example |
+|------|-----------|--------|---------|
+| **Implementer** | Cycles with sleep | Read-write, commit | bi-optimizer, kefu-optimizer |
+| **Observer** | Perpetual, short cycles | Read-only | patrol (visual QA), auth-monitor |
+| **Coordinator** | Perpetual, short cycles | Read + message routing | chief-of-staff |
+| **Merger** | Perpetual, event-driven | Full (merge + deploy) | merger |
+| **One-shot** | Runs once | Read-write | miniapp-audit, finance-fix |
+
+## Governance Model
+
+1. **Workers commit** on their own branches but **never push or merge**
+2. **Merger** is the only agent that merges to main and deploys
+3. Workers request merges via `send_message("merger", ...)`
+4. **Chief-of-staff** reviews fleet health every 15 min, edits worker missions
+5. **Eval-driven**: workers have acceptance criteria (eval scripts) and optimize autonomously
+6. **Git history is the audit trail**: every commit has `Worker:` and `Cycle:` trailers
+
+## Scripts Reference
+
+| Script | Purpose |
+|--------|---------|
+| `launch-flat-worker.sh` | Launch a worker (worktree + tmux + Claude) |
+| `harness-watchdog.sh` | Daemon: detect stuck/crashed, respawn |
+| `worker-status.sh` | Show table of all workers from registry |
+| `register-pane.sh` | Self-register tmux pane into registry |
+| `request-merge.sh` | Request merge from merger worker |
+| `json-union-merge.sh` | Merge registry.json across branches |
+| `worker-post-commit-hook.sh` | Git hook: notify merger, update registry |
+| `worker-commit-msg-hook.sh` | Git hook: add Worker:/Cycle: trailers |
+| `worker-post-merge-hook.sh` | Git hook: notify workers of merge |
+| `check-flat-workers.sh` | Fleet health check |
+| `fleet-health.sh` | Quick fleet health summary |
+| `launch-main-window.sh` | Set up the initial tmux session |
+
+## Setup
+
+```bash
+# Clone
+git clone git@github.com:qbg-dev/claude-ops.git ~/.claude-ops
+
+# Install MCP dependencies
+cd ~/.claude-ops/mcp/worker-fleet && bun install
+
+# Set up watchdog (macOS)
+# See scripts/harness-watchdog.sh header for launchd plist
 ```
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0
