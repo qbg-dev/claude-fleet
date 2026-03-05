@@ -2,8 +2,8 @@
 # post-merge hook: notify worker to rebase after their branch is merged into main
 # Only fires for worker/* branch merges. Finds the worker's tmux pane and sends a message.
 #
-# Installed by launch-flat-worker.sh into .git/hooks/post-merge (main repo).
-# Projects can override with .claude/hooks/git/post-merge.
+# Install: git config core.hooksPath .claude/hooks/git
+# Or:      ln -sf ../../.claude/hooks/git/post-merge .git/hooks/post-merge
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
 # Extract the merged branch name from the merge commit message
 MERGE_MSG=$(git log -1 --format='%s' HEAD)
-WORKER_BRANCH=$(echo "$MERGE_MSG" | grep -oP "worker/[a-zA-Z0-9_-]+" | head -1) || true
+WORKER_BRANCH=$(echo "$MERGE_MSG" | sed -n 's/.*\(worker\/[a-zA-Z0-9_-]*\).*/\1/p' | head -1) || true
 [ -z "$WORKER_BRANCH" ] && exit 0
 
 WORKER_NAME="${WORKER_BRANCH#worker/}"
