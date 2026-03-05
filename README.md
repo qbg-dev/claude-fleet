@@ -40,7 +40,9 @@ Describe what this agent does each cycle.
 EOF
 ```
 
-### 2. Add to registry
+### 2. Add to registry (manual) OR use `create_worker` MCP tool (automated)
+
+**Option A — Manual** (edit `registry.json` directly):
 
 ```jsonc
 // .claude/workers/registry.json
@@ -68,6 +70,39 @@ EOF
   }
 }
 ```
+
+**Option B — `create_worker` MCP tool** (from any running worker, e.g. chief-of-staff):
+
+```
+create_worker(
+  name: "my-worker",
+  mission: "# my-worker\n\n## Mission\n...",
+  model: "opus",
+  perpetual: true,
+  sleep_duration: 3600,
+  disallowed_tools: '["Bash(git push*)","Bash(rm -rf*)","Bash(*deploy*)"]',
+  window: "optimizers",
+  parent: "chief-of-staff",
+  launch: true,
+  tasks: '[{"subject":"Fix the thing","priority":"high"}]'
+)
+```
+
+This creates the worker directory, mission.md, pre-creates auto-memory, registers in registry.json (atomic locked write), and optionally launches in tmux — all in one call.
+
+| Parameter | Type | Default | What it sets |
+|-----------|------|---------|-------------|
+| `name` | string | required | Worker name (kebab-case) |
+| `mission` | string | required | Full mission.md content |
+| `model` | enum | `"sonnet"` | LLM model |
+| `perpetual` | bool | `false` | Sleep/wake vs one-shot |
+| `sleep_duration` | number | `1800` | Seconds between cycles |
+| `disallowed_tools` | JSON string | safe git/rm guards | Tool permission sandbox |
+| `window` | string | worker name | tmux window group |
+| `parent` | string | calling worker | Parent in hierarchy |
+| `permission_mode` | string | `"bypassPermissions"` | Claude permission mode |
+| `launch` | bool | `false` | Auto-start in tmux |
+| `tasks` | JSON string | none | Initial task list |
 
 ### 3. Set up .mcp.json
 
