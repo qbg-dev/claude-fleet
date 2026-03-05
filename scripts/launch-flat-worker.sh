@@ -146,10 +146,16 @@ if [ -f "$COMMIT_MSG_SRC" ]; then
   chmod +x "$HOOKS_DIR/commit-msg"
 fi
 
-# Seed file (shared template)
-source "${HOME}/.claude-ops/lib/worker-seed.sh"
+# Seed file (generated via bun from TS single source of truth)
 SEED_FILE="/tmp/worker-${WORKER}-seed.txt"
-generate_worker_seed "$WORKER" "$WORKER_DIR" "$WORKTREE_DIR" "$BRANCH" "$PROJECT_ROOT" > "$SEED_FILE"
+_CLAUDE_OPS="${HOME}/.claude-ops"
+WORKER_NAME="$WORKER" PROJECT_ROOT="$PROJECT_ROOT" \
+  "${HOME}/.bun/bin/bun" -e "
+    const { generateSeedContent } = await import('${_CLAUDE_OPS}/mcp/worker-fleet/index.ts');
+    process.stdout.write(generateSeedContent());
+  " > "$SEED_FILE" 2>/dev/null || {
+  echo "You are worker $WORKER. Read mission.md, then start your next cycle." > "$SEED_FILE"
+}
 
 # Create or join tmux window based on WINDOW_GROUP
 if [ "$CREATED_SESSION" -eq 1 ]; then

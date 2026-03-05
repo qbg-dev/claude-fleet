@@ -534,6 +534,17 @@ describe("generateSeedContent", () => {
     expect(inboxIdx).toBeGreaterThan(-1);
     expect(hbIdx).toBeLessThan(inboxIdx);
   });
+
+  test("does not reference {workerDir}/MEMORY.md — memory is auto-loaded", () => {
+    const seed = generateSeedContent();
+    expect(seed).not.toContain("MEMORY.md — what you learned");
+    expect(seed).toContain("auto-loaded");
+  });
+
+  test("tells workers to check scripts dir", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain(".claude/scripts/");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -966,6 +977,8 @@ describe("createWorkerFiles", () => {
     // These should NOT be created anymore (data is in registry.json)
     expect(existsSync(join(testDir, "state.json"))).toBe(false);
     expect(existsSync(join(testDir, "permissions.json"))).toBe(false);
+    // MEMORY.md should NOT be in .claude/workers/ (lives in auto-memory path now)
+    expect(existsSync(join(testDir, "MEMORY.md"))).toBe(false);
   });
 
   test("mission.md contains the provided content", () => {

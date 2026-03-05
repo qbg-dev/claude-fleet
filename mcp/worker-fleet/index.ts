@@ -23,7 +23,7 @@ import { z } from "zod";
 import {
   readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync,
   readdirSync, openSync, fstatSync, statSync, readSync, closeSync, truncateSync,
-  symlinkSync, lstatSync,
+  lstatSync, rmSync,
 } from "fs";
 import { join, basename } from "path";
 import { execSync, spawnSync, spawn, type ChildProcess } from "child_process";
@@ -756,9 +756,10 @@ Worker config: ${workerDir}/
 Read these files NOW in this order:
 1. ${workerDir}/mission.md — your goals and tasks
 2. Call \`get_worker_state()\` — your current cycle count and status (stored in registry.json)
-3. ${workerDir}/MEMORY.md — what you learned in previous cycles
+3. Check \`.claude/scripts/${WORKER_NAME}/\` for existing scripts
 
-Then begin your cycle immediately.
+Your MEMORY.md is auto-loaded by Claude (see "persistent auto memory directory" in your context).
+Use Edit/Write to update it directly at that path. Then begin your cycle immediately.
 
 ## Cycle Pattern
 
@@ -804,8 +805,8 @@ These are native MCP tool calls — no bash wrappers needed.
 
 Each cycle: **Observe → Decide → Act → Measure → Adapt** — you're an LLM, not a cron job. Adapt.
 
-- **Save learnings**: Update MEMORY.md using your file tools (Edit/Write). Path: \`${workerDir}/MEMORY.md\`
-- **Scripts first**: Before writing inline commands, check \`.claude/scripts/${WORKER_NAME}/\` for existing scripts to reuse. If you do something twice, save it as a script there. Scripts persist across recycles; one-off bash commands don't.
+- **Save learnings**: Edit your MEMORY.md (auto-loaded path — see "persistent auto memory directory" in your context). Claude picks it up next session automatically.
+- **Scripts first**: Check \`.claude/scripts/${WORKER_NAME}/\` before writing inline bash. If you do something twice, save it as a script there. Scripts persist across recycles; one-off bash commands don't.
 - **Adapt sleep**: Call \`update_state("sleep_duration", N)\` to tune your cycle interval.
 - **Discover new work**: Read server logs, other workers' MEMORY.md, Nexus for issues in your domain.
 - **Eliminate waste**: Skip checks that never change; cache expensive lookups.`;
@@ -2038,45 +2039,67 @@ server.registerTool(
       );
     } catch {}
 
-    const parts = [`Heartbeat: ${WORKER_NAME} active at ${now}`];
-    if (registered) parts.push(`pane registered: ${tmuxPane} (${paneTarget})`);
-    if (cycles_completed !== undefined) parts.push(`cycles: ${cycles_completed}`);
-    if (extra) parts.push(`custom: ${Object.keys(extra).join(", ")}`);
+    // ── Heartbeat linter — ALL issues are blocking or auto-fixed ─────
+    // Blocking issues return isError=true so the worker MUST stop and fix before continuing.
+    // Auto-fixable issues are corrected in-place; the fix is reported in the success message.
+    const blocking: string[] = [];
+    const autoFixed: string[] = [];
 
-    // ── Heartbeat linter — flag misconfiguration immediately ──────────
-    const warnings: string[] = [];
-
+    // 1. WORKER_NAME is fallback — unrecoverable without re-launch
     if (WORKER_NAME === "operator") {
-      warnings.push("⚠ WORKER_NAME is 'operator' (fallback) — WORKER_NAME env var was not set at launch. Your pane was registered as 'operator' which will conflict with other workers. Re-launch via launch-flat-worker.sh or set WORKER_NAME=<your-name> before starting Claude.");
+      blocking.push("WORKER_NAME is 'operator' (env var not set at launch). Your registry entry will conflict with other workers. Notify chief-of-staff and ask to be re-launched via launch-flat-worker.sh with the correct worker name.");
     }
 
+    // 2. TMUX_PANE not set or dead — unrecoverable without re-launch
     if (!tmuxPane) {
-      warnings.push("⚠ TMUX_PANE not set — you are NOT registered in the fleet. Watchdog cannot monitor you, send_message will not reach you, fleet_status won't show you. Launch via launch-flat-worker.sh.");
+      blocking.push("TMUX_PANE env var is not set — not running inside tmux. Watchdog cannot monitor you, send_message cannot reach you. You must be launched via launch-flat-worker.sh inside a tmux pane.");
     } else if (!isPaneAlive(tmuxPane)) {
-      warnings.push(`⚠ TMUX_PANE=${tmuxPane} is set but the pane is not alive in tmux. Your pane ID may be stale.`);
+      blocking.push(`TMUX_PANE=${tmuxPane} no longer exists in tmux. Your session is detached or the pane was killed. Re-launch via launch-flat-worker.sh.`);
     }
 
-    // Check registry state
+    // 3. Registry entry / pane_id checks
     try {
       const reg = readRegistry();
       const myEntry = reg[WORKER_NAME] as RegistryWorkerEntry | undefined;
       if (!myEntry) {
-        warnings.push(`⚠ Worker '${WORKER_NAME}' not found in registry.json — heartbeat should have created it. Check file permissions on ${REGISTRY_PATH}.`);
+        blocking.push(`Worker '${WORKER_NAME}' still missing from registry.json after heartbeat write — likely a file permission error on ${REGISTRY_PATH}. Check permissions and re-run heartbeat.`);
       } else {
+        if (!myEntry.pane_id) {
+          blocking.push(`No pane_id in registry for '${WORKER_NAME}' even after heartbeat. Watchdog and messaging cannot reach you. Check TMUX_PANE env var and registry write permissions.`);
+        }
+
+        // 4. No parent — auto-fix by setting to mission_authority
         if (!myEntry.parent) {
           const config = reg._config as RegistryConfig;
           const auth = config?.mission_authority || "chief-of-staff";
-          warnings.push(`⚠ No parent set in registry for '${WORKER_NAME}'. send_message(to="parent") will fall back to mission_authority ('${auth}'). Set parent explicitly: update_state("parent", "${auth}").`);
-        }
-        if (!myEntry.pane_id) {
-          warnings.push(`⚠ No pane_id registered for '${WORKER_NAME}' — watchdog and messaging cannot reach you.`);
+          try {
+            withRegistryLocked((r) => {
+              const e = r[WORKER_NAME] as RegistryWorkerEntry;
+              if (e && !e.parent) e.parent = auth;
+            });
+            autoFixed.push(`parent auto-set to '${auth}' (mission_authority)`);
+          } catch {
+            blocking.push(`No parent set for '${WORKER_NAME}' and auto-fix failed. Run update_state("parent", "${auth}") before continuing.`);
+          }
         }
       }
-    } catch {}
-
-    if (warnings.length > 0) {
-      parts.push(`\n\n${warnings.join("\n")}`);
+    } catch {
+      blocking.push(`Could not read registry.json to verify state — check file at ${REGISTRY_PATH}.`);
     }
+
+    if (blocking.length > 0) {
+      const msg = [
+        `HEARTBEAT FAILED — ${blocking.length} issue(s) must be resolved before continuing:`,
+        ...blocking.map((b, i) => `${i + 1}. ${b}`),
+      ].join("\n");
+      return { content: [{ type: "text" as const, text: msg }], isError: true };
+    }
+
+    const parts = [`Heartbeat OK: ${WORKER_NAME} at ${now}`];
+    if (registered) parts.push(`pane registered: ${tmuxPane} (${paneTarget})`);
+    if (cycles_completed !== undefined) parts.push(`cycles: ${cycles_completed}`);
+    if (autoFixed.length > 0) parts.push(`auto-fixed: ${autoFixed.join(", ")}`);
+    if (extra) parts.push(`custom: ${Object.keys(extra).join(", ")}`);
 
     return { content: [{ type: "text" as const, text: parts.join(" | ") }] };
   }
@@ -2146,19 +2169,6 @@ interface CreateWorkerResult {
 }
 
 /** Core logic for creating a worker's directory and files. Exported for testing. */
-/** Symlink worker's MEMORY.md into Claude Code's auto-memory path for the worktree. */
-function linkWorkerMemory(name: string, memoryPath: string): void {
-  // Slug: /Users/wz/Desktop/zPersonalProjects/Wechat-w-{name} → -Users-wz-...-w-{name}
-  const worktreePath = `${PROJECT_ROOT}-w-${name}`;
-  const slug = worktreePath.replace(/\//g, "-");
-  const autoMemoryDir = join(HOME, ".claude", "projects", slug, "memory");
-  const autoMemoryLink = join(autoMemoryDir, "MEMORY.md");
-  if (!existsSync(autoMemoryDir)) mkdirSync(autoMemoryDir, { recursive: true });
-  // Skip if already linked or a real file exists there
-  try { lstatSync(autoMemoryLink); return; } catch { /* doesn't exist, create it */ }
-  symlinkSync(memoryPath, autoMemoryLink);
-}
-
 function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
   const { name, mission, model, perpetual, sleep_duration, taskEntries = [] } = input;
 
@@ -2177,10 +2187,17 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
   // Create directory
   mkdirSync(workerDir, { recursive: true });
 
-  // MEMORY.md + auto-memory symlink so Claude Code auto-loads it in the worktree session
-  const memoryPath = join(workerDir, "MEMORY.md");
-  writeFileSync(memoryPath, `# ${name} Memory\n\n`);
-  linkWorkerMemory(name, memoryPath);
+  // MEMORY.md — write directly to Claude Code's auto-memory path (no symlinks)
+  const worktreePath = `${PROJECT_ROOT}-w-${name}`;
+  const slug = worktreePath.replace(/\//g, "-");
+  const autoMemoryDir = join(HOME, ".claude", "projects", slug, "memory");
+  mkdirSync(autoMemoryDir, { recursive: true });
+  const autoMemoryPath = join(autoMemoryDir, "MEMORY.md");
+  // Remove stale symlink if present (legacy linkWorkerMemory artifact), then write real file
+  try { if (lstatSync(autoMemoryPath).isSymbolicLink()) { rmSync(autoMemoryPath); } } catch {}
+  if (!existsSync(autoMemoryPath)) {
+    writeFileSync(autoMemoryPath, `# ${name} Memory\n\n`);
+  }
 
   // mission.md
   writeFileSync(join(workerDir, "mission.md"), mission.trim() + "\n");
