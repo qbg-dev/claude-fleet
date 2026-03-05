@@ -54,5 +54,6 @@ TARGET=$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pan
   | awk -v id="$PANE_ID" '$1 == id {print $2; exit}')
 [ -z "$TARGET" ] && exit 0
 
+tmux send-keys -t "$TARGET" -H 03  # Ctrl-C to interrupt active turn
 tmux send-keys -t "$TARGET" "$SIG $content"
 tmux send-keys -t "$TARGET" -H 0d

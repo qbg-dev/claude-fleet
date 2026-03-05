@@ -358,13 +358,23 @@ check_worker() {
 
   # Read worker entry from registry
   local pane_id; pane_id=$(jq -r --arg n "$worker" '.[$n].pane_id // empty' "$REGISTRY" 2>/dev/null)
-  [ -z "$pane_id" ] && return  # no pane registered
+
+  # Read perpetual flag early (needed to decide what to do with pane_id=null)
+  local perpetual; perpetual=$(jq -r --arg n "$worker" '.[$n].perpetual // false' "$REGISTRY" 2>/dev/null)
+
+  # No pane registered: launch perpetual workers, skip non-perpetual
+  if [ -z "$pane_id" ]; then
+    if [ "$perpetual" = "true" ]; then
+      _is_crash_looped "$worker" && return
+      _log "NO-PANE: $worker — perpetual worker has no pane_id, launching via launch-flat-worker.sh"
+      PROJECT_ROOT="$PROJECT_ROOT" bash "$LAUNCH_SCRIPT" "$worker" &
+      return 1  # signal respawn happened (for stagger)
+    fi
+    return  # non-perpetual with no pane — skip
+  fi
 
   # Skip crash-looped workers
   _is_crash_looped "$worker" && return
-
-  # Read perpetual flag and sleep_duration from registry
-  local perpetual; perpetual=$(jq -r --arg n "$worker" '.[$n].perpetual // false' "$REGISTRY" 2>/dev/null)
   local sleep_dur; sleep_dur=$(jq -r --arg n "$worker" '.[$n].sleep_duration // 0' "$REGISTRY" 2>/dev/null)
   [ "$sleep_dur" = "null" ] && sleep_dur=0
 

@@ -68,7 +68,7 @@ if [ "${1:-}" = "--stop" ]; then
   fi
   # Archive reflection receipt before cleanup
   if [ -f "$DIR/harness-name" ] && [ -f "$DIR/reflect-receipt.json" ]; then
-    source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || true
+    source "$HOME/.boring/lib/fleet-jq.sh" 2>/dev/null || true
     _HNAME=$(cat "$DIR/harness-name" 2>/dev/null || echo "")
     if [ -n "$_HNAME" ]; then
       harness_archive_reflection "$_HNAME" "$DIR/reflect-receipt.json" 2>/dev/null || true
@@ -203,7 +203,7 @@ PROMPT_FILE="$STATE_DIR/prompt.txt"
 HARNESS_NAME=""
 PROGRESS_PATH=""
 JOURNAL_PATH=""
-source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || HARNESS_SESSION_REGISTRY="$HOME/.boring/state/session-registry.json"
+source "$HOME/.boring/lib/fleet-jq.sh" 2>/dev/null || HARNESS_SESSION_REGISTRY="$HOME/.boring/state/session-registry.json"
 if [ -f "$HARNESS_SESSION_REGISTRY" ]; then
   # Try to find harness for the target pane's session
   search_root="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -317,7 +317,7 @@ You can **read AND write** the harness. Use these exact commands:
 
 \`\`\`bash
 # Source harness functions
-source ~/.boring/lib/harness-jq.sh
+source ~/.boring/lib/fleet-jq.sh
 
 # Add a new task
 locked_jq_write "${PROGRESS_PATH}" "progress-${HARNESS_NAME}" \
@@ -376,7 +376,7 @@ NOTIFIED_FILE="${STATE_DIR}/notified_milestones"
 touch "\$NOTIFIED_FILE"
 
 # Wave gate actionable (all blockers done, gate pending)
-source ~/.boring/lib/harness-jq.sh 2>/dev/null
+source ~/.boring/lib/fleet-jq.sh 2>/dev/null
 WAVE_BOUNDARY=\$(harness_is_wave_boundary "${PROGRESS_PATH}" 2>/dev/null || echo "false")
 if [ "\$WAVE_BOUNDARY" = "true" ]; then
   WAVE_INFO=\$(harness_wave_progress "${PROGRESS_PATH}")
@@ -495,8 +495,8 @@ for i in $(seq 1 30); do
 done
 
 # Send initial prompt
-tmux load-buffer "$PROMPT_FILE"
-tmux paste-buffer -t "$MONITOR_PANE"
+tmux load-buffer -b "mon-$$" "$PROMPT_FILE"
+tmux paste-buffer -b "mon-$$" -t "$MONITOR_PANE" -d
 sleep 0.5
 tmux send-keys -t "$MONITOR_PANE" -H 0d
 
@@ -511,7 +511,7 @@ tmux send-keys -t "$MONITOR_PANE" -H 0d
 
   # Source shared libraries in subshell (functions aren't inherited)
   source "$HOME/.boring/lib/session-reader.sh" 2>/dev/null || true
-  source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || true
+  source "$HOME/.boring/lib/fleet-jq.sh" 2>/dev/null || true
 
   trap 'exit 0' TERM INT
 

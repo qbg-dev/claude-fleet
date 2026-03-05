@@ -12,7 +12,7 @@
 #   worker_health "miniapp-ux-v2"
 #
 # Dependencies:
-#   - harness-jq.sh (locked_jq_write, _lock/_unlock, harness_progress_path, HARNESS_LOCK_DIR)
+#   - fleet-jq.sh (locked_jq_write, _lock/_unlock, harness_progress_path, HARNESS_LOCK_DIR)
 #   - harness-launch.sh (harness_launch)
 #
 # Environment (set before sourcing):
@@ -21,7 +21,7 @@
 #   SIDECAR_PANE   — auto-detected if not set
 
 # ── Source dependencies ────────────────────────────────────────
-source "$HOME/.boring/lib/harness-jq.sh"
+source "$HOME/.boring/lib/fleet-jq.sh"
 
 WORKER_LAUNCH_TIMEOUT_SEC="${WORKER_LAUNCH_TIMEOUT_SEC:-90}"
 WORKER_HEALTH_CAPTURE_LINES="${WORKER_HEALTH_CAPTURE_LINES:-10}"
@@ -81,7 +81,7 @@ _parse_workers_json() {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# Pane Discovery (inline — no harness-pane.sh dependency)
+# Pane Discovery (inline — no fleet-pane.sh dependency)
 # ═══════════════════════════════════════════════════════════════
 
 # Find the tmux pane for a worker harness.
@@ -90,12 +90,18 @@ _parse_workers_json() {
 _find_worker_pane() {
   local worker="$1"
 
-  # Strategy 1: Check pane registry for a pane registered to this harness
+  # Strategy 1: Check pane registry for a pane registered to this harness (project-scoped)
   if [ -f "$PANE_REGISTRY" ]; then
-    local pane_id
-    pane_id=$(jq -r --arg h "$worker" '
-      to_entries[] | select(.value.harness == $h) | .key
-    ' "$PANE_REGISTRY" 2>/dev/null | head -1)
+    local pane_id _proj="${PROJECT_ROOT:-}"
+    if [ -n "$_proj" ]; then
+      pane_id=$(jq -r --arg h "$worker" --arg proj "$_proj" '
+        to_entries[] | select(.value.harness == $h and (.value.project_root // "") == $proj) | .key
+      ' "$PANE_REGISTRY" 2>/dev/null | head -1)
+    else
+      pane_id=$(jq -r --arg h "$worker" '
+        to_entries[] | select(.value.harness == $h) | .key
+      ' "$PANE_REGISTRY" 2>/dev/null | head -1)
+    fi
     if [ -n "$pane_id" ] && [ "$pane_id" != "null" ]; then
       # Convert pane_id to human-readable target
       local target
@@ -231,8 +237,10 @@ worker_launch() {
   export WORKER_DISPATCH_IDEMPOTENT=true
   export CLAUDE_CMD="$claude_cmd"
 
-  # Source harness-launch.sh and call
-  source "$HOME/.boring/lib/harness-launch.sh"
+  # TODO: worker_launch() is unused — watchdog uses launch-flat-worker.sh directly
+  echo "ERROR: worker_launch() is deprecated. Use launch-flat-worker.sh instead." >&2
+  _unlock "$lockdir"
+  return 1
 
   local launch_args=("$worker" "$project")
   [ "$with_monitor" = true ] && launch_args+=(--monitor)

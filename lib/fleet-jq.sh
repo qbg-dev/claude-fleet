@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# harness-jq.sh — Shared shell functions for reading the unified task graph.
+# fleet-jq.sh — Shared shell functions for reading the unified task graph.
 #
 # Source this file in any harness script:
-#   source "$(dirname "$0")/harness-jq.sh"
+#   source "$(dirname "$0")/fleet-jq.sh"
 #
 # All functions take a progress JSON file path as their first argument.
 
@@ -577,19 +577,18 @@ harness_sleep_duration() {
   }
 
   if [[ "$canonical" == worker/* ]]; then
-    # Flat worker: "worker/{name}" → .claude/workers/{name}/state.json
+    # Flat worker: "worker/{name}" → .claude/workers/registry.json[name]
     local worker="${canonical#worker/}"
-    local state="$project_root/.claude/workers/$worker/state.json"
+    local registry="$project_root/.claude/workers/registry.json"
     local cache="$HARNESS_STATE_DIR/harness-runtime/worker/$worker/config-cache.json"
-    if [ -f "$state" ] || [ -f "$cache" ]; then
-      # Check perpetual field: if explicitly false, signal watchdog to skip respawn
-      # NOTE: cannot use jq // operator — it treats boolean false as falsy
-      perpetual_val=$(_safe_jq "$state" 'if .perpetual == null then "unset" elif .perpetual == false then "false" else "true" end' "$cache")
+    if [ -f "$registry" ] || [ -f "$cache" ]; then
+      # Check perpetual field from registry: if explicitly false, signal watchdog to skip respawn
+      perpetual_val=$(jq -r --arg w "$worker" '.[$w] | if .perpetual == null then "unset" elif .perpetual == false then "false" else "true" end' "$registry" 2>/dev/null || _safe_jq "$cache" "$(printf '.[\"%s\"] | if .perpetual == null then \"unset\" elif .perpetual == false then \"false\" else \"true\" end' "$worker")" "")
       if [ "$perpetual_val" = "false" ] || [ "$perpetual_val" = "unset" ]; then
         echo "none"
         return
       fi
-      val=$(_safe_jq "$state" '.sleep_duration // empty' "$cache")
+      val=$(jq -r --arg w "$worker" '.[$w].sleep_duration // empty' "$registry" 2>/dev/null || _safe_jq "$cache" "$(printf '.[\"%s\"].sleep_duration // empty' "$worker")" "")
       [ -n "$val" ] && echo "$val" && return
     fi
   elif [[ "$canonical" == */* ]]; then

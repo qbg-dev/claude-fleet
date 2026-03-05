@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harness-health.sh — Comprehensive health check for the harness + flat worker system.
+# fleet-health.sh — Comprehensive health check for the harness + flat worker system.
 #
 # Checks:
 #   1. Pane registry integrity (stale panes, missing session_ids)
@@ -11,15 +11,15 @@
 #   7. Watchdog config sanity
 #
 # Usage:
-#   bash ~/.boring/scripts/harness-health.sh [--json] [--workers-dir /path]
-#   WORKERS_DIR=/path/to/.claude/workers bash harness-health.sh
+#   bash ~/.boring/scripts/fleet-health.sh [--json] [--workers-dir /path]
+#   WORKERS_DIR=/path/to/.claude/workers bash fleet-health.sh
 #
 # Output:
 #   Default: colored text summary
 #   --json:  machine-readable JSON report
 set -uo pipefail
 
-source "${HOME}/.boring/lib/harness-jq.sh"
+source "${HOME}/.boring/lib/fleet-jq.sh"
 
 # ── Config ──────────────────────────────────────────────────────
 WORKERS_DIR="${WORKERS_DIR:-}"
@@ -315,12 +315,12 @@ check_watchdog_config() {
   echo ""
   echo "Watchdog Config"
 
-  local wdog="$HOME/.boring/scripts/harness-watchdog.sh"
+  local wdog="$HOME/.boring/scripts/worker-watchdog.sh"
   if [ ! -f "$wdog" ]; then
-    _issue "harness-watchdog.sh not found at $wdog"
+    _issue "worker-watchdog.sh not found at $wdog"
     return
   fi
-  _ok "harness-watchdog.sh present"
+  _ok "worker-watchdog.sh present"
 
   # Check stuck threshold
   local thresh

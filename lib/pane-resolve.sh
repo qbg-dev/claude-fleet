@@ -16,7 +16,7 @@
 
 # Source the canonical paths and low-level functions
 _PANE_RESOLVE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$_PANE_RESOLVE_DIR/harness-jq.sh"
+source "$_PANE_RESOLVE_DIR/fleet-jq.sh"
 
 # ── resolve_own_pane ──
 # Walk process tree to find the tmux pane_id.

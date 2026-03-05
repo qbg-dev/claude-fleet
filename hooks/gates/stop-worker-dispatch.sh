@@ -1,42 +1,24 @@
 #!/usr/bin/env bash
-# stop-harness-dispatch.sh — Unified stop hook dispatcher for multi-harness sessions.
+# stop-worker-dispatch.sh — Stop hook for flat workers.
 #
-# Routes each Claude session to its assigned harness based on a registry file.
-# Sessions not registered in the registry pass through (stop-session.sh handles naming + code review).
-#
-# Uses unified task graph schema (.tasks with blockedBy/owner) for ALL harnesses.
-# Modules: dispatch/harness-{gates,gc,rotation,discovery}.sh
-# Shared functions: lib/harness-jq.sh (hook_find_own_pane, hook_resolve_harness, hook_block, etc.)
+# Routes flat worker sessions (worker/*) to block until tasks complete.
+# Non-worker sessions pass through.
+# Shared functions: lib/fleet-jq.sh
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-# ── GC configs ──
-GC_THROTTLE_SEC="${GC_THROTTLE_SEC:-60}"
-GC_STALE_FILE_AGE_SEC="${GC_STALE_FILE_AGE_SEC:-86400}"
-# ── Discovery configs ──
-AGENT_DISCOVERY_ENABLED="${AGENT_DISCOVERY_ENABLED:-true}"
-ROTATION_LOCK_CLEANUP_SEC="${ROTATION_LOCK_CLEANUP_SEC:-60}"
-source "$HOME/.boring/lib/harness-jq.sh"
+source "$HOME/.boring/lib/fleet-jq.sh"
 source "$HOME/.boring/lib/event-bus.sh" 2>/dev/null || true
 
-# Source modules
-source "$HOME/.boring/hooks/dispatch/harness-gates.sh"
-source "$HOME/.boring/hooks/dispatch/harness-gc.sh"
-source "$HOME/.boring/hooks/dispatch/harness-rotation.sh"
-source "$HOME/.boring/hooks/dispatch/harness-discovery.sh"
-source "$HOME/.boring/hooks/dispatch/harness-bg-tasks.sh"
-
-# Lightweight stop-hook logger (separate from watchdog.log to avoid noise)
-_log_watchdog() { echo "[$(date -u +%FT%TZ)] stop-hook: $*" >> "${HOME}/.boring/state/watchdog.log" 2>/dev/null || true; }
+_log() { echo "[$(date -u +%FT%TZ)] stop-hook: $*" >> "${HOME}/.boring/state/watchdog.log" 2>/dev/null || true; }
 
 INPUT=$(cat)
 
-# Parse session ID via shared function (replaces python3)
+# Parse session ID
 hook_parse_input "$INPUT"
 SESSION_ID="$_HOOK_SESSION_ID"
 [ -z "$SESSION_ID" ] && { hook_pass; exit 0; }
 
-# Compute session dir once (used throughout)
 _SESSION_DIR=$(harness_session_dir "$SESSION_ID")
 
 # Skip if echo chain is active
@@ -54,10 +36,10 @@ if [ -n "$OWN_PANE_ID" ]; then
   fi
 fi
 
-# Resolve harness via shared 3-tier lookup (replaces 16-line inline detection)
+# Resolve worker identity
 hook_resolve_harness "$OWN_PANE_ID" "$SESSION_ID"
 
-# Patch session_id into pane-registry so watchdog can locate graceful-stop sentinel
+# Patch session_id into pane-registry
 if [ -n "${OWN_PANE_ID:-}" ] && [ -n "${SESSION_ID:-}" ] && [ -f "$PANE_REGISTRY" ]; then
   PANE_REGISTRY="$PANE_REGISTRY" OWN_PANE_ID="$OWN_PANE_ID" SESSION_ID="$SESSION_ID" \
   python3 -c "import json, os
@@ -74,202 +56,7 @@ except: pass
 fi
 export CLAUDE_SESSION_ID="${SESSION_ID:-}"
 
-# Run throttled GC
-run_gc
-
-# ═══════════════════════════════════════════════════════════════
-# GENERIC BLOCK — works for ALL harnesses using unified task graph
-# ═══════════════════════════════════════════════════════════════
-_block_flat_worker() {
-  local TASKS_FILE="$1"
-  local _wname="${CANONICAL#worker/}"
-  local _wdir="$PROJECT_ROOT/.claude/workers/$_wname"
-  # Worktree fallback: resolve main repo root if worker dir doesn't exist locally
-  if [ ! -d "$_wdir" ]; then
-    local _main_root
-    _main_root=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')
-    [ -n "$_main_root" ] && [ "$_main_root" != "$PROJECT_ROOT" ] && _wdir="$_main_root/.claude/workers/$_wname"
-  fi
-  local _wstate="$_wdir/state.json"
-
-  # Status check
-  local _status
-  _status=$(jq -r '.status // "running"' "$_wstate" 2>/dev/null || echo "running")
-  [ "$_status" = "stopped" ] && { hook_pass; exit 0; }
-
-  # Vision gate
-  local _vision_approved
-  _vision_approved=$(jq -r '.vision_approved // false' "$_wstate" 2>/dev/null || echo "false")
-  if [ "$_vision_approved" != "true" ]; then
-    if [ ! -f "$_wdir/vision.html" ]; then
-      hook_block "$(echo -e "## ${_wname}: Phase 0 — Vision Required\n\nCreate vision.html before any implementation.\n1. Read template: ~/.claude-ops/templates/vision.html.tmpl\n2. Fill in using your mission.md, tasks.json, state.json, MEMORY.md\n3. Include a Generalizations section (3-5 proposed improvements beyond your backlog)\n4. Write to: .claude/workers/${_wname}/vision.html\n5. Open it: open .claude/workers/${_wname}/vision.html\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
-      exit 0
-    else
-      hook_block "$(echo -e "## ${_wname}: Phase 0 — Vision Awaiting Approval\n\nvision.html exists. Waiting for Warren to set vision_approved: true in state.json.\nRevise if feedback given. Do not implement until approved.\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
-      exit 0
-    fi
-  fi
-
-  # Perpetual workers: pass through (watchdog handles respawn cycle)
-  local _perpetual
-  _perpetual=$(jq -r '.perpetual // false' "$_wstate" 2>/dev/null || echo "false")
-  if [ "$_perpetual" = "true" ]; then
-    local _sleep_dur
-    _sleep_dur=$(jq -r '.sleep_duration // 3600' "$_wstate" 2>/dev/null || echo "3600")
-    _log_watchdog "flat-worker stop: $_wname (perpetual, sleep=${_sleep_dur}s)"
-    hook_pass; exit 0
-  fi
-
-  # One-shot workers: block until tasks done
-  local _total _done _pending _in_prog
-  _total=$(jq '[.[] | select(.status != "deleted")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
-  _done=$(jq '[.[] | select(.status == "completed")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
-  _pending=$(jq '[.[] | select(.status == "pending")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
-  _in_prog=$(jq '[.[] | select(.status == "in_progress")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
-
-  if [ "$_done" -ge "$_total" ] && [ "$_total" -gt 0 ]; then
-    hook_block "$(echo -e "## ${_wname}: All ${_total} tasks complete\n\n1. Update MEMORY.md with key learnings\n2. Update state.json (status: done, cycles_completed++)\n\nThen stop.\nEscape: touch ${_SESSION_DIR}/allow-stop")"
-    exit 0
-  fi
-
-  local _current
-  _current=$(jq -r '[to_entries[] | select(.value.status == "in_progress")] | first | .key // "none"' "$TASKS_FILE" 2>/dev/null || echo "none")
-  hook_block "$(echo -e "## ${_wname}: ${_done}/${_total} tasks complete\n\nCurrent: ${_current} | Pending: ${_pending} | In Progress: ${_in_prog}\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
-  exit 0
-}
-
-block_generic() {
-  local PROGRESS="$1"
-
-  # ── Flat worker fast-path ──
-  if [[ "$CANONICAL" == worker/* ]]; then
-    _block_flat_worker "$PROGRESS"
-    return
-  fi
-
-  # ── Guards ──
-  # PROGRESS path is used for dirname → harness dir.
-  local _HDIR; _HDIR=$(dirname "$PROGRESS")
-  # Resolve coordinator dir: module-manager (current) or sidecar (legacy)
-  local _AGENT_DIR
-  if [ -d "$_HDIR/agents/module-manager" ]; then
-    _AGENT_DIR="$_HDIR/agents/module-manager"
-  else
-    _AGENT_DIR="$_HDIR/agents/sidecar"
-  fi
-  local _CONFIG="$_AGENT_DIR/config.json"
-  local _STATE="$_AGENT_DIR/state.json"
-
-  # No v3 config AND no v2 progress → harness not set up, pass through
-  if [ ! -f "$_CONFIG" ] && [ ! -f "$PROGRESS" ]; then
-    hook_pass; exit 0
-  fi
-
-  # Read status from state.json
-  local STATUS="active"
-  if [ -f "$_STATE" ]; then
-    STATUS=$(jq -r '.status // "active"' "$_STATE" 2>/dev/null || echo "active")
-  elif [ -f "$PROGRESS" ]; then
-    STATUS=$(jq -r '.status // "inactive"' "$PROGRESS")
-  fi
-  [ "$STATUS" != "active" ] && { hook_pass; exit 0; }
-
-  local HNAME=$(harness_name "$PROGRESS")
-  # Use global CANONICAL from hook_resolve_harness (module/worker for workers, harness for top-level)
-  local CANONICAL="${CANONICAL:-$HNAME}"
-
-  local _BLOCK_RUNTIME=$(harness_runtime "$CANONICAL")
-  if [ -f "$_BLOCK_RUNTIME/stop-flag" ]; then
-    rm -f "$_BLOCK_RUNTIME/stop-flag"
-    hook_pass; exit 0
-  fi
-
-  # ── Background task check (sleeping agents must not be stopped) ──
-  check_bg_tasks "$CANONICAL" || true  # exits with hook_block if bg-task is alive
-
-  # ── Lifecycle gate ──
-  local _LIFECYCLE=$(harness_lifecycle "$PROGRESS")
-  if [ "$_LIFECYCLE" = "bounded" ]; then
-    local _CURRENT_TASK=$(harness_current_task "$PROGRESS")
-    if [ "$_CURRENT_TASK" = "ALL_DONE" ]; then
-      # Enforce MEMORY.md update + git checkpoint before stopping
-      hook_block "$(echo -e "## ${HNAME}: All tasks complete — before stopping:\n\n1. Update MEMORY.md with key learnings (patterns, gotchas, decisions)\n2. Run git checkpoint: \`source ~/.boring/lib/event-bus.sh && bus_git_checkpoint \"auto: final — ${HNAME}\"\`\n\nThen stop — rotation handles session handoff if configured.\nEscape: touch ${_SESSION_DIR}/allow-stop")"
-      check_rotation "$HNAME" "$PROGRESS" "$CANONICAL" && exit 0 || true
-    fi
-    # Tasks not done → fall through to hook_block
-  else
-    # Long-running: pass through cleanly.
-    # hook_pass() writes graceful-stop sentinel; watchdog reads sleep_duration
-    # from state.json and respawns after that interval.
-    local _SLEEP_DUR
-    _SLEEP_DUR=$(harness_sleep_duration "$CANONICAL")
-    _log_watchdog "long-running stop: $CANONICAL (sleep_duration=${_SLEEP_DUR}s)"
-    hook_pass
-    exit 0
-  fi
-
-  # ── Task graph state ──
-  local CURRENT=$(harness_current_task "$PROGRESS")
-  local NEXT=$(harness_next_task "$PROGRESS")
-  local DONE_COUNT=$(harness_done_count "$PROGRESS")
-  local TOTAL=$(harness_total_count "$PROGRESS")
-  local DESCRIPTION=$(harness_task_description "$PROGRESS" "$CURRENT")
-  local MISSION=$(harness_mission "$PROGRESS")
-
-  update_pane_status "$HNAME" "$CURRENT" "$DONE_COUNT" "$TOTAL"
-
-  # ── Build status message ──
-  local MSG="## ${HNAME}: ${DONE_COUNT}/${TOTAL} tasks complete.\n\n"
-  [ -n "$MISSION" ] && MSG="${MSG}**Mission:** ${MISSION}\n"
-  MSG="${MSG}**Current:** ${CURRENT}\n"
-  [ -n "$DESCRIPTION" ] && MSG="${MSG}**Description:** ${DESCRIPTION}\n"
-  MSG="${MSG}**Next:** ${NEXT}\n"
-  if [ "$CURRENT" != "ALL_DONE" ]; then
-    local WOULD_UNBLOCK=$(harness_would_unblock "$PROGRESS" "$CURRENT" 2>/dev/null || echo "")
-    [ -n "$WOULD_UNBLOCK" ] && MSG="${MSG}**Completing ${CURRENT} unblocks:** ${WOULD_UNBLOCK}\n"
-  fi
-
-  # Wave progress display
-  local WAVE_INFO=$(harness_wave_progress "$PROGRESS" 2>/dev/null || echo "")
-  [ -n "$WAVE_INFO" ] && MSG="${MSG}**Wave:** ${WAVE_INFO}\n"
-
-  # Wave gate — fires at wave boundary, injects evidence-backed report instructions
-  local _SPEC_FILE=""
-  [ -f "$PROJECT_ROOT/.claude/harness/${CANONICAL}/spec.md" ] && _SPEC_FILE=".claude/harness/${CANONICAL}/spec.md"
-  local WAVE_GATE_MSG
-  WAVE_GATE_MSG=$(check_wave_gate "$PROGRESS" "$HNAME" "$_SPEC_FILE" 2>/dev/null || echo "")
-  [ -n "$WAVE_GATE_MSG" ] && MSG="${MSG}${WAVE_GATE_MSG}"
-
-  # Blocked tasks
-  local BLOCKED_INFO=$(jq -r '
-    . as $root |
-    [.tasks | to_entries[] | select(
-      .value.status == "pending" and
-      ((.value.blockedBy // []) | length) > 0 and
-      ([(.value.blockedBy // [])[] as $dep | $root.tasks[$dep].status] | all(. == "completed") | not)
-    ) |
-      (.value.blockedBy // []) as $deps |
-      [($deps[] | select($root.tasks[.].status != "completed"))] as $incomplete |
-      "  \(.key) ← waiting on: \($incomplete | join(", "))"
-    ] | if length > 0 then join("\n") else "" end
-  ' "$PROGRESS" 2>/dev/null || echo "")
-  [ -n "$BLOCKED_INFO" ] && MSG="${MSG}\n**Blocked tasks:**\n${BLOCKED_INFO}\n"
-
-  # Context reference
-  local HARNESS_MD_REL=".claude/harness/${CANONICAL}/harness.md"
-  [ ! -f "$PROJECT_ROOT/.claude/harness/$CANONICAL/harness.md" ] && HARNESS_MD_REL="claude_files/${CANONICAL}-harness.md"
-  MSG="${MSG}\nRead ${HARNESS_MD_REL} if context lost.\n"
-  MSG="${MSG}Escape: touch ${_SESSION_DIR}/allow-stop"
-
-  local OTHERS=$(other_harnesses_info "$HNAME")
-  [ -n "$OTHERS" ] && MSG="${MSG}\n**Other active harnesses:**${OTHERS}\n"
-
-  hook_block "$(echo -e "$MSG")"
-}
-
-# ═══════════════════════════════════════════════════════════════
-# CHILD PANE PARENT NOTIFICATION
-# ═══════════════════════════════════════════════════════════════
+# ── Child pane parent notification ──
 _check_child_parent_notification() {
   [ -z "$OWN_PANE_ID" ] && return
   [ ! -f "$PANE_REGISTRY" ] && return
@@ -286,7 +73,6 @@ _check_child_parent_notification() {
     _tool_count=$(grep -c "\"session_id\":\"$SESSION_ID\"" "$_tool_log" 2>/dev/null || true)
   [ -z "$_tool_count" ] && _tool_count=0
 
-  # Already notified — emit bus event and pass through
   if [ -f "$_SESSION_DIR/parent-notified" ]; then
     if [ -n "$_parent_name" ] && [ "$_tool_count" -ge 3 ]; then
       local _payload
@@ -304,7 +90,6 @@ _check_child_parent_notification() {
     return
   fi
 
-  # Under threshold — pass silently
   [ "$_tool_count" -lt 3 ] && return
   [ -z "$_parent_name" ] && return
 
@@ -312,41 +97,64 @@ _check_child_parent_notification() {
   exit 0
 }
 
-# ── Child pane parent notification (runs for all harness types) ──
 _check_child_parent_notification
 
-# ═══════════════════════════════════════════════════════════════
-# PROGRESS FILE RESOLUTION
-# ═══════════════════════════════════════════════════════════════
-resolve_progress_file() {
-  local dispatch_name="$1"
+# ── Only handle flat workers ──
+if [[ "${CANONICAL:-$HARNESS}" != worker/* ]]; then
+  hook_pass
+  exit 0
+fi
 
-  local manifest_path
-  manifest_path=$(harness_progress_path "$dispatch_name" 2>/dev/null || echo "")
-  if [ -n "$manifest_path" ] && [ -f "$manifest_path" ]; then
-    echo "$manifest_path"
-    return
+_wname="${CANONICAL#worker/}"
+_wname="${_wname:-${HARNESS#worker/}}"
+_wdir="$PROJECT_ROOT/.claude/workers/$_wname"
+
+# Worktree fallback: resolve main repo root
+if [ ! -d "$_wdir" ]; then
+  _main_root=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')
+  [ -n "$_main_root" ] && [ "$_main_root" != "$PROJECT_ROOT" ] && _wdir="$_main_root/.claude/workers/$_wname"
+fi
+
+_wstate="$_wdir/state.json"
+TASKS_FILE="$_wdir/tasks.json"
+
+# Status check
+_status=$(jq -r '.status // "running"' "$_wstate" 2>/dev/null || echo "running")
+[ "$_status" = "stopped" ] && { hook_pass; exit 0; }
+
+# Vision gate
+_vision_approved=$(jq -r '.vision_approved // false' "$_wstate" 2>/dev/null || echo "false")
+if [ "$_vision_approved" != "true" ]; then
+  if [ ! -f "$_wdir/vision.html" ]; then
+    hook_block "$(echo -e "## ${_wname}: Phase 0 — Vision Required\n\nCreate vision.html before any implementation.\n1. Read template: ~/.claude-ops/templates/vision.html.tmpl\n2. Fill in using your mission.md, tasks.json, state.json, MEMORY.md\n3. Include a Generalizations section (3-5 proposed improvements beyond your backlog)\n4. Write to: .claude/workers/${_wname}/vision.html\n5. Open it: open .claude/workers/${_wname}/vision.html\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+    exit 0
+  else
+    hook_block "$(echo -e "## ${_wname}: Phase 0 — Vision Awaiting Approval\n\nvision.html exists. Waiting for Warren to set vision_approved: true in state.json.\nRevise if feedback given. Do not implement until approved.\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+    exit 0
   fi
+fi
 
-  echo "$PROJECT_ROOT/.claude/harness/${dispatch_name}/tasks.json"
-}
+# Perpetual workers: pass through (watchdog handles respawn cycle)
+_perpetual=$(jq -r '.perpetual // false' "$_wstate" 2>/dev/null || echo "false")
+if [ "$_perpetual" = "true" ]; then
+  _sleep_dur=$(jq -r '.sleep_duration // 3600' "$_wstate" 2>/dev/null || echo "3600")
+  _log "flat-worker stop: $_wname (perpetual, sleep=${_sleep_dur}s)"
+  hook_pass; exit 0
+fi
 
-case "$HARNESS" in
-  "")
-    # No harness — pass through. stop-session.sh handles naming + code review.
-    hook_pass
-    ;;
-  none|skip)
-    # Explicitly opted out of harness. stop-session.sh handles the rest.
-    hook_pass
-    ;;
-  *)
-    PFILE=$(resolve_progress_file "$HARNESS")
-    if [ -f "$PFILE" ]; then
-      block_generic "$PFILE"
-    else
-      echo "WARNING: No progress file for harness '$HARNESS' at $PFILE" >&2
-      hook_pass
-    fi
-    ;;
-esac
+# One-shot workers: block until tasks done
+[ ! -f "$TASKS_FILE" ] && { hook_pass; exit 0; }
+
+_total=$(jq '[.[] | select(.status != "deleted")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
+_done=$(jq '[.[] | select(.status == "completed")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
+_pending=$(jq '[.[] | select(.status == "pending")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
+_in_prog=$(jq '[.[] | select(.status == "in_progress")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
+
+if [ "$_done" -ge "$_total" ] && [ "$_total" -gt 0 ]; then
+  hook_block "$(echo -e "## ${_wname}: All ${_total} tasks complete\n\n1. Update MEMORY.md with key learnings\n2. Update state.json (status: done, cycles_completed++)\n\nThen stop.\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+  exit 0
+fi
+
+_current=$(jq -r '[to_entries[] | select(.value.status == "in_progress")] | first | .key // "none"' "$TASKS_FILE" 2>/dev/null || echo "none")
+hook_block "$(echo -e "## ${_wname}: ${_done}/${_total} tasks complete\n\nCurrent: ${_current} | Pending: ${_pending} | In Progress: ${_in_prog}\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+exit 0

@@ -18,13 +18,11 @@ set -euo pipefail
 WORKTREE_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
-# Derive worker name: prefer WORKER_NAME env (for main-branch workers), then branch name
-if [ -n "${WORKER_NAME:-}" ]; then
-  : # Already set via env (main-window workers)
-elif [[ "$BRANCH" == worker/* ]]; then
+# Derive worker name from branch (all workers use worktree branches)
+if [[ "$BRANCH" == worker/* ]]; then
   WORKER_NAME="${BRANCH#worker/}"
 else
-  echo "ERROR: Cannot determine worker name — not on a worker/* branch and WORKER_NAME env not set"
+  echo "ERROR: Cannot determine worker name — not on a worker/* branch (current: $BRANCH)"
   exit 1
 fi
 
@@ -309,30 +307,32 @@ echo ""
 echo "Committed: $COMMIT_SHA on $BRANCH"
 
 # ──────────────────────────────────────────────────────────────────────
-# Update state.json
+# Update registry.json with commit info
 # ──────────────────────────────────────────────────────────────────────
 
-if [ -f "$STATE_FILE" ]; then
+if [ -f "$REGISTRY" ]; then
+  _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.boring/state/locks}/worker-registry"
+  mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
+  _WAIT=0
+  while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
+    sleep 0.5; _WAIT=$((_WAIT + 1))
+    [ "$_WAIT" -ge 10 ] && break
+  done
   TMP=$(mktemp)
-  # Increment issues_fixed if this is a fix commit
   IS_FIX=0
   echo "$SUBJECT" | grep -qE '^fix\(' && IS_FIX=1
 
   if [ "$IS_FIX" -eq 1 ]; then
-    jq --arg sha "$COMMIT_SHA" --arg msg "$SUBJECT" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '.last_commit_sha = $sha | .last_commit_msg = $msg | .last_commit_at = $ts | .issues_fixed = ((.issues_fixed // 0) + 1)' \
-      "$STATE_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATE_FILE" || rm -f "$TMP"
+    jq --arg n "$WORKER_NAME" --arg sha "$COMMIT_SHA" --arg msg "$SUBJECT" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '.[$n].last_commit_sha = $sha | .[$n].last_commit_msg = $msg | .[$n].last_commit_at = $ts | .[$n].issues_fixed = ((.[$n].issues_fixed // 0) + 1)' \
+      "$REGISTRY" > "$TMP" 2>/dev/null && mv "$TMP" "$REGISTRY" || rm -f "$TMP"
   else
-    jq --arg sha "$COMMIT_SHA" --arg msg "$SUBJECT" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '.last_commit_sha = $sha | .last_commit_msg = $msg | .last_commit_at = $ts' \
-      "$STATE_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATE_FILE" || rm -f "$TMP"
+    jq --arg n "$WORKER_NAME" --arg sha "$COMMIT_SHA" --arg msg "$SUBJECT" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '.[$n].last_commit_sha = $sha | .[$n].last_commit_msg = $msg | .[$n].last_commit_at = $ts' \
+      "$REGISTRY" > "$TMP" 2>/dev/null && mv "$TMP" "$REGISTRY" || rm -f "$TMP"
   fi
-  echo "Updated state.json (last_commit: $COMMIT_SHA)"
-
-  # Sync cache for watchdog (macOS TCC blocks launchd from ~/Desktop/)
-  _CACHE="$HOME/.boring/state/harness-runtime/worker/$WORKER_NAME/config-cache.json"
-  mkdir -p "$(dirname "$_CACHE")"
-  cp "$STATE_FILE" "$_CACHE" 2>/dev/null || true
+  rmdir "$_LOCK_DIR" 2>/dev/null || true
+  echo "Updated registry.json (last_commit: $COMMIT_SHA)"
 fi
 
 # ──────────────────────────────────────────────────────────────────────

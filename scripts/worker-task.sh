@@ -17,7 +17,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/harness-jq.sh"
+source "${SCRIPT_DIR}/../lib/fleet-jq.sh"
 
 # ── Detect own pane ID ──
 _own_pane_id() {

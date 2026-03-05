@@ -159,7 +159,7 @@ fi
 # Tools reminder
 echo "### Tools"
 echo "Use \`mcp__worker-fleet__*\` MCP tools for messaging, tasks, inbox, commits, state, and deploy signals."
-echo "Deploy: \`./scripts/deploy.sh --skip-langfuse --service static|web\` (test). Never \`--service core\` without Warren approval."
+echo "Deploy: **merger only** — workers must never run deploy scripts. Commit your work and notify merger."
 echo ""
 
 # Mission — show CURRENT PRIORITY section if present, else first 60 lines
@@ -203,5 +203,7 @@ echo "- NEVER checkout main. Stay on branch \`worker/${WORKER_NAME}\`"
 echo "- Stage only specific files (never \`git add -A\`)"
 echo "- Post-commit hook auto-notifies Warren"
 echo "- Re-read CLAUDE.md and .claude/CLAUDE.md for project instructions and credentials"
+echo "- **WORKERS NEVER DEPLOY** — only the merger deploys. Your job ends at git commit. Never run deploy.sh."
+echo "- **REBASE FIRST every round**: \`git fetch origin && git rebase origin/main\` before starting work and after each commit."
 
 exit 0

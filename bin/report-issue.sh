@@ -155,7 +155,7 @@ fi
 
 # ── Resolve project root (bugs only — features are global) ───
 if [ "$REPORT_TYPE" = "bug" ] && [ -z "$PROJECT_ROOT" ]; then
-  source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || true
+  source "$HOME/.boring/lib/fleet-jq.sh" 2>/dev/null || true
   if command -v harness_list_active &>/dev/null; then
     first_active=$(harness_list_active 2>/dev/null | head -1 || true)
     if [ -n "$first_active" ]; then

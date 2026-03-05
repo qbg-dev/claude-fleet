@@ -90,4 +90,23 @@ if [ -f "$_BUS_LIB" ]; then
   fi
 fi
 
+# ── How far ahead of main? ──────────────────────────────────────────────────
+# Count commits this branch has that main doesn't, and advise worker to rebase.
+AHEAD=$(git rev-list --count "origin/main..HEAD" 2>/dev/null || git rev-list --count "main..HEAD" 2>/dev/null || echo "?")
+if [ "$AHEAD" != "?" ] && [ "$AHEAD" -gt 0 ] 2>/dev/null; then
+  RECENT=$(git log --oneline "origin/main..HEAD" 2>/dev/null || git log --oneline "main..HEAD" 2>/dev/null)
+  echo ""
+  echo "┌─────────────────────────────────────────────────────────┐"
+  echo "│  ${AHEAD} commit(s) ahead of main on branch: ${BRANCH}"
+  echo "├─────────────────────────────────────────────────────────┤"
+  echo "$RECENT" | sed 's/^/│  /'
+  echo "├─────────────────────────────────────────────────────────┤"
+  echo "│  Ready to merge? Run:                                   │"
+  echo "│    git rebase origin/main                               │"
+  echo "│  Then message merger (via inbox or request-merge.sh)    │"
+  echo "│  to cherry-pick your commits into main.                 │"
+  echo "└─────────────────────────────────────────────────────────┘"
+  echo ""
+fi
+
 exit 0

@@ -22,7 +22,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-source "$HOME/.boring/lib/harness-jq.sh" 2>/dev/null || HARNESS_STATE_DIR="$HOME/.boring/state"
+source "$HOME/.boring/lib/fleet-jq.sh" 2>/dev/null || HARNESS_STATE_DIR="$HOME/.boring/state"
 DEBUG_LOG="$(harness_logs_dir 2>/dev/null || echo "$HARNESS_STATE_DIR/logs")/handoff.log"
 HANDOFF_DEFAULT_DELAY_SEC="${HANDOFF_DEFAULT_DELAY_SEC:-3}"
 HANDOFF_DEFAULT_MODEL="${HANDOFF_DEFAULT_MODEL:-opus}"
@@ -30,7 +30,7 @@ HANDOFF_DEFAULT_COMMAND="${HANDOFF_DEFAULT_COMMAND:-cdoc}"
 HANDOFF_SKIP_PERMISSIONS="${HANDOFF_SKIP_PERMISSIONS:-true}"
 HANDOFF_PANE_SEARCH_DEPTH="${HANDOFF_PANE_SEARCH_DEPTH:-15}"
 HANDOFF_SEED_SIZE_WARN="${HANDOFF_SEED_SIZE_WARN:-60000}"
-# harness-jq.sh already sourced above (near DEBUG_LOG)
+# fleet-jq.sh already sourced above (near DEBUG_LOG)
 
 # ── Parse arguments ──────────────────────────────────────────────────
 MODE=""           # "rotate" or "direct"
@@ -178,7 +178,7 @@ if [ -n "$HARNESS" ]; then
     log "Generated seed from $SEED_SCRIPT (${#SEED} chars)"
   fi
   if [ -z "$SEED" ]; then
-    # Fallback: minimal seed from progress (harness-jq.sh already sourced at line 26)
+    # Fallback: minimal seed from progress (fleet-jq.sh already sourced at line 26)
     CURRENT=$(harness_current_task "$PROGRESS" 2>/dev/null || echo "unknown")
     DONE=$(harness_done_count "$PROGRESS" 2>/dev/null || echo "?")
     TOTAL=$(harness_total_count "$PROGRESS" 2>/dev/null || echo "?")

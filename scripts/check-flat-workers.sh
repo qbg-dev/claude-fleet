@@ -2,6 +2,8 @@
 # check-flat-workers.sh — Auto-discover and report status of all flat workers.
 # Generic upstream version — works with any project that has .claude/workers/{name}/.
 #
+# Reads from: .claude/workers/registry.json (unified registry)
+#
 # Usage: bash check-flat-workers.sh [--project <root>]
 set -euo pipefail
 
@@ -20,7 +22,7 @@ if [ -z "$PROJECT_ROOT" ]; then
 fi
 
 PROJECT_NAME="$(basename "$PROJECT_ROOT")"
-PANE_REG="${HOME}/.claude-ops/state/pane-registry.json"
+REGISTRY="$PROJECT_ROOT/.claude/workers/registry.json"
 WORKERS_DIR="$PROJECT_ROOT/.claude/workers"
 
 echo "=== Worker Fleet Status ($PROJECT_NAME) ==="
@@ -33,24 +35,36 @@ if [ ! -d "$WORKERS_DIR" ]; then
   exit 1
 fi
 
+if [ ! -f "$REGISTRY" ]; then
+  echo "WARNING: registry.json not found at $REGISTRY — run migrate-to-registry.sh first"
+  echo
+fi
+
 printf "%-22s %-10s %-8s %-24s %-8s %-8s\n" "Worker" "Status" "Cycles" "Last Cycle" "Found" "Fixed"
 printf "%-22s %-10s %-8s %-24s %-8s %-8s\n" "------" "------" "------" "----------" "-----" "-----"
 
 for dir in "$WORKERS_DIR"/*/; do
   [ ! -d "$dir" ] && continue
   name=$(basename "$dir")
-  state_file="$dir/state.json"
+  [ "$name" = "_archived" ] && continue
 
-  if [ ! -f "$state_file" ]; then
-    printf "%-22s %-10s\n" "$name" "NO STATE"
+  # Read from registry.json
+  if [ -f "$REGISTRY" ]; then
+    _entry=$(jq -r --arg n "$name" '.[$n] // empty' "$REGISTRY" 2>/dev/null || echo "")
+    if [ -n "$_entry" ] && [ "$_entry" != "null" ]; then
+      status=$(echo "$_entry" | jq -r '.status // "unknown"' 2>/dev/null || echo "?")
+      cycles=$(echo "$_entry" | jq -r '.cycles_completed // 0' 2>/dev/null || echo "?")
+      last=$(echo "$_entry" | jq -r '.last_cycle_at // "never"' 2>/dev/null || echo "?")
+      found=$(echo "$_entry" | jq -r '.issues_found // 0' 2>/dev/null || echo "?")
+      fixed=$(echo "$_entry" | jq -r '.issues_fixed // 0' 2>/dev/null || echo "?")
+    else
+      printf "%-22s %-10s\n" "$name" "NOT IN REG"
+      continue
+    fi
+  else
+    printf "%-22s %-10s\n" "$name" "NO REGISTRY"
     continue
   fi
-
-  status=$(jq -r '.status // "unknown"' "$state_file" 2>/dev/null || echo "error")
-  cycles=$(jq -r '.cycles_completed // 0' "$state_file" 2>/dev/null || echo "?")
-  last=$(jq -r '.last_cycle_at // "never"' "$state_file" 2>/dev/null || echo "?")
-  found=$(jq -r '.issues_found // 0' "$state_file" 2>/dev/null || echo "?")
-  fixed=$(jq -r '.issues_fixed // 0' "$state_file" 2>/dev/null || echo "?")
 
   printf "%-22s %-10s %-8s %-24s %-8s %-8s\n" "$name" "$status" "$cycles" "$last" "$found" "$fixed"
 done
@@ -61,13 +75,13 @@ echo "=== Pane Check ==="
 for dir in "$WORKERS_DIR"/*/; do
   [ ! -d "$dir" ] && continue
   name=$(basename "$dir")
+  [ "$name" = "_archived" ] && continue
+
   pane=""
 
-  # Search pane-registry
-  if [ -f "$PANE_REG" ]; then
-    pane=$(jq -r --arg w "$name" \
-      'to_entries[] | select(.value.session_name == $w) | .key' \
-      "$PANE_REG" 2>/dev/null | head -1)
+  # Read pane_id from registry.json
+  if [ -f "$REGISTRY" ]; then
+    pane=$(jq -r --arg n "$name" '.[$n].pane_id // empty' "$REGISTRY" 2>/dev/null || echo "")
   fi
 
   # Fallback: search worktree paths in pane list
@@ -84,25 +98,17 @@ for dir in "$WORKERS_DIR"/*/; do
   fi
 
   if [ -n "${pane:-}" ]; then
+    # Check if pane is alive
+    alive=""
+    if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -q "^${pane}$"; then
+      alive="⚡"
+    else
+      alive="❌ dead"
+    fi
     last_line=$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -E '✢|✶|✳|⏺|❯|Bash|Read|Edit|Write|Glob|Grep' | tail -1 | head -c 80 || echo "(empty)")
     loc=$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' 2>/dev/null \
       | awk -v p="$pane" '$1==p{print $2}')
-    # Check if registered in pane-registry with harness key (required for watchdog)
-    reg=""
-    if [ -f "$PANE_REG" ]; then
-      harness=$(jq -r --arg p "$pane" '.[$p].harness // empty' "$PANE_REG" 2>/dev/null)
-      if [ -n "$harness" ]; then
-        reg="⚡"
-      else
-        sn=$(jq -r --arg p "$pane" '.[$p].session_name // empty' "$PANE_REG" 2>/dev/null)
-        if [ -n "$sn" ]; then
-          reg="⚠️ no-harness"
-        else
-          reg="❌ unregistered"
-        fi
-      fi
-    fi
-    echo "  $name ($pane $loc) $reg: $last_line"
+    echo "  $name ($pane $loc) $alive: $last_line"
   else
     echo "  $name: NO PANE (dead or not started)"
   fi
@@ -116,11 +122,14 @@ STALE_FOUND=0
 for dir in "$WORKERS_DIR"/*/; do
   [ ! -d "$dir" ] && continue
   name=$(basename "$dir")
-  state_file="$dir/state.json"
-  [ ! -f "$state_file" ] && continue
+  [ "$name" = "_archived" ] && continue
 
-  last=$(jq -r '.last_cycle_at // ""' "$state_file" 2>/dev/null || echo "")
-  [ -z "$last" ] || [ "$last" = "null" ] && continue
+  # Read last_cycle_at from registry
+  last=""
+  if [ -f "$REGISTRY" ]; then
+    last=$(jq -r --arg n "$name" '.[$n].last_cycle_at // ""' "$REGISTRY" 2>/dev/null || echo "")
+  fi
+  if [ -z "$last" ] || [ "$last" = "null" ]; then continue; fi
 
   # Parse ISO date to epoch (macOS date -j, Linux date -d)
   last_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last" +%s 2>/dev/null || \
@@ -144,6 +153,7 @@ BRANCH_FOUND=0
 for dir in "$WORKERS_DIR"/*/; do
   [ ! -d "$dir" ] && continue
   name=$(basename "$dir")
+  [ "$name" = "_archived" ] && continue
   branch="worker/$name"
   if ! git -C "$PROJECT_ROOT" rev-parse --verify "$branch" &>/dev/null; then
     continue

@@ -25,7 +25,7 @@ INBOX_SCAN_WINDOW_SEC="${INBOX_SCAN_WINDOW_SEC:-1800}"
 INBOX_MAX_INJECT_MESSAGES="${INBOX_MAX_INJECT_MESSAGES:-20}"
 INBOX_ACCEPTANCE_INJECT="${INBOX_ACCEPTANCE_INJECT:-true}"
 
-# Use shared pane resolution library (replaces inline harness-jq.sh source)
+# Use shared pane resolution library (replaces inline fleet-jq.sh source)
 source "$HOME/.boring/lib/pane-resolve.sh"
 
 INPUT=$(cat)

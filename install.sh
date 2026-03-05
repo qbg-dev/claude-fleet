@@ -126,7 +126,7 @@ register_hooks() {
     "hooks": {
       "PreToolUse": [{"hooks": [{"type": "command", "command": "bash ~/.boring/hooks/interceptors/pre-tool-context-injector.sh"}]}],
       "PostToolUse": [{"hooks": [{"type": "command", "command": "bash ~/.boring/hooks/publishers/post-tool-publisher.sh"}]}],
-      "Stop": [{"hooks": [{"type": "command", "command": "bash ~/.boring/hooks/gates/stop-harness-dispatch.sh"}]}],
+      "Stop": [{"hooks": [{"type": "command", "command": "bash ~/.boring/hooks/gates/stop-worker-dispatch.sh"}]}],
       "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "bash ~/.boring/hooks/publishers/prompt-publisher.sh"}]}]
     }
   }')
@@ -141,12 +141,12 @@ verify_install() {
 
   # Check key files exist
   local required=(
-    "$INSTALL_DIR/lib/harness-jq.sh"
+    "$INSTALL_DIR/lib/fleet-jq.sh"
     "$INSTALL_DIR/lib/event-bus.sh"
     "$INSTALL_DIR/scripts/scaffold.sh"
-    "$INSTALL_DIR/scripts/harness-watchdog.sh"
+    "$INSTALL_DIR/scripts/worker-watchdog.sh"
     "$INSTALL_DIR/hooks/interceptors/pre-tool-context-injector.sh"
-    "$INSTALL_DIR/hooks/gates/stop-harness-dispatch.sh"
+    "$INSTALL_DIR/hooks/gates/stop-worker-dispatch.sh"
   )
   local ok=true
   for f in "${required[@]}"; do
@@ -157,10 +157,10 @@ verify_install() {
   done
 
   # Quick source check
-  if bash -c "source $INSTALL_DIR/lib/harness-jq.sh 2>/dev/null && echo ok" | grep -q ok; then
-    info "lib/harness-jq.sh: OK"
+  if bash -c "source $INSTALL_DIR/lib/fleet-jq.sh 2>/dev/null && echo ok" | grep -q ok; then
+    info "lib/fleet-jq.sh: OK"
   else
-    warn "lib/harness-jq.sh: source check failed (non-fatal)"
+    warn "lib/fleet-jq.sh: source check failed (non-fatal)"
   fi
 
   if [[ "$ok" == "true" ]]; then
@@ -190,7 +190,7 @@ main() {
   echo "  Next steps:"
   echo "    scaffold:  bash ~/.boring/scripts/scaffold.sh <name> /path/to/project"
   echo "    launch:    bash ~/.boring/scripts/harness-launch.sh <name>"
-  echo "    status:    bash ~/.boring/scripts/harness-watchdog.sh --status"
+  echo "    status:    bash ~/.boring/scripts/worker-watchdog.sh --status"
   echo "    docs:      https://github.com/qbg-dev/boring/blob/main/docs/getting-started.md"
   echo ""
 }

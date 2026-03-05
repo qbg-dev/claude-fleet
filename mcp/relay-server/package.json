@@ -1,0 +1,5 @@
+{
+  "name": "relay-server",
+  "version": "1.0.0",
+  "description": "HTTP relay for cross-machine worker fleet communication"
+}
