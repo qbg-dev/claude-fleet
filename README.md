@@ -1,84 +1,127 @@
-# claude-ops — Worker Fleet Infrastructure for Claude Code
+# claude-ops
 
-Run fleets of autonomous Claude Code agents. Each worker = one git worktree + one tmux pane + one persistent memory. Workers commit on their own branches, talk via MCP, and a watchdog respawns them forever.
+Autonomous agent fleet for Claude Code. Each worker = git worktree + tmux pane + persistent memory. Workers commit on their own branches, coordinate via MCP, and a watchdog keeps them alive forever.
 
-## The Key Insight
+## Why Worktrees?
 
-Claude Code scopes auto-memory by filesystem path. **Git worktrees give each worker a different path, so each worker gets isolated persistent memory for free.** By cycle 50, a worker knows things a fresh session never could.
+Claude Code scopes auto-memory by filesystem path. Git worktrees give each worker a different path = **isolated persistent memory for free**. By cycle 50, a worker knows things a fresh session never could.
 
 ```
-project-w-merger/        → memory at ~/.claude/projects/...-w-merger/memory/
-project-w-optimizer/     → memory at ~/.claude/projects/...-w-optimizer/memory/
-project-w-patrol/        → memory at ~/.claude/projects/...-w-patrol/memory/
+project/                 → main (merger only)
+project-w-optimizer/     → worker/optimizer   (its own memory)
+project-w-patrol/        → worker/patrol      (its own memory)
+project-w-chief-of-staff/→ worker/chief-of-staff (fleet coordinator)
 ```
-
-## How It Works
-
-1. **Launch** creates a git worktree on `worker/{name}`, opens a tmux pane, starts Claude with a seed prompt
-2. **Worker** reads its mission, does work, commits on its branch, messages the merger
-3. **Watchdog** detects when Claude stops or crashes, respawns after a configurable sleep
-4. **MCP server** gives workers 15 tools: messaging, tasks, state, fleet visibility
-5. **Git hooks** auto-notify the merger on every commit, add Worker/Cycle trailers
-
-Workers never push or merge. One designated merger handles main. This is enforced by `--disallowed-tools`.
 
 ## Quick Start
 
 ```bash
-# 1. Install
-git clone git@github.com:qbg-dev/claude-ops.git ~/.claude-ops
-cd ~/.claude-ops/mcp/worker-fleet && bun install
+# Install
+bash <(curl -fsSL https://raw.githubusercontent.com/qbg-dev/claude-ops/main/install.sh)
 
-# 2. In your project, create .mcp.json (see mcp/worker-fleet/index.ts header for schema)
-# 3. Create .claude/workers/registry.json (see templates/flat-worker/ for examples)
-# 4. Create .claude/workers/my-worker/mission.md
+# Bootstrap a project
+bash ~/.claude-ops/scripts/init-project.sh /path/to/project --with-chief-of-staff
 
-# 5. Launch
+# Launch a worker
 bash ~/.claude-ops/scripts/launch-flat-worker.sh my-worker
+
+# Or from any running Claude session (MCP tool):
+create_worker(name: "my-worker", mission: "...", launch: true)
 ```
 
-Or create workers from any running worker: `create_worker(name: "my-worker", mission: "...", launch: true)`
+## Architecture
 
-## Key Concepts
+```
+launchd daemon (every 30s)
+  └── watchdog ──→ registry.json ──→ for each worker:
+        ├── alive + active?      → skip
+        ├── alive + stuck?       → kill + resume session
+        ├── alive + sleep done?  → kill + respawn with seed
+        ├── dead + perpetual?    → create pane + relaunch
+        └── 3+ crashes/hr?      → stop, alert chief-of-staff
 
-| Concept | What | Where to look |
-|---------|------|---------------|
-| **Registry** | Single source of truth for all workers (config, state, pane info) | `.claude/workers/registry.json` |
-| **Mission** | What a worker does, its cycle protocol | `.claude/workers/{name}/mission.md` |
-| **MCP tools** | 15 tools: messaging, tasks, state, fleet | `mcp/worker-fleet/index.ts` |
-| **Watchdog** | Respawns workers on stop/crash, detects stuck | `scripts/worker-watchdog.sh` |
-| **Git hooks** | Auto-notify merger, add trailers | `scripts/worker-post-commit-hook.sh` |
-| **Permission sandbox** | `disallowed_tools` in registry enforced at launch | `scripts/launch-flat-worker.sh` |
-| **Worker types** | implementer / optimizer / monitor / coordinator | `templates/flat-worker/types/` |
-| **Seed generation** | Builds the initial prompt from mission + memory + inbox | `mcp/worker-fleet/index.ts:generateSeedContent()` |
+Claude Code hooks (settings.json)
+  ├── Stop gates         → block exit if unread inbox / pending ACKs
+  ├── PreToolUse         → inject fleet context, enforce disallowed_tools
+  └── PostToolUse        → emit events, register session ID
 
-## Communication Model
+Worker Fleet MCP (per-project .mcp.json)
+  ├── Messaging          → send_message, read_inbox (durable inbox.jsonl)
+  ├── State              → heartbeat, update_state, fleet_status
+  ├── Tasks              → create_task, update_task, list_tasks
+  └── Lifecycle          → create_worker, deregister, standby, recycle
+```
 
-Workers use MCP tools (not shell scripts) to talk:
+## How Workers Work
 
-- `send_message(to, content)` — durable (inbox.jsonl) + instant (tmux delivery)
-- `read_inbox()` — drain messages, returns structured list
-- `fleet_status()` — see every worker's status, branch, pane, last commit
-- `get_worker_state(worker)` — read another worker's detailed state
+1. **Launch**: `launch-flat-worker.sh` creates worktree on `worker/{name}`, opens tmux pane, starts Claude with seed prompt (mission + inbox + fleet state)
+2. **Cycle**: Worker reads mission → does work → commits → calls `update_state("cycles_completed", N)` → calls `recycle()` to graceful-stop
+3. **Sleep**: Watchdog sees `last_cycle_at` + `sleep_duration` → waits → respawns with fresh seed
+4. **Messaging**: `send_message(to, content)` writes to `inbox.jsonl` + delivers via tmux. Messages survive crashes.
+5. **Merge**: Worker sends merge request via `send_message` → merger cherry-picks to main → deploys
 
-Messages survive crashes. Workers check inbox at cycle start.
+Workers never push or merge directly. One designated merger handles main. Enforced by `disallowed_tools`.
 
-## Git Discipline
+## Project Structure (per-project)
 
-- One branch per worker (`worker/{name}`), never shared
-- Workers commit freely, never push — merger is the single gatekeeper
-- Post-commit hook auto-notifies merger on every commit
-- Commit-msg hook adds `Worker:` / `Cycle:` trailers
-- Merge requests sent via `send_message` with structured format
+```
+{project}/
+├── .claude/workers/
+│   ├── registry.json         # All worker config + state (_config + per-worker entries)
+│   ├── chief-of-staff/
+│   │   ├── mission.md        # Coordinator's prompt
+│   │   └── inbox.jsonl       # Pending messages
+│   └── my-worker/
+│       ├── mission.md
+│       └── inbox.jsonl
+├── .claude/scripts/worker/   # Shared worker scripts (deploy-to-slot, pre-validate)
+├── .mcp.json                 # Wires Worker Fleet MCP server
+└── CLAUDE.md                 # Fleet docs section (auto-appended by init)
+```
 
-## Docs
+## Infrastructure (this repo)
 
-| Doc | When to read |
-|-----|-------------|
-| [Getting Started](docs/getting-started.md) | First-time setup, launching your first worker |
-| [Architecture](docs/architecture.md) | How components connect, data flow, file ownership |
-| [Hooks](docs/hooks.md) | PreToolUse context injection, Stop hook lifecycle |
-| [Event Bus](docs/event-bus.md) | Legacy pub/sub system (still available, not primary) |
+```
+~/.claude-ops/
+├── mcp/worker-fleet/     # MCP server (14 tools, TypeScript + Zod)
+├── scripts/              # Launch, watchdog, hooks, init, utilities (36 scripts)
+├── hooks/                # Claude Code hooks: gates, interceptors, publishers
+│   └── manifest.json     # Canonical registry (16 hooks)
+├── lib/                  # Shared shell libs (fleet-jq, event-bus)
+├── templates/            # Worker type templates (mission.md, permissions)
+├── state/                # Runtime: watchdog logs, crash counts, scrollback hashes
+└── tests/                # Test suite (41 hook tests + integration)
+```
+
+## Worker Types
+
+| Type | Model | Perpetual | Sleep | Use case |
+|------|-------|-----------|-------|----------|
+| `implementer` | opus | false | — | Feature work, bug fixes (one-shot) |
+| `optimizer` | opus | true | 2h | Continuous improvement loops |
+| `monitor` | sonnet | true | 30m | Health checks, alerting |
+| `coordinator` | opus | true | 15m | Fleet coordination (chief-of-staff) |
+
+Set via `create_worker(type: "optimizer")` or override individually.
+
+## Reporting Hierarchy
+
+Workers default to reporting to `chief-of-staff` (set in `_config.mission_authority`). Override with `report_to` parameter or `direct_report: true` to report to the creating worker.
+
+## Hooks
+
+Managed via canonical manifest. Smart-merge preserves project-specific hooks.
+
+```bash
+bash ~/.claude-ops/scripts/setup-hooks.sh      # install from manifest
+bash ~/.claude-ops/scripts/lint-hooks.sh        # verify
+bash ~/.claude-ops/scripts/lint-hooks.sh --fix  # auto-repair
+```
+
+| Gate (Stop) | What it blocks |
+|-------------|---------------|
+| `stop-worker-dispatch` | Routes stop → recycle/sleep instead of exit |
+| `stop-inbox-drain` | Blocks stop if unread messages or pending ACKs |
 
 ## License
 

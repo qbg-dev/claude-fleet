@@ -1,173 +1,101 @@
-# claude-ops — Agent Bootstrap Reference
+# claude-ops — Agent Quick Reference
 
-> Single-file reference. An agent can curl this and immediately understand the system.
->
+> Curl this from any Claude session to understand the system:
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/qbg-dev/claude-ops/main/AGENTS.md
 > ```
 
----
-
 ## Core Idea
 
-Each worker is a Claude Code session in a tmux pane, on its own git worktree. Workers commit on their branch, talk via MCP, and a watchdog respawns them. Memory persists across restarts because Claude Code scopes auto-memory by filesystem path — different worktree = different memory.
+Each worker = Claude Code session + tmux pane + git worktree. Different worktree path = isolated auto-memory. Workers commit on their own branch, talk via MCP tools, watchdog respawns them.
 
----
-
-## Quick Launch
+## Launch a Worker
 
 ```bash
-# 1. Write a mission
-mkdir -p .claude/workers/my-worker
-cat > .claude/workers/my-worker/mission.md << 'EOF'
-# my-worker
-## Mission
-What this worker does.
-## Cycle Protocol
-1. read_inbox(), rebase onto main
-2. Do the work, commit
-3. send_message to merger with merge request
-4. recycle()
-EOF
-
-# 2. Add to registry.json (see below for schema)
-
-# 3. Launch
+# From shell
 bash ~/.claude-ops/scripts/launch-flat-worker.sh my-worker
+
+# From a running Claude session (MCP)
+create_worker(name: "my-worker", mission: "...", launch: true)
 ```
-
-Or from a running worker: `create_worker(name: "my-worker", mission: "...", launch: true)`
-
----
 
 ## Registry Schema
 
-`.claude/workers/registry.json` — single source of truth for all workers:
+`.claude/workers/registry.json`:
 
 ```jsonc
 {
   "_config": {
-    "commit_notify": ["merger"],     // who gets post-commit notifications
-    "merge_authority": "merger",     // who merges to main
-    "tmux_session": "w",            // tmux session name
+    "merge_authority": "merger",
+    "mission_authority": "chief-of-staff",
+    "tmux_session": "w",
     "project_name": "my-project"
   },
   "my-worker": {
-    "model": "sonnet",                        // or "opus"
+    "model": "opus",                          // or "sonnet", "haiku"
     "permission_mode": "bypassPermissions",
     "disallowed_tools": ["Bash(git push*)"],  // permission sandbox
-    "perpetual": true,                        // true = respawn after sleep
+    "perpetual": true,                        // respawn after sleep
     "sleep_duration": 3600,                   // seconds between cycles
-    "branch": "worker/my-worker",
+    "report_to": "chief-of-staff",            // default if omitted
     "window": "workers",                      // tmux window group
-    "report_to": "chief-of-staff",             // who manages this worker
-    // Auto-populated by launch script + MCP:
-    "status": "running",                      // idle|running|sleeping
+    // Auto-populated:
+    "status": "running",
     "pane_id": "%42",
-    "pane_target": "w:workers.0",
-    "session_id": "abc123...",
     "cycles_completed": 5,
-    "last_commit_sha": "def456..."
+    "last_cycle_at": "2026-03-06T12:00:00Z"
   }
 }
 ```
 
----
+## MCP Tools (14)
 
-## MCP Tools (15)
-
-Loaded via `.mcp.json`. Identity auto-detected from git branch. Source: `mcp/worker-fleet/index.ts`.
+Identity auto-detected from git branch. Source: `mcp/worker-fleet/index.ts`.
 
 | Tool | What |
 |------|------|
-| `send_message(to, content, summary)` | Send to worker name, "report", "direct_reports", or "all" |
-| `read_inbox()` | Drain durable inbox (JSONL). Returns structured messages |
+| `send_message(to, content)` | Send to worker name, "report", "direct_reports", or "all" |
+| `read_inbox()` | Drain durable inbox (JSONL), returns structured messages |
 | `fleet_status()` | All workers: status, branch, pane, last commit |
 | `get_worker_state(worker)` | Another worker's full state |
-| `update_state(key, value)` | Update own state (status, counters) |
-| `create_task(subject, priority)` | Add to own task list |
-| `update_task(task_id, status)` | Move task through pending→in_progress→completed |
-| `list_tasks()` | Show own task list |
-| `recycle()` | End cycle gracefully, watchdog respawns |
-| `heartbeat()` | Confirm alive, bump counters |
-| `create_worker(name, mission, ...)` | Create + launch; fork_from_session=true inherits context |
+| `update_state(key, value)` | Update own state in registry |
+| `heartbeat()` | Confirm alive, get inbox count |
+| `create_task(subject)` | Add to own task list |
+| `update_task(id, status)` | Move through pending → in_progress → completed |
+| `list_tasks()` | Show task list |
+| `recycle()` | End cycle, watchdog respawns after sleep_duration |
+| `create_worker(name, mission)` | Create + optionally launch a new worker |
+| `deregister(name)` | Remove from registry |
+| `standby()` | Pause (registered but not running) |
 | `check_config()` | Lint registry for misconfigurations |
-| `reload()` | Re-read registry without restart |
-| `deregister()` | Remove self from registry |
-| `standby()` | Put worker in standby (registered but not running) |
 
-**Messaging insight**: writes to `inbox.jsonl` first (durable, survives crashes), then delivers via tmux (instant). Two-phase = never lost.
+## Worker Cycle Protocol
 
----
+```
+1. heartbeat() + read_inbox()     # register alive, drain messages
+2. git fetch origin && git rebase origin/main
+3. Do work, commit frequently
+4. update_state("cycles_completed", N)
+5. Send merge request via send_message(to: "merger", ...)
+6. recycle()                      # graceful stop → watchdog respawns after sleep
+```
 
 ## Worker Types
 
-Templates at `~/.claude-ops/templates/flat-worker/types/`:
+| Type | Perpetual | Sleep | Use case |
+|------|-----------|-------|----------|
+| `implementer` | false | — | One-shot feature/bugfix work |
+| `optimizer` | true | 2h | Eval-driven improvement loops |
+| `monitor` | true | 30m | Health checks, alerting |
+| `coordinator` | true | 15m | Fleet coordination (chief-of-staff) |
 
-| Type | `perpetual` | Key permissions | Use case |
-|------|------------|----------------|----------|
-| **implementer** | false | Read-write, no push | Task-backlog-driven fixes and features |
-| **optimizer** | true | Read-write, no push | Eval-driven: run evals, fix worst gaps, prove improvement |
-| **monitor** | true | Read-only (no Edit/Write) | Watch for anomalies, report to coordinator |
-| **coordinator** | true | Full + merge + deploy | Merge branches, deploy prod, triage reports |
+## Reporting
 
----
+Workers default to reporting to `chief-of-staff`. Override with `report_to` param or `direct_report: true`.
 
 ## Git Discipline
 
-- **One branch per worker**: `worker/{name}` — never shared, never pushed by workers
-- **Post-commit hook** (`scripts/worker-post-commit-hook.sh`): auto-notifies merger on every commit
-- **Commit-msg hook**: adds `Worker:` and `Cycle:` trailers for traceability
-- **Merge protocol**: worker sends structured merge request via `send_message` → merger cherry-picks to main → merger deploys → worker verifies → ACK
-
----
-
-## Watchdog
-
-`scripts/worker-watchdog.sh` — launchd daemon, checks every 30s.
-
-| State | Detection | Action |
-|-------|-----------|--------|
-| Graceful stop | `graceful-stop` file | Wait `sleep_duration`, respawn |
-| Crash | Pane died, no sentinel | Respawn immediately |
-| Stuck >20min | Scrollback md5 unchanged | Kill + respawn |
-| Crash-loop | >3/hour | Stop, notify human |
-
-**Key insight**: stuck detection uses scrollback hash diff, not bus events. No instrumentation needed — works with any Claude session.
-
----
-
-## Hooks
-
-Four hooks in `~/.claude/settings.json` (registered by install.sh):
-
-| Hook | Script | Purpose |
-|------|--------|---------|
-| PreToolUse | `hooks/interceptors/pre-tool-context-injector.sh` | Inject inbox + policy before tool calls |
-| PostToolUse | `hooks/publishers/post-tool-publisher.sh` | Publish tool-call events |
-| Stop | `hooks/gates/stop-worker-dispatch.sh` | Write graceful-stop sentinel |
-| PromptSubmit | `hooks/publishers/prompt-publisher.sh` | Inbox sync trigger |
-
----
-
-## Key Files
-
-| Path | What |
-|------|------|
-| `scripts/launch-flat-worker.sh` | Full launch sequence (worktree + tmux + hooks + seed + register) |
-| `scripts/worker-watchdog.sh` | Respawn daemon |
-| `mcp/worker-fleet/index.ts` | MCP server — all 15 tools |
-| `lib/fleet-jq.sh` | Registry read/write, task helpers, atomic JSON ops |
-| `templates/flat-worker/types/` | Worker type templates (implementer/monitor/coordinator) |
-| `scripts/worker-post-commit-hook.sh` | Git hook: auto-notify merger |
-| `scripts/check-flat-workers.sh` | Fleet status table |
-
----
-
-## Legacy: Harness System
-
-The older harness model (task graphs at `.claude/harness/`, event bus at `lib/event-bus.sh`, side-effects at `bus/side-effects/`) is still functional. It uses `scaffold.sh` to create harnesses with `tasks.json` dependency graphs and coordinator/worker delegation.
-
-Flat workers replaced it for daily use. The harness system remains for complex multi-phase work that benefits from formal task dependencies and bus-driven side-effects.
-
-Key files if you need it: `scripts/scaffold.sh`, `lib/event-bus.sh`, `lib/harness-jq.sh`, `bus/schema.json`.
+- One branch per worker (`worker/{name}`), never shared
+- Workers commit freely, never push — merger is the single gatekeeper
+- Post-commit hook auto-notifies merger
+- Merge requests via `send_message` with branch, SHAs, what changed
