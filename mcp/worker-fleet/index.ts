@@ -2766,7 +2766,7 @@ sleep 2
 tmux send-keys -t "$PANE_ID" "cd ${worktreeDir}"
 tmux send-keys -t "$PANE_ID" -H 0d
 sleep 1
-tmux send-keys -t "$PANE_ID" "${resumeCmd}"
+tmux send-keys -t "$PANE_ID" "echo 'Continue from where you left off.' | ${resumeCmd}"
 tmux send-keys -t "$PANE_ID" -H 0d
 rm -f "${reloadScript}"
 `);
