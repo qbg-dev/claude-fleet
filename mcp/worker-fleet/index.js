@@ -19920,20 +19920,24 @@ function resolveRecipient(to) {
   return { type: "worker", workerName: to };
 }
 function tmuxSendMessage(paneId, text) {
-  const tmpFile = join(process.env.HOME || "/tmp", `.claude-ops/tmp/msg-${Date.now()}.txt`);
+  const bufName = `msg-${paneId.replace("%", "")}-${Date.now()}`;
+  const tmpFile = join(process.env.HOME || "/tmp", `.claude-ops/tmp/${bufName}.txt`);
   try {
     const tmpDir = join(process.env.HOME || "/tmp", ".claude-ops/tmp");
     if (!existsSync(tmpDir))
       mkdirSync(tmpDir, { recursive: true });
     writeFileSync(tmpFile, text);
-    spawnSync("tmux", ["load-buffer", tmpFile], { timeout: 5000 });
-    spawnSync("tmux", ["paste-buffer", "-t", paneId, "-d"], { timeout: 5000 });
+    spawnSync("tmux", ["load-buffer", "-b", bufName, tmpFile], { timeout: 5000 });
+    spawnSync("tmux", ["paste-buffer", "-b", bufName, "-t", paneId, "-d"], { timeout: 5000 });
   } finally {
     try {
       rmSync(tmpFile);
     } catch {}
+    try {
+      spawnSync("tmux", ["delete-buffer", "-b", bufName], { timeout: 2000 });
+    } catch {}
   }
-  spawnSync("sleep", ["0.3"]);
+  spawnSync("sleep", ["0.5"], { timeout: 2000 });
   spawnSync("tmux", ["send-keys", "-t", paneId, "-H", "0d"], { timeout: 5000 });
 }
 function isPaneAlive(paneId) {
@@ -19997,6 +20001,8 @@ function generateSeedContent(handoff) {
   const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
   const worktreeDir = getWorktreeDir();
   const branch = `worker/${WORKER_NAME}`;
+  const _seedConfig = readRegistry()._config;
+  const _missionAuth = _seedConfig?.mission_authority || "chief-of-staff";
   let seed = `You are worker **${WORKER_NAME}**.
 Worktree: ${worktreeDir} (branch: ${branch})
 Worker config: ${workerDir}/
@@ -20022,7 +20028,7 @@ Every cycle follows this sequence:
 7. **Complete** \u2014 \`update_task(task_id="T00N", status="completed")\` \u2014 only after fully verified
 8. **Perpetual?** \u2014 if \`perpetual: true\`, sleep for \`sleep_duration\` seconds, then loop
 
-If your inbox has a message from Warren or chief-of-staff, prioritize it over your current task list.
+If your inbox has a message from Warren or ${_missionAuth} (mission_authority), prioritize it over your current task list.
 
 ## MCP Tools (\`mcp__worker-fleet__*\`)
 
@@ -20050,8 +20056,8 @@ These are native MCP tool calls \u2014 no bash wrappers needed.
 - **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **${branch}** only. Never checkout main.
 - **Deploy**: TEST only. See your mission.md for project-specific deploy commands.
 - **Verify before completing**: Tests pass + TypeScript clean + deploy succeeds + endpoint/UI verified.
-- **Report everything to chief-of-staff via MCP**: On any bug, error, test failure, completed task, or finding worth noting \u2014 use \`send_message(to="chief-of-staff", content="...", summary="...")\`. Never append to inbox.jsonl directly. Never silently move on.
-- **Send results back**: When your mission produces output (analysis, compiled data, recommendations) \u2014 send it to chief-of-staff via \`send_message\`.
+- **Report everything to ${_missionAuth} via MCP**: On any bug, error, test failure, completed task, or finding worth noting \u2014 use \`send_message(to="${_missionAuth}", content="...", summary="...")\`. Never append to inbox.jsonl directly. Never silently move on.
+- **Send results back**: When your mission produces output (analysis, compiled data, recommendations) \u2014 send it to ${_missionAuth} via \`send_message\`.
 
 ## If You Run Continuously (Perpetual Mode)
 
@@ -20236,7 +20242,17 @@ function withStartupDiagnostics(result) {
 }
 function withPendingReminder(result) {
   const cursor = readInboxCursor(WORKER_NAME);
-  const pending = cursor?.pending_replies || [];
+  let pending = cursor?.pending_replies || [];
+  if (pending.length === 0)
+    return result;
+  const before = pending.length;
+  pending = pending.filter((p) => {
+    const senderDir = join(WORKERS_DIR, p.from_name);
+    return existsSync(senderDir);
+  });
+  if (pending.length !== before) {
+    writeInboxCursor(WORKER_NAME, cursor.offset, pending);
+  }
   if (pending.length === 0)
     return result;
   const suffix = `
@@ -21563,18 +21579,21 @@ _Not found_
 `) }] };
 });
 server.registerTool("standby", {
-  description: "Put a worker into standby mode \u2014 keeps it in the registry (easy to restart later) but tells the watchdog to leave it alone. Use when a worker has finished its immediate task but may be needed again. The worker's pane is killed gracefully. To bring it back, use create_worker(launch=true) or bash launch-flat-worker.sh. Same auth rules as deregister: self-only unless you're chief-of-staff.",
+  description: "Put a worker into standby mode \u2014 keeps it in the registry (easy to restart later) but tells the watchdog to leave it alone. The worker's pane is killed gracefully. To bring it back, use create_worker(launch=true) or launch-flat-worker.sh. Auth: self-only unless you're the mission_authority (from _config).",
   inputSchema: {
-    name: exports_external.string().optional().describe("Worker to put in standby (default: yourself). Only chief-of-staff may put other workers in standby."),
+    name: exports_external.string().optional().describe("Worker to put in standby (default: yourself). Only mission_authority can standby other workers."),
     reason: exports_external.string().optional().describe("Why it's going to standby \u2014 stored in handoff.md")
   }
 }, async ({ name, reason }) => {
   const targetName = name || WORKER_NAME;
-  if (targetName !== WORKER_NAME && WORKER_NAME !== "chief-of-staff") {
+  const _sbRegistry = readRegistry();
+  const _sbConfig = _sbRegistry._config;
+  const _sbAuth = _sbConfig?.mission_authority || "chief-of-staff";
+  if (targetName !== WORKER_NAME && WORKER_NAME !== _sbAuth) {
     return {
       content: [{
         type: "text",
-        text: `Only chief-of-staff can put other workers in standby. Contact chief-of-staff to stand down '${targetName}'.`
+        text: `Only ${_sbAuth} (mission_authority) can put other workers in standby. Contact ${_sbAuth} to stand down '${targetName}'.`
       }],
       isError: true
     };
@@ -21662,18 +21681,21 @@ Worker is in standby \u2014 registered but not running. Launch with \`bash launc
   };
 });
 server.registerTool("deregister", {
-  description: "Remove a worker from the registry (clean up ghost workers or finished one-off workers). Preserves the worker's files (.claude/workers/{name}/) and git worktree \u2014 only the registry entry is removed. Workers can only deregister themselves; chief-of-staff can deregister any worker. If you try to deregister someone else, you'll get an error telling you to contact chief-of-staff.",
+  description: "Remove a worker from the registry. Preserves files and worktree \u2014 only the registry entry is removed. Auth: self-only unless you're the mission_authority (from _config).",
   inputSchema: {
-    name: exports_external.string().optional().describe("Worker name to deregister (default: yourself). Only chief-of-staff may deregister other workers."),
+    name: exports_external.string().optional().describe("Worker name to deregister (default: yourself). Only mission_authority can deregister other workers."),
     reason: exports_external.string().optional().describe("Reason for deregistration \u2014 written to the worker's handoff.md for posterity")
   }
 }, async ({ name, reason }) => {
   const targetName = name || WORKER_NAME;
-  if (targetName !== WORKER_NAME && WORKER_NAME !== "chief-of-staff") {
+  const _drRegistry = readRegistry();
+  const _drConfig = _drRegistry._config;
+  const _drAuth = _drConfig?.mission_authority || "chief-of-staff";
+  if (targetName !== WORKER_NAME && WORKER_NAME !== _drAuth) {
     return {
       content: [{
         type: "text",
-        text: `Only chief-of-staff can deregister other workers. Contact chief-of-staff to deregister '${targetName}'.`
+        text: `Only ${_drAuth} (mission_authority) can deregister other workers. Contact ${_drAuth} to deregister '${targetName}'.`
       }],
       isError: true
     };

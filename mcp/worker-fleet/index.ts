@@ -731,6 +731,8 @@ function generateSeedContent(handoff?: string): string {
   const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
   const worktreeDir = getWorktreeDir();
   const branch = `worker/${WORKER_NAME}`;
+  const _seedConfig = readRegistry()._config as RegistryConfig | undefined;
+  const _missionAuth = _seedConfig?.mission_authority || "chief-of-staff";
 
   let seed = `You are worker **${WORKER_NAME}**.
 Worktree: ${worktreeDir} (branch: ${branch})
@@ -757,7 +759,7 @@ Every cycle follows this sequence:
 7. **Complete** — \`update_task(task_id="T00N", status="completed")\` — only after fully verified
 8. **Perpetual?** — if \`perpetual: true\`, sleep for \`sleep_duration\` seconds, then loop
 
-If your inbox has a message from Warren or chief-of-staff, prioritize it over your current task list.
+If your inbox has a message from Warren or ${_missionAuth} (mission_authority), prioritize it over your current task list.
 
 ## MCP Tools (\`mcp__worker-fleet__*\`)
 
@@ -785,8 +787,8 @@ These are native MCP tool calls — no bash wrappers needed.
 - **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **${branch}** only. Never checkout main.
 - **Deploy**: TEST only. See your mission.md for project-specific deploy commands.
 - **Verify before completing**: Tests pass + TypeScript clean + deploy succeeds + endpoint/UI verified.
-- **Report everything to chief-of-staff via MCP**: On any bug, error, test failure, completed task, or finding worth noting — use \`send_message(to="chief-of-staff", content="...", summary="...")\`. Never append to inbox.jsonl directly. Never silently move on.
-- **Send results back**: When your mission produces output (analysis, compiled data, recommendations) — send it to chief-of-staff via \`send_message\`.
+- **Report everything to ${_missionAuth} via MCP**: On any bug, error, test failure, completed task, or finding worth noting — use \`send_message(to="${_missionAuth}", content="...", summary="...")\`. Never append to inbox.jsonl directly. Never silently move on.
+- **Send results back**: When your mission produces output (analysis, compiled data, recommendations) — send it to ${_missionAuth} via \`send_message\`.
 
 ## If You Run Continuously (Perpetual Mode)
 
@@ -2558,12 +2560,15 @@ server.registerTool(
   async ({ name, reason }) => {
     const targetName = name || WORKER_NAME;
 
-    // Authorization: self-only unless chief-of-staff
-    if (targetName !== WORKER_NAME && WORKER_NAME !== "chief-of-staff") {
+    // Authorization: self-only unless mission_authority
+    const _sbRegistry = readRegistry();
+    const _sbConfig = _sbRegistry._config as RegistryConfig | undefined;
+    const _sbAuth = _sbConfig?.mission_authority || "chief-of-staff";
+    if (targetName !== WORKER_NAME && WORKER_NAME !== _sbAuth) {
       return {
         content: [{
           type: "text" as const,
-          text: `Only chief-of-staff can put other workers in standby. Contact chief-of-staff to stand down '${targetName}'.`,
+          text: `Only ${_sbAuth} (mission_authority) can put other workers in standby. Contact ${_sbAuth} to stand down '${targetName}'.`,
         }],
         isError: true,
       };
@@ -2661,21 +2666,24 @@ server.registerTool(
 server.registerTool(
   "deregister",
   {
-    description: "Remove a worker from the registry (clean up ghost workers or finished one-off workers). Preserves the worker's files (.claude/workers/{name}/) and git worktree — only the registry entry is removed. Workers can only deregister themselves; chief-of-staff can deregister any worker. If you try to deregister someone else, you'll get an error telling you to contact chief-of-staff.",
+    description: "Remove a worker from the registry. Preserves files and worktree — only the registry entry is removed. Auth: self-only unless you're the mission_authority (from _config).",
     inputSchema: {
-      name: z.string().optional().describe("Worker name to deregister (default: yourself). Only chief-of-staff may deregister other workers."),
+      name: z.string().optional().describe("Worker name to deregister (default: yourself). Only mission_authority can deregister other workers."),
       reason: z.string().optional().describe("Reason for deregistration — written to the worker's handoff.md for posterity"),
     },
   },
   async ({ name, reason }) => {
     const targetName = name || WORKER_NAME;
 
-    // Authorization: only self-deregister, OR chief-of-staff can deregister anyone
-    if (targetName !== WORKER_NAME && WORKER_NAME !== "chief-of-staff") {
+    // Authorization: only self-deregister, OR mission_authority can deregister anyone
+    const _drRegistry = readRegistry();
+    const _drConfig = _drRegistry._config as RegistryConfig | undefined;
+    const _drAuth = _drConfig?.mission_authority || "chief-of-staff";
+    if (targetName !== WORKER_NAME && WORKER_NAME !== _drAuth) {
       return {
         content: [{
           type: "text" as const,
-          text: `Only chief-of-staff can deregister other workers. Contact chief-of-staff to deregister '${targetName}'.`,
+          text: `Only ${_drAuth} (mission_authority) can deregister other workers. Contact ${_drAuth} to deregister '${targetName}'.`,
         }],
         isError: true,
       };

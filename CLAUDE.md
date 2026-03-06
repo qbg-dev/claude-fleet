@@ -96,8 +96,20 @@ bash ~/.claude-ops/scripts/setup-hooks.sh      # install
 bash ~/.claude-ops/scripts/lint-hooks.sh --fix  # verify + repair
 ```
 
+## mission_authority
+
+The `_config.mission_authority` field (defaults to `"chief-of-staff"`) defines the fleet's privileged worker. This worker can:
+
+- **Deregister** any worker (others can only deregister themselves)
+- **Standby** any worker (others can only standby themselves)
+- **Update state** of any worker (others can only update themselves)
+- **Receive all alerts**: watchdog dead-worker notifications, recycle notifications
+- **Priority inbox**: seed prompt tells workers to prioritize messages from mission_authority
+- **Default report_to**: all new workers report to mission_authority unless overridden
+
+Change it in `registry.json` `_config` to use a different coordinator name.
+
 ## Conventions
 
 - Shell: `set -euo pipefail`, JSON via `jq`, registry locks via `mkdir`
 - tmux: never literal `Enter` (use `send-keys -H 0d`), never `display-message -p '#{pane_id}'`
-- Workers default `report_to: chief-of-staff` unless explicitly set
