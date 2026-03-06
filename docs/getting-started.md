@@ -1,170 +1,113 @@
-# Getting Started with claude-ops
-
-This guide walks you through installing claude-ops, scaffolding your first harness, and launching your first autonomous agent.
+# Getting Started
 
 ## Prerequisites
 
-- macOS or Linux
-- `git`, `jq`, `tmux`, `bash` (4+)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
-- A project to run agents on
+git, jq, tmux, bash 4+, bun, Claude Code (authenticated).
 
-## Step 1: Install
+## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/qbg-dev/claude-ops/main/install.sh | bash
+git clone git@github.com:qbg-dev/claude-ops.git ~/.claude-ops
+cd ~/.claude-ops/mcp/worker-fleet && bun install
 ```
 
-The installer:
-1. Clones the repo to `~/.claude-ops`
-2. Adds `~/.claude-ops/bin` to your `PATH`
-3. Registers the four Claude Code hooks in `~/.claude/settings.json`
-4. Verifies the installation
+## Set Up a Project
 
-After install, reload your shell:
-```bash
-source ~/.zshrc  # or ~/.bash_profile / ~/.bashrc
-```
+**1. Wire the MCP server** — create `.mcp.json` in your project root. See `mcp/worker-fleet/index.ts` header for the full schema. Minimum:
 
-### Verify
-
-```bash
-bash ~/.claude-ops/tests/run-all.sh
-```
-
-All tests should pass (163 tests, 10 suites).
-
-## Step 2: Scaffold a Harness
-
-A *harness* is a named task graph that an agent works through. Create one in your project:
-
-```bash
-bash ~/.claude-ops/scripts/scaffold.sh my-feature /path/to/your/project
-```
-
-This creates:
-
-```
-/path/to/your/project/
-└── .claude/
-    ├── harness/
-    │   └── my-feature/
-    │       ├── tasks.json        ← task graph (you edit this)
-    │       ├── harness.md        ← context for the agent
-    │       ├── spec.md           ← acceptance criteria template
-    │       ├── acceptance.md     ← pass/fail tracker
-    │       ├── policy.json       ← context injection rules
-    │       └── agents/
-    │           └── module-manager/
-    │               ├── config.json
-    │               ├── state.json
-    │               ├── MEMORY.md
-    │               ├── mission.md
-    │               ├── inbox.jsonl
-    │               └── outbox.jsonl
-    └── scripts/
-        └── my-feature-seed.sh   ← generates the agent seed prompt
-```
-
-For a long-running (recurring) harness:
-
-```bash
-bash ~/.claude-ops/scripts/scaffold.sh --long-running monitor /path/to/project
-```
-
-## Step 3: Define Your Tasks
-
-Edit `.claude/harness/my-feature/tasks.json`:
-
-```json
+```jsonc
 {
-  "tasks": {
-    "T-1": {
-      "status": "pending",
-      "description": "Analyze the codebase and create a plan",
-      "blockedBy": []
-    },
-    "T-2": {
-      "status": "pending",
-      "description": "Implement the feature",
-      "blockedBy": ["T-1"]
-    },
-    "T-3": {
-      "status": "pending",
-      "description": "Write tests and update docs",
-      "blockedBy": ["T-2"]
+  "mcpServers": {
+    "worker-fleet": {
+      "command": "bun",
+      "args": ["run", "/Users/you/.claude-ops/mcp/worker-fleet/index.ts"],
+      "env": { "PROJECT_ROOT": "/path/to/project" }
     }
   }
 }
 ```
 
-Task schema:
-- `status`: `"pending"` | `"in_progress"` | `"completed"`
-- `blockedBy`: list of task IDs that must complete first
-- `description`: what this task does
-- `owner`: (optional) which agent owns it
-- `metadata`: (optional) arbitrary extra data
+**2. Create the registry** — `.claude/workers/registry.json`. The `_config` block sets fleet-wide defaults (who merges, which tmux session, who gets commit notifications):
 
-## Step 4: Write the Harness Context
-
-Edit `.claude/harness/my-feature/harness.md` to give the agent:
-- What the end goal looks like
-- Key files and APIs to know about
-- Constraints and rationale
-
-The better this file is, the better the agent performs when it re-reads it after a session boundary.
-
-## Step 5: Generate the Seed Prompt
-
-```bash
-bash /path/to/project/.claude/scripts/my-feature-seed.sh > /tmp/my-feature-seed.txt
+```jsonc
+{
+  "_config": {
+    "commit_notify": ["merger"],
+    "merge_authority": "merger",
+    "tmux_session": "w",
+    "project_name": "my-project"
+  }
+}
 ```
 
-Review the seed—it summarizes the harness state and instructs the agent on how to proceed.
+## Launch a Worker
 
-## Step 6: Launch the Agent
+**3. Write a mission** — `.claude/workers/my-worker/mission.md`. The mission is the worker's entire personality and protocol. Good missions have: what to do, when to commit, who to message, and when to recycle. See `templates/flat-worker/types/` for examples per worker type.
 
-Open a tmux session and pipe the seed to Claude Code:
+**4. Add to registry** — add an entry to registry.json with model, permissions, sleep cadence:
 
-```bash
-tmux new-session -s my-agent
-cat /tmp/my-feature-seed.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6
+```jsonc
+"my-worker": {
+  "model": "sonnet",
+  "permission_mode": "bypassPermissions",
+  "disallowed_tools": ["Bash(git push*)", "Bash(rm -rf*)"],
+  "perpetual": true,
+  "sleep_duration": 3600,
+  "branch": "worker/my-worker",
+  "window": "workers"
+}
 ```
 
-The agent will:
-1. Read the harness files
-2. Pick the first unblocked task
-3. Work until the task is done
-4. Mark it complete and move to the next
+**5. Launch** — this creates the worktree, tmux pane, git hooks, seed prompt, and starts Claude:
 
-The **Stop hook** (`stop-harness-dispatch.sh`) fires when Claude tries to stop. For a bounded harness with incomplete tasks, it blocks the stop and shows the current task state—so the agent keeps working.
-
-## Step 7: Monitor Progress
-
-Check current status via tmux:
 ```bash
-tmux list-panes -a  # find your agent pane
-tmux attach -t my-agent
+bash ~/.claude-ops/scripts/launch-flat-worker.sh my-worker
 ```
 
-Or read the task graph directly:
-```bash
-cat /path/to/project/.claude/harness/my-feature/tasks.json | jq '.tasks | to_entries[] | {id: .key, status: .value.status}'
+The worker is now autonomous. To create + launch from another running worker:
+
+```
+create_worker(name: "my-worker", mission: "...", model: "sonnet", launch: true)
 ```
 
-## How the Stop Gate Works
+## What Happens Under the Hood
 
-When Claude Code tries to stop, the Stop hook fires. For a bounded harness:
+`launch-flat-worker.sh` does these things in order:
+1. Creates git worktree at `../project-w-my-worker/` on branch `worker/my-worker`
+2. Copies `.mcp.json` into worktree (so the worker gets fleet tools)
+3. Installs post-commit + commit-msg hooks (auto-notification + trailers)
+4. Joins or creates tmux window, splits pane
+5. Generates seed prompt via `bun` (reads mission, memory, inbox, registry)
+6. Starts Claude Code with `--disallowed-tools` from registry
+7. Registers pane ID in registry.json (atomic locked write)
 
-- **Tasks remaining**: hook blocks the stop and shows current task + what's next
-- **All tasks done**: hook asks the agent to update `MEMORY.md` and run `bus_git_checkpoint` before allowing stop
-- **Long-running harness**: hook allows stop, writes a `graceful-stop` sentinel; the watchdog sees this and respawns after the configured sleep duration
+## Watchdog
 
-This is what makes agents keep working without manual intervention.
+The watchdog keeps workers alive. Set up as launchd (macOS):
+
+```bash
+# See scripts/worker-watchdog.sh header for the full plist template
+launchctl load ~/Library/LaunchAgents/com.claude-ops.worker-watchdog.plist
+```
+
+It checks every 30s: respawns graceful stops after `sleep_duration`, respawns crashes immediately, kills stuck workers (scrollback unchanged >20min), stops crash-loops (>3/hour).
+
+## Fleet Operations
+
+```bash
+bash ~/.claude-ops/scripts/check-flat-workers.sh   # fleet status table
+bash ~/.claude-ops/scripts/fleet-health.sh          # quick health check
+```
+
+From inside any worker: `fleet_status()`, `read_inbox()`, `send_message(to, content)`.
+
+## Key Insight: Memory Through Worktrees
+
+Each worktree has a unique filesystem path → Claude Code's auto-memory is automatically isolated per worker. No configuration needed. Workers accumulate domain knowledge across cycles because the watchdog respawns them in the same worktree.
 
 ## Next Steps
 
-- [Architecture](architecture.md) — understand the 5 components
-- [Event Bus](event-bus.md) — inter-agent messaging
-- [Hooks](hooks.md) — context injection and policy enforcement
-- Multi-agent: spawn a coordinator with `worker-dispatch.sh`
+- `templates/flat-worker/types/` — implementer, monitor, coordinator templates
+- `mcp/worker-fleet/index.ts` — all 15 MCP tools documented in source
+- `scripts/launch-flat-worker.sh` — the full launch sequence
+- [Architecture](architecture.md) — component diagram and data flow

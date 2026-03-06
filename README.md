@@ -1,263 +1,84 @@
 # claude-ops — Worker Fleet Infrastructure for Claude Code
 
-Infrastructure layer for running autonomous Claude Code agent fleets. Turns Claude sessions into persistent, recoverable workers with their own missions, permissions, and memory. Uses Claude Code's native hooks, settings, MCP, and session model.
+Run fleets of autonomous Claude Code agents. Each worker = one git worktree + one tmux pane + one persistent memory. Workers commit on their own branches, talk via MCP, and a watchdog respawns them forever.
 
-## Core Idea
+## The Key Insight
 
-Each worker is a Claude Code session running in a tmux pane, on its own git worktree, with its own branch. Workers are configured by a `registry.json` + `mission.md` in the project repo. This repo provides the upstream infrastructure: launch scripts, watchdog, MCP server, hooks.
+Claude Code scopes auto-memory by filesystem path. **Git worktrees give each worker a different path, so each worker gets isolated persistent memory for free.** By cycle 50, a worker knows things a fresh session never could.
 
 ```
-~/.claude-ops/                    (this repo — project-agnostic infrastructure)
-  scripts/launch-flat-worker.sh   Launch a worker (worktree + tmux + Claude)
-  scripts/harness-watchdog.sh     Daemon: detect stuck/crashed, respawn
-  mcp/worker-fleet/index.ts       MCP server (14 tools for messaging, state, fleet)
-  mcp/relay-server/index.ts       Cross-machine relay for remote workers
-
-{project}/                        (project-specific config)
-  .claude/workers/registry.json   Single source of truth for all workers
-  .claude/workers/{name}/
-    mission.md                    What this worker does
-    inbox.jsonl                   Incoming messages (durable)
-  .mcp.json                      Wires worker-fleet MCP into Claude sessions
+project-w-merger/        → memory at ~/.claude/projects/...-w-merger/memory/
+project-w-optimizer/     → memory at ~/.claude/projects/...-w-optimizer/memory/
+project-w-patrol/        → memory at ~/.claude/projects/...-w-patrol/memory/
 ```
 
-## How to Launch a Worker
+## How It Works
 
-### 1. Create worker directory and mission
+1. **Launch** creates a git worktree on `worker/{name}`, opens a tmux pane, starts Claude with a seed prompt
+2. **Worker** reads its mission, does work, commits on its branch, messages the merger
+3. **Watchdog** detects when Claude stops or crashes, respawns after a configurable sleep
+4. **MCP server** gives workers 15 tools: messaging, tasks, state, fleet visibility
+5. **Git hooks** auto-notify the merger on every commit, add Worker/Cycle trailers
+
+Workers never push or merge. One designated merger handles main. This is enforced by `--disallowed-tools`.
+
+## Quick Start
 
 ```bash
-mkdir -p .claude/workers/my-worker
-cat > .claude/workers/my-worker/mission.md << 'EOF'
-# my-worker — What It Does
+# 1. Install
+git clone git@github.com:qbg-dev/claude-ops.git ~/.claude-ops
+cd ~/.claude-ops/mcp/worker-fleet && bun install
 
-## Mission
-Describe what this agent does each cycle.
+# 2. In your project, create .mcp.json (see mcp/worker-fleet/index.ts header for schema)
+# 3. Create .claude/workers/registry.json (see templates/flat-worker/ for examples)
+# 4. Create .claude/workers/my-worker/mission.md
 
-## Cycle Protocol
-1. Step one
-2. Step two
-3. Commit, request merge, sleep
-EOF
-```
-
-### 2. Add to registry (manual) OR use `create_worker` MCP tool (automated)
-
-**Option A — Manual** (edit `registry.json` directly):
-
-```jsonc
-// .claude/workers/registry.json
-{
-  "_config": {
-    "commit_notify": ["merger"],
-    "merge_authority": "merger",
-    "tmux_session": "w",
-    "project_name": "my-project"
-  },
-  "my-worker": {
-    "model": "sonnet",                    // or "opus"
-    "permission_mode": "bypassPermissions",
-    "disallowed_tools": [                 // safety sandbox
-      "Bash(git push*)",
-      "Bash(rm -rf*)",
-      "Bash(*deploy-prod*)"
-    ],
-    "status": "idle",
-    "perpetual": true,                    // sleep/wake forever
-    "sleep_duration": 3600,               // seconds between cycles
-    "branch": "worker/my-worker",
-    "window": "workers",                  // tmux window group
-    "parent": "chief-of-staff"
-  }
-}
-```
-
-**Option B — `create_worker` MCP tool** (from any running worker, e.g. chief-of-staff):
-
-```
-create_worker(
-  name: "my-worker",
-  mission: "# my-worker\n\n## Mission\n...",
-  model: "opus",
-  perpetual: true,
-  sleep_duration: 3600,
-  disallowed_tools: '["Bash(git push*)","Bash(rm -rf*)","Bash(*deploy*)"]',
-  window: "optimizers",
-  parent: "chief-of-staff",
-  launch: true,
-  tasks: '[{"subject":"Fix the thing","priority":"high"}]'
-)
-```
-
-This creates the worker directory, mission.md, pre-creates auto-memory, registers in registry.json (atomic locked write), and optionally launches in tmux — all in one call.
-
-| Parameter | Type | Default | What it sets |
-|-----------|------|---------|-------------|
-| `name` | string | required | Worker name (kebab-case) |
-| `mission` | string | required | Full mission.md content |
-| `model` | enum | `"sonnet"` | LLM model |
-| `perpetual` | bool | `false` | Sleep/wake vs one-shot |
-| `sleep_duration` | number | `1800` | Seconds between cycles |
-| `disallowed_tools` | JSON string | safe git/rm guards | Tool permission sandbox |
-| `window` | string | worker name | tmux window group |
-| `parent` | string | calling worker | Parent in hierarchy |
-| `permission_mode` | string | `"bypassPermissions"` | Claude permission mode |
-| `launch` | bool | `false` | Auto-start in tmux |
-| `tasks` | JSON string | none | Initial task list |
-
-### 3. Set up .mcp.json
-
-```jsonc
-// .mcp.json (project root — gives workers fleet communication tools)
-{
-  "mcpServers": {
-    "worker-fleet": {
-      "command": "/path/to/bun",
-      "args": ["run", "/path/to/.claude-ops/mcp/worker-fleet/index.ts"],
-      "env": { "PROJECT_ROOT": "/path/to/project" }
-    }
-  }
-}
-```
-
-### 4. Launch
-
-```bash
+# 5. Launch
 bash ~/.claude-ops/scripts/launch-flat-worker.sh my-worker
 ```
 
-This:
-1. Creates git worktree `../my-project-w-my-worker/` on branch `worker/my-worker`
-2. Copies `.mcp.json` into worktree
-3. Installs git hooks (post-commit notifies merger, commit-msg adds Worker: trailers)
-4. Creates/joins tmux window group, splits pane
-5. Starts Claude Code with permission sandboxing
-6. Generates and injects seed prompt
-7. Registers pane in `registry.json`
+Or create workers from any running worker: `create_worker(name: "my-worker", mission: "...", launch: true)`
 
-## Architecture
+## Key Concepts
 
-### tmux as the Substrate
+| Concept | What | Where to look |
+|---------|------|---------------|
+| **Registry** | Single source of truth for all workers (config, state, pane info) | `.claude/workers/registry.json` |
+| **Mission** | What a worker does, its cycle protocol | `.claude/workers/{name}/mission.md` |
+| **MCP tools** | 15 tools: messaging, tasks, state, fleet | `mcp/worker-fleet/index.ts` |
+| **Watchdog** | Respawns workers on stop/crash, detects stuck | `scripts/worker-watchdog.sh` |
+| **Git hooks** | Auto-notify merger, add trailers | `scripts/worker-post-commit-hook.sh` |
+| **Permission sandbox** | `disallowed_tools` in registry enforced at launch | `scripts/launch-flat-worker.sh` |
+| **Worker types** | implementer / monitor / coordinator templates | `templates/flat-worker/types/` |
+| **Seed generation** | Builds the initial prompt from mission + memory + inbox | `mcp/worker-fleet/index.ts:generateSeedContent()` |
 
-All workers live in one tmux session, organized by window groups:
+## Communication Model
 
-```
-Session: w
-  Window: main        → chief-of-staff, merger, patrol
-  Window: optimizers  → bi-optimizer, kefu-optimizer, sql-library-builder
-  Window: monitors    → infra-monitor, auth-monitor
-```
+Workers use MCP tools (not shell scripts) to talk:
 
-Workers in the same window share a tiled layout. Watchdog monitors all panes from a single daemon.
+- `send_message(to, content)` — durable (inbox.jsonl) + instant (tmux delivery)
+- `read_inbox()` — drain messages, returns structured list
+- `fleet_status()` — see every worker's status, branch, pane, last commit
+- `get_worker_state(worker)` — read another worker's detailed state
 
-### Worker Fleet MCP Server
+Messages survive crashes. Workers check inbox at cycle start.
 
-14 tools in 5 categories, loaded via `.mcp.json`:
+## Git Discipline
 
-| Category | Tools |
-|----------|-------|
-| **Messaging** | `send_message` (to worker, "parent", "children", "all"), `read_inbox` |
-| **Tasks** | `create_task`, `update_task`, `list_tasks` |
-| **State** | `get_worker_state`, `update_state` |
-| **Fleet** | `fleet_status` |
-| **Lifecycle** | `recycle`, `spawn_child`, `heartbeat`, `check_config`, `create_worker` |
+- One branch per worker (`worker/{name}`), never shared
+- Workers commit freely, never push — merger is the single gatekeeper
+- Post-commit hook auto-notifies merger on every commit
+- Commit-msg hook adds `Worker:` / `Cycle:` trailers
+- Merge requests sent via `send_message` with structured format
 
-Identity auto-detected from `WORKER_NAME` env or git branch name.
+## Docs
 
-Messaging is durable: writes to `inbox.jsonl` first (survives restarts), then delivers via tmux (instant).
-
-### Memory Through Worktrees
-
-Each worker's git worktree has a different filesystem path, so Claude Code's auto-memory (`~/.claude/projects/{path-slug}/memory/`) gives each one isolated persistent memory automatically:
-
-```
-Worker: bi-optimizer
-  Worktree: project-w-bi-optimizer/
-  Memory:   ~/.claude/projects/-...-project-w-bi-optimizer/memory/MEMORY.md
-
-Worker: patrol
-  Worktree: project-w-patrol/
-  Memory:   ~/.claude/projects/-...-project-w-patrol/memory/MEMORY.md
-```
-
-Workers accumulate domain knowledge across cycles. By cycle 50, they have deep operational knowledge a fresh session wouldn't have.
-
-### Watchdog
-
-`harness-watchdog.sh` runs as a launchd daemon, checking every 30 seconds:
-
-| State | Detection | Action |
-|-------|-----------|--------|
-| Active | `(running)` in statusline | Skip |
-| Idle >10min | Scrollback hash unchanged | Resume session |
-| Stuck | Tool-call timestamp stale | Kill + respawn |
-| Dead pane | Pane missing from tmux | Re-split + relaunch |
-| Crash-loop | >3 crashes/hour | Stop, notify human |
-
-Three-layer stuck detection:
-1. `(running)` guard — skip if executing bash
-2. Scrollback hash diff — `md5(last 30 lines)` vs previous check
-3. Known blocking patterns — `"Waiting for task"`, `"hook error"`
-
-### Permission Sandboxing
-
-Workers get `--disallowed-tools` from registry. Examples:
-
-- **Read-only observer**: `disallowed_tools: ["Edit", "Write", "Bash(git commit*)"]`
-- **No deploy**: `disallowed_tools: ["Bash(*deploy-prod*)", "Bash(*deploy.sh*)"]`
-- **Standard worker**: `disallowed_tools: ["Bash(git push*)", "Bash(rm -rf*)", "Bash(git reset --hard*)"]`
-
-### Cross-Machine Relay
-
-`mcp/relay-server/index.ts` bridges messaging between machines (e.g., laptop + Mac Mini over Tailscale). Workers call `send_message()` normally; the MCP server routes through the relay if the recipient is remote.
-
-## Worker Types
-
-| Type | Lifecycle | Access | Example |
-|------|-----------|--------|---------|
-| **Implementer** | Cycles with sleep | Read-write, commit | bi-optimizer, kefu-optimizer |
-| **Observer** | Perpetual, short cycles | Read-only | patrol (visual QA), auth-monitor |
-| **Coordinator** | Perpetual, short cycles | Read + message routing | chief-of-staff |
-| **Merger** | Perpetual, event-driven | Full (merge + deploy) | merger |
-| **One-shot** | Runs once | Read-write | miniapp-audit, finance-fix |
-
-## Governance Model
-
-1. **Workers commit** on their own branches but **never push or merge**
-2. **Merger** is the only agent that merges to main and deploys
-3. Workers request merges via `send_message("merger", ...)`
-4. **Chief-of-staff** reviews fleet health every 15 min, edits worker missions
-5. **Eval-driven**: workers have acceptance criteria (eval scripts) and optimize autonomously
-6. **Git history is the audit trail**: every commit has `Worker:` and `Cycle:` trailers
-
-## Scripts Reference
-
-| Script | Purpose |
-|--------|---------|
-| `launch-flat-worker.sh` | Launch a worker (worktree + tmux + Claude) |
-| `harness-watchdog.sh` | Daemon: detect stuck/crashed, respawn |
-| `worker-status.sh` | Show table of all workers from registry |
-| `register-pane.sh` | Self-register tmux pane into registry |
-| `request-merge.sh` | Request merge from merger worker |
-| `json-union-merge.sh` | Merge registry.json across branches |
-| `worker-post-commit-hook.sh` | Git hook: notify merger, update registry |
-| `worker-commit-msg-hook.sh` | Git hook: add Worker:/Cycle: trailers |
-| `worker-post-merge-hook.sh` | Git hook: notify workers of merge |
-| `check-flat-workers.sh` | Fleet health check |
-| `fleet-health.sh` | Quick fleet health summary |
-| `launch-main-window.sh` | Set up the initial tmux session |
-
-## Setup
-
-```bash
-# Clone
-git clone git@github.com:qbg-dev/claude-ops.git ~/.claude-ops
-
-# Install MCP dependencies
-cd ~/.claude-ops/mcp/worker-fleet && bun install
-
-# Set up watchdog (macOS)
-# See scripts/harness-watchdog.sh header for launchd plist
-```
+| Doc | When to read |
+|-----|-------------|
+| [Getting Started](docs/getting-started.md) | First-time setup, launching your first worker |
+| [Architecture](docs/architecture.md) | How components connect, data flow, file ownership |
+| [Hooks](docs/hooks.md) | PreToolUse context injection, Stop hook lifecycle |
+| [Event Bus](docs/event-bus.md) | Legacy pub/sub system (still available, not primary) |
 
 ## License
 
