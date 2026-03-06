@@ -60,6 +60,22 @@
       "description": "Injects contextual hints before tool execution"
     },
     {
+      "id": "liveness-heartbeat-post",
+      "event": "PostToolUse",
+      "path": "~/.claude-ops/hooks/publishers/liveness-heartbeat.sh",
+      "required": true,
+      "category": "core",
+      "description": "Touches liveness timestamp on every tool call for watchdog stuck detection"
+    },
+    {
+      "id": "liveness-heartbeat-prompt",
+      "event": "UserPromptSubmit",
+      "path": "~/.claude-ops/hooks/publishers/liveness-heartbeat.sh",
+      "required": true,
+      "category": "core",
+      "description": "Touches liveness timestamp on every prompt for watchdog stuck detection"
+    },
+    {
       "id": "post-tool-publisher",
       "event": "PostToolUse",
       "path": "~/.claude-ops/hooks/publishers/post-tool-publisher.sh",

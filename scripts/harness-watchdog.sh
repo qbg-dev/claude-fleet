@@ -461,15 +461,19 @@ check_worker() {
   if $pane_alive; then
     # ── Pane alive — check for graceful sleep or stuck ──
 
-    # Quick check: if a bash command is currently running, worker is active
-    local pane_content
-    pane_content=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^$' | tail -5)
-    if echo "$pane_content" | grep -qF '(running)'; then
-      # Command actively executing — not stuck, clear any stale marker
-      local runtime; runtime=$(_worker_runtime "$worker")
-      rm -f "$runtime/stuck-candidate" 2>/dev/null || true
-      _clear_cos_notified "$worker"
-      return
+    # Quick check: liveness heartbeat file (touched by PostToolUse + UserPromptSubmit hooks)
+    local runtime; runtime=$(_worker_runtime "$worker")
+    local liveness_file="$runtime/liveness"
+    if [ -f "$liveness_file" ]; then
+      local last_active
+      last_active=$(cat "$liveness_file" 2>/dev/null || echo "0")
+      local since_active=$(( now_ts - last_active ))
+      if [ "$since_active" -lt 60 ]; then
+        # Active within last 60s — not stuck, clear any stale marker
+        rm -f "$runtime/stuck-candidate" 2>/dev/null || true
+        _clear_cos_notified "$worker"
+        return
+      fi
     fi
 
     # ── Bare-shell detection (soft crash loop guard) ──
