@@ -1068,11 +1068,11 @@ describe("create_worker — report_to / forked_from tracking", () => {
     expect(entry.pane_id).toBe("%11");
   });
 
-  test("direct_report=false uses assigned_by or mission_authority", () => {
+  test("direct_report=false uses report_to or mission_authority", () => {
     const registry = makeProjectRegistry({
       "worker-a": makeRegistryEntry({ pane_id: "%10" }),
     });
-    // Simulate direct_report=false: report_to = assigned_by || WORKER_NAME || "chief-of-staff"
+    // Simulate direct_report=false: report_to = report_to param || WORKER_NAME || "chief-of-staff"
     registerNewWorker(registry, "new-worker", { report_to: "chief-of-staff" });
 
     const entry = registry["new-worker"] as RegistryWorkerEntry;

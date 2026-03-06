@@ -2067,7 +2067,7 @@ interface CreateWorkerInput {
   sleep_duration?: number;
   disallowed_tools?: string[];
   window?: string;
-  assigned_by?: string;
+  report_to?: string;
   permission_mode?: string;
   taskEntries?: Array<{ subject: string; description?: string; priority?: string }>;
 }
@@ -2086,7 +2086,7 @@ interface CreateWorkerResult {
 
 /** Core logic for creating a worker's directory and files. Exported for testing. */
 function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
-  const { name, mission, model, perpetual, sleep_duration, disallowed_tools, window: windowGroup, assigned_by, permission_mode, taskEntries = [] } = input;
+  const { name, mission, model, perpetual, sleep_duration, disallowed_tools, window: windowGroup, report_to, permission_mode, taskEntries = [] } = input;
 
   // Validate
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
@@ -2133,7 +2133,7 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
     permission_mode: permission_mode || "bypassPermissions",
     disallowedTools: disallowed_tools ?? defaultDisallowed,
     window: windowGroup || null,
-    assigned_by: assigned_by || null,
+    report_to: report_to || null,
   };
 
   // State (no longer written to state.json — stored in registry.json)
@@ -2184,7 +2184,7 @@ server.registerTool(
     sleep_duration: z.number().optional().describe("Seconds between cycles, only if perpetual (default: 1800)"),
     disallowed_tools: z.string().optional().describe("JSON array of disallowed tool patterns (default: safe git/rm guards). Example: [\"Bash(git push*)\",\"Edit\",\"Bash(*deploy*)\"]"),
     window: z.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers in the same group share a tiled layout."),
-    assigned_by: z.string().optional().describe("Who assigned this worker (default: calling worker)"),
+    report_to: z.string().optional().describe("Who this worker reports to (default: calling worker or mission_authority)"),
     permission_mode: z.string().optional().describe("Claude permission mode (default: bypassPermissions)"),
     launch: z.boolean().optional().describe("Auto-launch in tmux after creation (default: false)"),
     tasks: z.string().optional().describe("JSON array of tasks: [{subject, description?, priority?}]"),
@@ -2192,7 +2192,7 @@ server.registerTool(
     direct_report: z.boolean().optional().describe("Set report_to to the calling worker instead of mission_authority (default: false)"),
     placement: z.enum(["window", "beside", "new-window"]).optional().describe("Where to place the pane: 'window' (join named window group, default), 'beside' (split next to caller), 'new-window' (fresh named window)"),
   } },
-  async ({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, assigned_by, permission_mode, launch, tasks: tasksJson, fork_from_session, direct_report, placement }) => {
+  async ({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, fork_from_session, direct_report, placement }) => {
     try {
       // Change 4: Enforce unique worker names
       const existingRegistry = readRegistry();
@@ -2239,7 +2239,7 @@ server.registerTool(
       }
 
       // Create files
-      const result = createWorkerFiles({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, assigned_by, permission_mode, taskEntries });
+      const result = createWorkerFiles({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, taskEntries });
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: `Error: ${result.error}` }], isError: true };
       }
@@ -2247,7 +2247,7 @@ server.registerTool(
       // Determine report_to
       const reportTo = direct_report
         ? WORKER_NAME
-        : (assigned_by || WORKER_NAME || "chief-of-staff");
+        : (report_to || WORKER_NAME || "chief-of-staff");
 
       // Register in unified registry
       const { state, permissions, taskIds, model: selectedModel, perpetual: isPerpetual } = result as Required<CreateWorkerResult>;

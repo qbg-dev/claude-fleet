@@ -85,7 +85,7 @@ if [ -n "${TMUX_PANE:-}" ]; then
   fi
   _REGISTRY="$_main_project/.claude/workers/registry.json"
 
-  # Auto-derive assigned_by from parent pane if not given
+  # Auto-derive report_to from parent pane if not given
   if [ -z "$CHILD_ASSIGNED_BY" ] && [ -n "$PARENT_PANE" ] && [ -f "$_REGISTRY" ]; then
     CHILD_ASSIGNED_BY=$(jq -r --arg p "$PARENT_PANE" \
       'to_entries[] | select(.value.pane_id == $p) | .key' \
@@ -107,21 +107,21 @@ if [ -n "${TMUX_PANE:-}" ]; then
          --arg pane_id "$TMUX_PANE" \
          --arg pane_target "${_pane_target:-}" \
          --arg tmux_session "${_tmux_session:-}" \
-         --arg assigned_by "${CHILD_ASSIGNED_BY}" \
+         --arg report_to "${CHILD_ASSIGNED_BY}" \
          --arg parent_pane "$PARENT_PANE" \
          'if .[$name] then
             .[$name].pane_id = $pane_id |
             .[$name].pane_target = $pane_target |
             .[$name].tmux_session = $tmux_session |
             .[$name].parent_pane = $parent_pane |
-            .[$name].assigned_by = $assigned_by
+            .[$name].report_to = $report_to
           else
             .[$name] = {pane_id: $pane_id, pane_target: $pane_target,
                         tmux_session: $tmux_session, status: "active",
-                        assigned_by: $assigned_by, parent_pane: $parent_pane,
+                        report_to: $report_to, forked_from: $parent_pane,
                         model: "opus", branch: ("worker/" + $name)}
           end' "$_REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$_REGISTRY"
-      echo "Registered $CHILD_NAME (pane $TMUX_PANE, assigned_by: $CHILD_ASSIGNED_BY) in registry.json"
+      echo "Registered $CHILD_NAME (pane $TMUX_PANE, report_to: $CHILD_ASSIGNED_BY) in registry.json"
     fi
   fi
 
