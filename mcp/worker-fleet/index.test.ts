@@ -1517,3 +1517,94 @@ describe("lintRegistry — comprehensive", () => {
     expect(issues.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// createWorkerFiles — type template integration
+// ═══════════════════════════════════════════════════════════════════
+
+describe("createWorkerFiles — type templates", () => {
+  test("type=monitor sets opus, perpetual=true, read-only denyList", () => {
+    const result = createWorkerFiles({
+      name: "tpl-monitor-test",
+      mission: "# Test Monitor",
+      type: "monitor",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("opus");
+    expect(result.perpetual).toBe(true);
+    expect(result.state?.sleep_duration).toBe(1800);
+    expect(result.permissions?.disallowedTools).toContain("Edit");
+  });
+
+  test("type=implementer sets sonnet, perpetual=false", () => {
+    const result = createWorkerFiles({
+      name: "tpl-impl-test",
+      mission: "# Test Implementer",
+      type: "implementer",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("sonnet");
+    expect(result.perpetual).toBe(false);
+    expect(result.permissions?.disallowedTools).not.toContain("Edit");
+  });
+
+  test("type=coordinator has minimal denyList (allows merge/push)", () => {
+    const result = createWorkerFiles({
+      name: "tpl-coord-test",
+      mission: "# Test Coordinator",
+      type: "coordinator",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("sonnet");
+    expect(result.perpetual).toBe(true);
+    // coordinator denyList should NOT include merge/push
+    expect(result.permissions?.disallowedTools).not.toContain("Bash(git merge*)");
+    expect(result.permissions?.disallowedTools).not.toContain("Bash(git push*)");
+  });
+
+  test("type=optimizer sets opus, perpetual=true, sleep=7200", () => {
+    const result = createWorkerFiles({
+      name: "tpl-optim-test",
+      mission: "# Test Optimizer",
+      type: "optimizer",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("opus");
+    expect(result.perpetual).toBe(true);
+    expect(result.state?.sleep_duration).toBe(7200);
+  });
+
+  test("explicit model overrides type template", () => {
+    const result = createWorkerFiles({
+      name: "tpl-override-model",
+      mission: "# Override Test",
+      type: "monitor",
+      model: "sonnet",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("sonnet"); // explicit overrides opus from monitor template
+    expect(result.perpetual).toBe(true); // still from template
+  });
+
+  test("explicit perpetual overrides type template", () => {
+    const result = createWorkerFiles({
+      name: "tpl-override-perp",
+      mission: "# Override Test",
+      type: "monitor",
+      perpetual: false,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.perpetual).toBe(false); // explicit overrides true from template
+  });
+
+  test("no type = backwards compatible defaults", () => {
+    const result = createWorkerFiles({
+      name: "tpl-no-type",
+      mission: "# Old Style",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("opus"); // hardcoded default
+    expect(result.perpetual).toBe(false); // hardcoded default
+    expect(result.permissions?.disallowedTools).toHaveLength(6); // default 6 rules
+  });
+});

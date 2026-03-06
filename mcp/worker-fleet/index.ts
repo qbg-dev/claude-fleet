@@ -2,13 +2,13 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 15 tools in 5 categories:
+ * 16 tools in 5 categories:
  *   Messaging (2):  send_message (ack system: fyi, in_reply_to), read_inbox
  *   Tasks (3):      create_task, update_task, list_tasks
  *   State (2):      get_worker_state, update_state
  *   Fleet (1):      fleet_status
  *   Lifecycle (4):  recycle, heartbeat, check_config, reload
- *   Management (3): create_worker, deregister, standby
+ *   Management (4): create_worker, get_worker_template, deregister, standby
  *
  * Task CRUD and inbox are native TS (no shell subprocess).
  * Messaging writes inbox first (durable), then fires bus (best-effort).
@@ -2059,9 +2059,12 @@ server.registerTool(
 // WORKER MANAGEMENT (1)
 // ═══════════════════════════════════════════════════════════════════
 
+type WorkerType = "implementer" | "monitor" | "coordinator" | "optimizer";
+
 interface CreateWorkerInput {
   name: string;
   mission: string;
+  type?: WorkerType;
   model?: "sonnet" | "opus" | "haiku";
   perpetual?: boolean;
   sleep_duration?: number;
@@ -2070,6 +2073,25 @@ interface CreateWorkerInput {
   report_to?: string;
   permission_mode?: string;
   taskEntries?: Array<{ subject: string; description?: string; priority?: string }>;
+}
+
+const TEMPLATE_TYPES_DIR = join(CLAUDE_OPS, "templates/flat-worker/types");
+
+function loadTypeTemplate(type: WorkerType): { model?: string; perpetual?: boolean; sleep_duration?: number; disallowedTools?: string[]; permission_mode?: string } {
+  const typeDir = join(TEMPLATE_TYPES_DIR, type);
+  const result: { model?: string; perpetual?: boolean; sleep_duration?: number; disallowedTools?: string[]; permission_mode?: string } = {};
+  try {
+    const perms = JSON.parse(readFileSync(join(typeDir, "permissions.json"), "utf-8"));
+    if (perms.model) result.model = perms.model;
+    if (perms.permission_mode) result.permission_mode = perms.permission_mode;
+    if (Array.isArray(perms.denyList)) result.disallowedTools = perms.denyList;
+  } catch {}
+  try {
+    const state = JSON.parse(readFileSync(join(typeDir, "state.json"), "utf-8"));
+    if (typeof state.perpetual === "boolean") result.perpetual = state.perpetual;
+    if (typeof state.sleep_duration === "number") result.sleep_duration = state.sleep_duration;
+  } catch {}
+  return result;
 }
 
 interface CreateWorkerResult {
@@ -2086,7 +2108,7 @@ interface CreateWorkerResult {
 
 /** Core logic for creating a worker's directory and files. Exported for testing. */
 function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
-  const { name, mission, model, perpetual, sleep_duration, disallowed_tools, window: windowGroup, report_to, permission_mode, taskEntries = [] } = input;
+  const { name, mission, type, model, perpetual, sleep_duration, disallowed_tools, window: windowGroup, report_to, permission_mode, taskEntries = [] } = input;
 
   // Validate
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
@@ -2099,6 +2121,9 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
   if (!mission.trim()) {
     return { ok: false, error: `Mission cannot be empty` };
   }
+
+  // Load type template defaults (if type provided)
+  const tpl = type ? loadTypeTemplate(type) : {};
 
   // Create directory
   mkdirSync(workerDir, { recursive: true });
@@ -2118,8 +2143,7 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
   // mission.md
   writeFileSync(join(workerDir, "mission.md"), mission.trim() + "\n");
 
-  // Config (stored in registry.json, not permissions.json)
-  const selectedModel = model || "opus";
+  // Config — override precedence: explicit param > type template > hardcoded default
   const defaultDisallowed = [
     "Bash(git checkout main*)",
     "Bash(git merge*)",
@@ -2128,23 +2152,26 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
     "Bash(git clean*)",
     "Bash(rm -rf*)",
   ];
+  const selectedModel = model ?? tpl.model ?? "opus";
+  const resolvedDisallowed = disallowed_tools ?? tpl.disallowedTools ?? defaultDisallowed;
+  const resolvedPermMode = permission_mode ?? tpl.permission_mode ?? "bypassPermissions";
   const permissions = {
     model: selectedModel,
-    permission_mode: permission_mode || "bypassPermissions",
-    disallowedTools: disallowed_tools ?? defaultDisallowed,
+    permission_mode: resolvedPermMode,
+    disallowedTools: resolvedDisallowed,
     window: windowGroup || null,
     report_to: report_to || null,
   };
 
-  // State (no longer written to state.json — stored in registry.json)
-  const isPerpetual = perpetual || false;
+  // State — override precedence: explicit param > type template > hardcoded default
+  const isPerpetual = perpetual ?? tpl.perpetual ?? false;
   const state: Record<string, any> = {
     status: "idle",
     cycles_completed: 0,
     perpetual: isPerpetual,
   };
   if (isPerpetual) {
-    state.sleep_duration = sleep_duration || 1800;
+    state.sleep_duration = sleep_duration ?? tpl.sleep_duration ?? 1800;
   }
 
   // tasks.json
@@ -2179,9 +2206,10 @@ server.registerTool(
   { description: "Spin up a new persistent worker with its own mission, memory, and task list. Use when you've identified a domain of work that warrants a dedicated agent — ongoing monitoring, specialized repair, continuous optimization. Set launch=true to start it immediately. Set fork_from_session=true to fork your current conversation context (inherits what you know). Set placement to control where the pane appears.", inputSchema: {
     name: z.string().describe("Worker name in kebab-case (e.g. 'chatbot-fix')"),
     mission: z.string().describe("Full mission.md content (markdown)"),
-    model: z.enum(["sonnet", "opus", "haiku"]).optional().describe("LLM model (default: opus)"),
-    perpetual: z.boolean().optional().describe("Run in perpetual loop (default: false)"),
-    sleep_duration: z.number().optional().describe("Seconds between cycles, only if perpetual (default: 1800)"),
+    type: z.enum(["implementer", "monitor", "coordinator", "optimizer"]).optional().describe("Worker archetype — sets model, permissions, perpetual/sleep defaults from template. Caller still writes mission. Use get_worker_template to preview."),
+    model: z.enum(["sonnet", "opus", "haiku"]).optional().describe("LLM model (overrides type default if set)"),
+    perpetual: z.boolean().optional().describe("Run in perpetual loop (overrides type default if set)"),
+    sleep_duration: z.number().optional().describe("Seconds between cycles, only if perpetual (overrides type default if set)"),
     disallowed_tools: z.string().optional().describe("JSON array of disallowed tool patterns (default: safe git/rm guards). Example: [\"Bash(git push*)\",\"Edit\",\"Bash(*deploy*)\"]"),
     window: z.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers in the same group share a tiled layout."),
     report_to: z.string().optional().describe("Who this worker reports to (default: calling worker or mission_authority)"),
@@ -2192,7 +2220,7 @@ server.registerTool(
     direct_report: z.boolean().optional().describe("Set report_to to the calling worker instead of mission_authority (default: false)"),
     placement: z.enum(["window", "beside", "new-window"]).optional().describe("Where to place the pane: 'window' (join named window group, default), 'beside' (split next to caller), 'new-window' (fresh named window)"),
   } },
-  async ({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, fork_from_session, direct_report, placement }) => {
+  async ({ name, mission, type, model, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, fork_from_session, direct_report, placement }) => {
     try {
       // Change 4: Enforce unique worker names
       const existingRegistry = readRegistry();
@@ -2239,7 +2267,7 @@ server.registerTool(
       }
 
       // Create files
-      const result = createWorkerFiles({ name, mission, model, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, taskEntries });
+      const result = createWorkerFiles({ name, mission, type, model, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, taskEntries });
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: `Error: ${result.error}` }], isError: true };
       }
@@ -2464,6 +2492,41 @@ server.registerTool(
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
+  }
+);
+
+server.registerTool(
+  "get_worker_template",
+  {
+    description: "Preview a worker type template before creating. Returns mission.md (with {{PLACEHOLDERS}} showing expected structure and 三省吾身 variant), permissions defaults, and state config. Use before create_worker(type=...) to understand what to write.",
+    inputSchema: {
+      type: z.enum(["implementer", "monitor", "coordinator", "optimizer"]).describe("Worker archetype to preview"),
+    },
+  },
+  async ({ type }) => {
+    const typeDir = join(TEMPLATE_TYPES_DIR, type);
+    if (!existsSync(typeDir)) {
+      return { content: [{ type: "text" as const, text: `Error: template type '${type}' not found at ${typeDir}` }], isError: true };
+    }
+    const sections: string[] = [`# Template: ${type}\n`];
+    try {
+      sections.push("## mission.md (structure to follow)\n```markdown\n" + readFileSync(join(typeDir, "mission.md"), "utf-8").trim() + "\n```\n");
+    } catch { sections.push("## mission.md\n_Not found_\n"); }
+    try {
+      const perms = JSON.parse(readFileSync(join(typeDir, "permissions.json"), "utf-8"));
+      sections.push("## Defaults (from permissions.json)\n" +
+        `- **model**: ${perms.model || "opus"}\n` +
+        `- **permission_mode**: ${perms.permission_mode || "bypassPermissions"}\n` +
+        `- **denyList** (${(perms.denyList || []).length} rules): ${(perms.denyList || []).map((r: string) => `\`${r}\``).join(", ") || "none"}\n`);
+    } catch { sections.push("## permissions.json\n_Not found_\n"); }
+    try {
+      const state = JSON.parse(readFileSync(join(typeDir, "state.json"), "utf-8"));
+      sections.push("## Defaults (from state.json)\n" +
+        `- **perpetual**: ${state.perpetual}\n` +
+        `- **sleep_duration**: ${state.sleep_duration}s\n`);
+    } catch { sections.push("## state.json\n_Not found_\n"); }
+    sections.push("## Usage\n`create_worker(name=\"...\", type=\"" + type + "\", mission=\"# Your mission here\\n...\")`\nThe `type` sets model/permissions/perpetual/sleep defaults. You always write your own mission. Explicit params override type defaults.");
+    return { content: [{ type: "text" as const, text: sections.join("\n") }] };
   }
 );
 
