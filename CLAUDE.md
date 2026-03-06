@@ -31,6 +31,57 @@ Agent fleet infrastructure for Claude Code. See `README.md` for full architectur
 └── tests/                   # Test suite
 ```
 
+## Hooks Infrastructure
+
+All Claude Code hooks are managed through a canonical manifest. Three scripts handle the lifecycle:
+
+| Script | Purpose |
+|--------|---------|
+| `hooks/manifest.json` | Canonical registry of all hooks (id, event, path, required, category) |
+| `scripts/setup-hooks.sh` | Install hooks from manifest into `~/.claude/settings.json` |
+| `scripts/lint-hooks.sh` | Verify all hooks are correctly installed |
+
+### Hook Categories
+
+| Category | Where | Example |
+|----------|-------|---------|
+| **core** (required) | `~/.claude-ops/hooks/` | `stop-worker-dispatch`, `tool-policy-gate`, `stop-inbox-drain` |
+| **user** (optional) | `~/.claude/hooks/` | `stop-echo`, `post-tool-write-flag` |
+| **plugin** (optional) | `~/.claude-ops/plugins/` | `snippet-injector` |
+| **project** (per-project) | `{project}/.claude/hooks/` | `pii-firewall` |
+
+### Setup & Lint
+
+```bash
+# Preview what would be installed
+bash ~/.claude-ops/scripts/setup-hooks.sh --dry-run
+
+# Install all hooks into settings.json (backs up first)
+bash ~/.claude-ops/scripts/setup-hooks.sh
+
+# Install only required hooks
+bash ~/.claude-ops/scripts/setup-hooks.sh --core-only
+
+# Verify installation
+bash ~/.claude-ops/scripts/lint-hooks.sh
+
+# CI mode (exit code only)
+bash ~/.claude-ops/scripts/lint-hooks.sh --quiet
+
+# Auto-fix missing hooks
+bash ~/.claude-ops/scripts/lint-hooks.sh --fix
+```
+
+Setup smart-merges: it adds/updates manifest hooks without removing project-specific hooks already in settings.json. Lint runs automatically after setup.
+
+### Adding a New Hook
+
+1. Create the hook script in the appropriate directory
+2. Add an entry to `hooks/manifest.json` with id, event, path, required, category
+3. Run `bash scripts/setup-hooks.sh` to install
+4. Add tests in `tests/test-hook-manifest.sh`
+5. Run `bash tests/test-hook-manifest.sh` to verify
+
 ## Development Workflows
 
 ### Adding a script
@@ -45,7 +96,11 @@ bun build index.ts --target=node --outfile=index.js
 
 ### Running tests
 ```bash
+# All tests
 bash ~/.claude-ops/tests/run-all.sh
+
+# Hook-specific tests (41 tests)
+bash ~/.claude-ops/tests/test-hook-manifest.sh
 ```
 
 ## Code Conventions

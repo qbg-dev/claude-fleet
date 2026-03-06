@@ -105,34 +105,15 @@ setup_compat_symlink() {
 
 # ── Hook registration ────────────────────────────────────────────
 register_hooks() {
-  local settings="$SETTINGS_FILE"
-  mkdir -p "$(dirname "$settings")"
+  info "Installing hooks from manifest..."
 
-  # Read existing settings or start fresh
-  local current='{}'
-  [[ -f "$settings" ]] && current=$(cat "$settings")
-
-  # Check if hooks are already registered (idempotent)
-  if echo "$current" | jq -e '.hooks.Stop' &>/dev/null; then
-    info "Hooks already registered in $settings"
-    return
-  fi
-
-  info "Registering Claude Code hooks in $settings ..."
-
-  # Merge hooks into existing settings (preserves other settings)
-  local updated
-  updated=$(echo "$current" | jq '. + {
-    "hooks": {
-      "PreToolUse": [{"hooks": [{"type": "command", "command": "bash ~/.claude-ops/hooks/interceptors/pre-tool-context-injector.sh"}]}],
-      "PostToolUse": [{"hooks": [{"type": "command", "command": "bash ~/.claude-ops/hooks/publishers/post-tool-publisher.sh"}]}],
-      "Stop": [{"hooks": [{"type": "command", "command": "bash ~/.claude-ops/hooks/gates/stop-worker-dispatch.sh"}]}],
-      "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "bash ~/.claude-ops/hooks/publishers/prompt-publisher.sh"}]}]
+  if [[ -f "$INSTALL_DIR/scripts/setup-hooks.sh" ]]; then
+    bash "$INSTALL_DIR/scripts/setup-hooks.sh" --core-only || {
+      warn "Hook setup had issues — run 'bash ~/.claude-ops/scripts/lint-hooks.sh' to diagnose"
     }
-  }')
-
-  echo "$updated" > "$settings"
-  info "Hooks registered"
+  else
+    warn "setup-hooks.sh not found — skipping hook registration"
+  fi
 }
 
 # ── Verification ─────────────────────────────────────────────────
@@ -145,8 +126,12 @@ verify_install() {
     "$INSTALL_DIR/lib/event-bus.sh"
     "$INSTALL_DIR/scripts/scaffold.sh"
     "$INSTALL_DIR/scripts/worker-watchdog.sh"
+    "$INSTALL_DIR/scripts/setup-hooks.sh"
+    "$INSTALL_DIR/scripts/lint-hooks.sh"
+    "$INSTALL_DIR/hooks/manifest.json"
     "$INSTALL_DIR/hooks/interceptors/pre-tool-context-injector.sh"
     "$INSTALL_DIR/hooks/gates/stop-worker-dispatch.sh"
+    "$INSTALL_DIR/hooks/gates/stop-inbox-drain.sh"
   )
   local ok=true
   for f in "${required[@]}"; do
