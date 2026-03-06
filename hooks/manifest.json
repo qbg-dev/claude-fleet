@@ -1,0 +1,138 @@
+{
+  "_comment": "Canonical hook registry. setup-hooks.sh reads this to install into ~/.claude/settings.json. lint-hooks.sh reads this to verify installation.",
+  "hooks": [
+    {
+      "id": "worker-session-register",
+      "event": "UserPromptSubmit",
+      "path": "~/.claude-ops/hooks/publishers/worker-session-register.sh",
+      "required": true,
+      "category": "core",
+      "description": "Registers worker pane in fleet on each prompt submit"
+    },
+    {
+      "id": "snippet-injector",
+      "event": "UserPromptSubmit",
+      "path": "~/.claude-ops/plugins/claude-context-orchestrator/scripts/snippets/snippet_injector.py",
+      "runner": "python3",
+      "matcher": ".*",
+      "required": false,
+      "category": "plugin",
+      "description": "Injects contextual snippets into prompts"
+    },
+    {
+      "id": "prompt-publisher",
+      "event": "UserPromptSubmit",
+      "path": "~/.claude-ops/hooks/publishers/prompt-publisher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Publishes prompt events to event bus (watchdog, coordinator inbox)"
+    },
+    {
+      "id": "prompt-echo-deferred",
+      "event": "UserPromptSubmit",
+      "path": "~/.claude/hooks/prompt-echo-deferred.sh",
+      "required": false,
+      "category": "user",
+      "description": "Deferred echo chain — feeds queued prompts from stop-echo.sh"
+    },
+    {
+      "id": "pii-firewall",
+      "event": "PreToolUse",
+      "path": "{PROJECT_ROOT}/.claude/hooks/pii-firewall.sh",
+      "required": false,
+      "category": "project",
+      "description": "Blocks direct access to customer conversation content (PIPL compliance). Project-specific."
+    },
+    {
+      "id": "tool-policy-gate",
+      "event": "PreToolUse",
+      "path": "~/.claude-ops/hooks/gates/tool-policy-gate.sh",
+      "required": true,
+      "category": "core",
+      "description": "Enforces per-worker tool permission policies (disallowedTools)"
+    },
+    {
+      "id": "pre-tool-context-injector",
+      "event": "PreToolUse",
+      "path": "~/.claude-ops/hooks/interceptors/pre-tool-context-injector.sh",
+      "required": true,
+      "category": "core",
+      "description": "Injects contextual hints before tool execution"
+    },
+    {
+      "id": "post-tool-publisher",
+      "event": "PostToolUse",
+      "path": "~/.claude-ops/hooks/publishers/post-tool-publisher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Publishes tool usage events to event bus and tool logs"
+    },
+    {
+      "id": "post-tool-write-flag",
+      "event": "PostToolUse",
+      "path": "~/.claude/hooks/post-tool-write-flag.sh",
+      "matcher": "Write|Edit|NotebookEdit",
+      "required": false,
+      "category": "user",
+      "description": "Flags file write events for deploy detection"
+    },
+    {
+      "id": "post-tool-deploy-flag",
+      "event": "PostToolUse",
+      "path": "~/.claude/hooks/post-tool-deploy-flag.sh",
+      "matcher": "Bash",
+      "required": false,
+      "category": "user",
+      "description": "Flags deploy-related bash commands"
+    },
+    {
+      "id": "subagent-start",
+      "event": "SubagentStart",
+      "path": "~/.claude/hooks/subagent-lifecycle.sh",
+      "required": false,
+      "category": "user",
+      "description": "Tracks subagent lifecycle for resource management"
+    },
+    {
+      "id": "subagent-stop",
+      "event": "SubagentStop",
+      "path": "~/.claude/hooks/subagent-lifecycle.sh",
+      "required": false,
+      "category": "user",
+      "description": "Tracks subagent lifecycle for resource management"
+    },
+    {
+      "id": "pre-compact",
+      "event": "PreCompact",
+      "path": "~/.claude-ops/scripts/pre-compact.sh",
+      "timeout": 5000,
+      "required": false,
+      "category": "core",
+      "description": "Saves critical context before conversation compaction"
+    },
+    {
+      "id": "stop-worker-dispatch",
+      "event": "Stop",
+      "path": "~/.claude-ops/hooks/gates/stop-worker-dispatch.sh",
+      "required": true,
+      "category": "core",
+      "description": "Routes worker sessions — blocks until tasks complete, enforces vision gate"
+    },
+    {
+      "id": "stop-inbox-drain",
+      "event": "Stop",
+      "path": "~/.claude-ops/hooks/gates/stop-inbox-drain.sh",
+      "required": true,
+      "category": "core",
+      "description": "Blocks stopping if unread inbox messages or pending ACKs exist"
+    },
+    {
+      "id": "stop-echo",
+      "event": "Stop",
+      "path": "~/.claude/hooks/stop-echo.sh",
+      "required": false,
+      "category": "user",
+      "description": "Echo chain support — pops queued items and re-injects as block reasons"
+    }
+  ]
+}
