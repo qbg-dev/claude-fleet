@@ -60,7 +60,7 @@ Or from a running worker: `create_worker(name: "my-worker", mission: "...", laun
     "sleep_duration": 3600,                   // seconds between cycles
     "branch": "worker/my-worker",
     "window": "workers",                      // tmux window group
-    "parent": "chief-of-staff",               // who manages this worker
+    "report_to": "chief-of-staff",             // who manages this worker
     // Auto-populated by launch script + MCP:
     "status": "running",                      // idle|running|sleeping
     "pane_id": "%42",
@@ -80,7 +80,7 @@ Loaded via `.mcp.json`. Identity auto-detected from git branch. Source: `mcp/wor
 
 | Tool | What |
 |------|------|
-| `send_message(to, content, summary)` | Send to worker name, "parent", "children", or "all" |
+| `send_message(to, content, summary)` | Send to worker name, "report", "direct_reports", or "all" |
 | `read_inbox()` | Drain durable inbox (JSONL). Returns structured messages |
 | `fleet_status()` | All workers: status, branch, pane, last commit |
 | `get_worker_state(worker)` | Another worker's full state |
@@ -90,11 +90,11 @@ Loaded via `.mcp.json`. Identity auto-detected from git branch. Source: `mcp/wor
 | `list_tasks()` | Show own task list |
 | `recycle()` | End cycle gracefully, watchdog respawns |
 | `heartbeat()` | Confirm alive, bump counters |
-| `create_worker(name, mission, ...)` | Create + optionally launch a new worker |
-| `spawn_child(name, mission, ...)` | Fork a child worker (inherits parent) |
+| `create_worker(name, mission, ...)` | Create + launch; fork_from_session=true inherits context |
 | `check_config()` | Lint registry for misconfigurations |
 | `reload()` | Re-read registry without restart |
 | `deregister()` | Remove self from registry |
+| `standby()` | Put worker in standby (registered but not running) |
 
 **Messaging insight**: writes to `inbox.jsonl` first (durable, survives crashes), then delivers via tmux (instant). Two-phase = never lost.
 

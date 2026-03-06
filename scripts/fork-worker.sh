@@ -3,7 +3,7 @@
 #
 # Copies the parent session data (JSONL + subdir) to the new worktree's project dir,
 # then launches claude from WITHIN the worktree via --resume --fork-session.
-# The worktree is created here (default) or by spawn_child (--no-worktree + --cwd).
+# The worktree is created here (default) or by create_worker (--no-worktree + --cwd).
 #
 # Usage: fork-worker.sh <parent_pane_id> <parent_session_id> --name WORKER_NAME [--assigned-by NAME] [--model MODEL] [--no-worktree] [--cwd DIR] [extra-claude-flags...]
 #
@@ -12,8 +12,8 @@
 #                       Error if name already exists in registry — choose a unique purpose name.
 #   --assigned-by NAME  Who assigned this worker (default: parent pane's worker)
 #   --model MODEL       Claude model to use (default: opus)
-#   --no-worktree       Skip worktree creation (used by spawn_child which pre-creates it)
-#   --cwd DIR           Launch claude from this directory (used with --no-worktree when spawn_child pre-creates worktree + copies session)
+#   --no-worktree       Skip worktree creation (used by create_worker which pre-creates it)
+#   --cwd DIR           Launch claude from this directory (used with --no-worktree when create_worker pre-creates worktree + copies session)
 #
 # Example:
 #   bash ~/.claude-ops/scripts/fork-worker.sh %612 abc123def456 --name swagger-audit --assigned-by chief-of-staff --model opus --dangerously-skip-permissions
@@ -99,7 +99,7 @@ if [ -n "${TMUX_PANE:-}" ]; then
     _tmux_session=$(tmux list-panes -a -F '#{pane_id} #{session_name}' 2>/dev/null \
       | awk -v id="$TMUX_PANE" '$1 == id {print $2; exit}')
 
-    # Check if already registered (MCP spawn_child may have done it)
+    # Check if already registered (MCP create_worker may have done it)
     _existing=$(jq -r --arg name "$CHILD_NAME" '.[$name].pane_id // empty' "$_REGISTRY" 2>/dev/null)
     if [ "$_existing" != "$TMUX_PANE" ]; then
       _tmp="${_REGISTRY}.fork.$$"
@@ -182,7 +182,7 @@ fi
 # Path slug = CWD path with / replaced by -. Different worktree = different slug.
 _LAUNCH_DIR=""
 if [ -n "$LAUNCH_CWD" ] && [ -d "$LAUNCH_CWD" ]; then
-  # spawn_child already copied session data; just cd there
+  # create_worker already copied session data; just cd there
   _LAUNCH_DIR="$LAUNCH_CWD"
 elif [ -n "${_worktree_dir:-}" ] && [ -d "$_worktree_dir" ]; then
   # Copy session JSONL + subdir from parent project dir to new worktree's project dir

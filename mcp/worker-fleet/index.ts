@@ -2850,7 +2850,7 @@ export {
   findOwnPane, getSessionId, getWorkerModel, getWorktreeDir, generateSeedContent,
   runDiagnostics, createWorkerFiles, _setWorkersDir,
   readRegistry, getWorkerEntry, withRegistryLocked, ensureWorkerInRegistry,
-  lintRegistry, _replaceMemorySection,
+  lintRegistry, _replaceMemorySection, getReportTo, canUpdateWorker,
   WORKER_NAME, WORKERS_DIR, HARNESS_LOCK_DIR, REGISTRY_PATH,
   type Task, type InboxCursor, type DiagnosticIssue,
   type RegistryConfig, type RegistryWorkerEntry, type ProjectRegistry,

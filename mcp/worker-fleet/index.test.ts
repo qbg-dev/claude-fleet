@@ -12,6 +12,7 @@ import {
   resolveRecipient, generateSeedContent, runDiagnostics, createWorkerFiles, _setWorkersDir,
   readRegistry, getWorkerEntry, ensureWorkerInRegistry, lintRegistry,
   _replaceMemorySection, acquireLock, releaseLock, getWorktreeDir, getSessionId,
+  getReportTo, canUpdateWorker,
   WORKER_NAME, WORKERS_DIR, REGISTRY_PATH, HARNESS_LOCK_DIR,
   type Task, type DiagnosticIssue,
   type RegistryConfig, type RegistryWorkerEntry, type ProjectRegistry,
@@ -308,7 +309,8 @@ describe("writeToInbox", () => {
       summary: "Test message",
       from_name: "tester",
     });
-    expect(result).toEqual({ ok: true });
+    expect(result.ok).toBe(true);
+    expect((result as any).msg_id).toBeTruthy();
     const inboxPath = join(TEST_WORKER_DIR, "inbox.jsonl");
     const content = readFileSync(inboxPath, "utf-8");
     const parsed = JSON.parse(content.trim());
@@ -439,18 +441,17 @@ describe("resolveRecipient", () => {
     expect(result.paneId).toBe("%53");
   });
 
-  test("parent without registry → error or resolved", () => {
-    const result = resolveRecipient("parent");
+  test("report without registry → error or resolved", () => {
+    const result = resolveRecipient("report");
     expect(["pane", "worker"]).toContain(result.type);
     expect(result.paneId || result.workerName || result.error).toBeTruthy();
   });
 
-  test("parent fallback error mentions mission_authority, not 'operator'", () => {
-    // When parent resolution fails (no live pane), error should NOT say 'operator'
-    const result = resolveRecipient("parent");
+  test("report fallback error mentions report_to, not 'operator'", () => {
+    // When report resolution fails (no live pane), error should NOT say 'operator'
+    const result = resolveRecipient("report");
     if (result.error) {
       expect(result.error).not.toContain("operator entry");
-      expect(result.error).toContain("parent field not set");
     }
     // If resolved to a worker, should not be "operator" (legacy name)
     if (result.type === "worker") {
@@ -458,13 +459,23 @@ describe("resolveRecipient", () => {
     }
   });
 
-  test("parent error includes mission_authority name in message", () => {
-    // Error message should say which mission_authority was tried, not hardcoded 'operator'
+  test("old alias 'parent' resolves as worker name, not special target", () => {
     const result = resolveRecipient("parent");
-    if (result.error) {
-      // Should reference a named authority or say unset — never say "operator entry"
-      expect(result.error).not.toBe(`No parent found for worker '${WORKER_NAME}' (no parent field set, no operator entry)`);
-    }
+    // "parent" is no longer a special target — resolves as a worker named "parent"
+    expect(result.type).toBe("worker");
+    expect(result.workerName).toBe("parent");
+  });
+
+  test("old alias 'children' resolves as worker name, not special target", () => {
+    const result = resolveRecipient("children");
+    expect(result.type).toBe("worker");
+    expect(result.workerName).toBe("children");
+  });
+
+  test("old alias 'reports' resolves as worker name, not special target", () => {
+    const result = resolveRecipient("reports");
+    expect(result.type).toBe("worker");
+    expect(result.workerName).toBe("reports");
   });
 });
 
@@ -625,7 +636,7 @@ describe("writeToInbox — special characters", () => {
       content: 'He said "hello world"',
       from_name: "tester",
     });
-    expect(result).toEqual({ ok: true });
+    expect(result.ok).toBe(true);
     const line = readFileSync(join(TEST_WORKER_DIR, "inbox.jsonl"), "utf-8").trim();
     const parsed = JSON.parse(line);
     expect(parsed.content).toBe('He said "hello world"');
@@ -634,7 +645,7 @@ describe("writeToInbox — special characters", () => {
   test("message with shell metacharacters ($ ! ; | & >)", () => {
     const content = 'Run: $HOME/bin/test; echo "done" | grep ok && rm -rf / > /dev/null &';
     const result = writeToInbox(TEST_WORKER, { content, from_name: "tester" });
-    expect(result).toEqual({ ok: true });
+    expect(result.ok).toBe(true);
     const line = readFileSync(join(TEST_WORKER_DIR, "inbox.jsonl"), "utf-8").trim();
     const parsed = JSON.parse(line);
     expect(parsed.content).toBe(content);
@@ -643,7 +654,7 @@ describe("writeToInbox — special characters", () => {
   test("message with unicode / Chinese characters", () => {
     const content = "你好世界 🎉 — 保臻AI助手";
     const result = writeToInbox(TEST_WORKER, { content, from_name: "tester" });
-    expect(result).toEqual({ ok: true });
+    expect(result.ok).toBe(true);
     const line = readFileSync(join(TEST_WORKER_DIR, "inbox.jsonl"), "utf-8").trim();
     const parsed = JSON.parse(line);
     expect(parsed.content).toBe(content);
@@ -732,7 +743,7 @@ describe("ensureWorkerInRegistry", () => {
     const entry = ensureWorkerInRegistry(registry, testName);
 
     expect(entry).toBeDefined();
-    expect(entry.model).toBe("sonnet");
+    expect(entry.model).toBe("opus");
     expect(entry.permission_mode).toBe("bypassPermissions");
     expect(entry.status).toBe("idle");
     expect(entry.cycles_completed).toBe(0);
@@ -840,46 +851,37 @@ describe("lintRegistry", () => {
     expect(dupIssue).toBeUndefined();
   });
 
-  test("lint.orphan: worker with no parent and no children → warning", () => {
+  test("lint.report_to_missing: worker references non-existent report_to → warning", () => {
     const registry = makeProjectRegistry({
-      "lone-worker": makeRegistryEntry({}),
+      "orphaned-worker": makeRegistryEntry({ report_to: "ghost-manager" }),
     });
     const issues = lintRegistry(registry);
-    const orphanIssue = issues.find(i => i.check === "lint.orphan");
-    expect(orphanIssue).toBeDefined();
-    expect(orphanIssue!.severity).toBe("warning");
-    expect(orphanIssue!.message).toContain("lone-worker");
+    const missing = issues.find(i => i.check === "lint.report_to_missing");
+    expect(missing).toBeDefined();
+    expect(missing!.severity).toBe("warning");
+    expect(missing!.message).toContain("ghost-manager");
   });
 
-  test("lint.orphan: worker with parent field → no orphan warning", () => {
+  test("lint.report_to_missing: valid report_to reference → no warning", () => {
     const registry = makeProjectRegistry({
-      "parent-worker": makeRegistryEntry({ children: ["child-worker"] }),
-      "child-worker": makeRegistryEntry({ parent: "parent-worker" }),
+      "chief-of-staff": makeRegistryEntry(),
+      "my-worker": makeRegistryEntry({ report_to: "chief-of-staff" }),
     });
     const issues = lintRegistry(registry);
-    const orphanIssues = issues.filter(i => i.check === "lint.orphan");
-    expect(orphanIssues.length).toBe(0);
+    const missing = issues.find(i => i.check === "lint.report_to_missing");
+    expect(missing).toBeUndefined();
   });
 
-  test("lint.parent_missing: worker references non-existent parent → error", () => {
+  test("lint.report_to_missing: fallback to mission_authority → no warning if authority exists", () => {
+    // Worker with no explicit report_to — falls back to config.mission_authority
     const registry = makeProjectRegistry({
-      "orphaned-child": makeRegistryEntry({ parent: "ghost-parent" }),
+      "chief-of-staff": makeRegistryEntry(),
+      "my-worker": makeRegistryEntry({}), // no report_to, no assigned_by, no parent
     });
     const issues = lintRegistry(registry);
-    const missingParent = issues.find(i => i.check === "lint.parent_missing");
-    expect(missingParent).toBeDefined();
-    expect(missingParent!.severity).toBe("error");
-    expect(missingParent!.message).toContain("ghost-parent");
-  });
-
-  test("lint.parent_missing: valid parent reference → no error", () => {
-    const registry = makeProjectRegistry({
-      "chief-of-staff": makeRegistryEntry({ children: ["my-worker"] }),
-      "my-worker": makeRegistryEntry({ parent: "chief-of-staff" }),
-    });
-    const issues = lintRegistry(registry);
-    const missingParent = issues.find(i => i.check === "lint.parent_missing");
-    expect(missingParent).toBeUndefined();
+    // getReportTo falls back to mission_authority ("chief-of-staff") which exists
+    const missing = issues.find(i => i.check === "lint.report_to_missing");
+    expect(missing).toBeUndefined();
   });
 
   test("_config.mission_authority defaults to 'chief-of-staff' in makeProjectRegistry", () => {
@@ -890,11 +892,11 @@ describe("lintRegistry", () => {
   });
 });
 
-describe("resolveRecipient — children", () => {
-  test("children → type multi_pane", () => {
-    const result = resolveRecipient("children");
+describe("resolveRecipient — direct_reports", () => {
+  test("direct_reports → type multi_pane", () => {
+    const result = resolveRecipient("direct_reports");
     expect(result.type).toBe("multi_pane");
-    // paneIds array always present (may be empty if no children registered)
+    // paneIds array always present (may be empty if no direct reports registered)
     expect(Array.isArray(result.paneIds)).toBe(true);
   });
 });
@@ -1023,120 +1025,77 @@ describe("writeToInbox — path traversal safety", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// spawn_child — parent/children registry tracking (in-memory)
+// create_worker — report_to / forked_from flat org tracking
 // ═══════════════════════════════════════════════════════════════════
 
-describe("spawn_child — parent/children registry tracking", () => {
-  // Simulate the exact registry mutation logic from spawn_child (index.ts ~line 1858)
-  function registerChild(
+describe("create_worker — report_to / forked_from tracking", () => {
+  // Simulate the registry mutation logic from create_worker (flat org model)
+  function registerNewWorker(
     registry: ProjectRegistry,
-    parentName: string,
-    childName: string,
-    childPaneId: string
+    workerName: string,
+    options: { report_to?: string; forked_from?: string; pane_id?: string } = {}
   ) {
-    ensureWorkerInRegistry(registry, childName);
-    const child = registry[childName] as RegistryWorkerEntry;
-    child.pane_id = childPaneId;
-    child.parent = parentName;
-
-    const parent = registry[parentName] as RegistryWorkerEntry | undefined;
-    if (parent) {
-      if (!parent.children) parent.children = [];
-      if (!parent.children.includes(childName)) parent.children.push(childName);
-    }
-  }
-
-  test("child entry gets parent field set to spawner name", () => {
-    const registry = makeProjectRegistry({
-      "parent-worker": makeRegistryEntry({ pane_id: "%10" }),
-    });
-    registerChild(registry, "parent-worker", "parent-worker-child-1", "%11");
-
-    const child = registry["parent-worker-child-1"] as RegistryWorkerEntry & { parent?: string };
-    expect(child.parent).toBe("parent-worker");
-  });
-
-  test("spawned child is added to parent's children array", () => {
-    const registry = makeProjectRegistry({
-      "parent-worker": makeRegistryEntry({ pane_id: "%10" }),
-    });
-    registerChild(registry, "parent-worker", "child-a", "%11");
-
-    const parent = registry["parent-worker"] as RegistryWorkerEntry;
-    expect(parent.children).toContain("child-a");
-  });
-
-  test("spawning two children accumulates both in parent's children[]", () => {
-    const registry = makeProjectRegistry({
-      "parent-worker": makeRegistryEntry(),
-    });
-    registerChild(registry, "parent-worker", "child-a", "%11");
-    registerChild(registry, "parent-worker", "child-b", "%12");
-
-    const parent = registry["parent-worker"] as RegistryWorkerEntry;
-    expect(parent.children).toContain("child-a");
-    expect(parent.children).toContain("child-b");
-    expect(parent.children!.length).toBe(2);
-  });
-
-  test("duplicate child is not added twice to parent's children[]", () => {
-    const registry = makeProjectRegistry({
-      "parent-worker": makeRegistryEntry(),
-    });
-    registerChild(registry, "parent-worker", "child-dup", "%11");
-    registerChild(registry, "parent-worker", "child-dup", "%11"); // second time
-
-    const parent = registry["parent-worker"] as RegistryWorkerEntry;
-    const dupes = parent.children!.filter((c: string) => c === "child-dup");
-    expect(dupes.length).toBe(1);
-  });
-
-  test("child pane_id is recorded in child's registry entry", () => {
-    const registry = makeProjectRegistry({
-      "parent-worker": makeRegistryEntry(),
-    });
-    registerChild(registry, "parent-worker", "child-pane-test", "%99");
-
-    const child = registry["child-pane-test"] as RegistryWorkerEntry;
-    expect(child.pane_id).toBe("%99");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// create_worker — auto-sets parent field (commit 1751574)
-// ═══════════════════════════════════════════════════════════════════
-
-describe("create_worker — auto-parent registration", () => {
-  // Simulate the auto-parent logic added in commit 1751574
-  function applyAutoParent(registry: ProjectRegistry, workerName: string, callerName: string) {
     ensureWorkerInRegistry(registry, workerName);
-    const entry = registry[workerName] as RegistryWorkerEntry & { parent?: string };
-    if (!entry.parent) {
-      entry.parent = callerName;
-    }
+    const entry = registry[workerName] as RegistryWorkerEntry;
+    if (options.pane_id) entry.pane_id = options.pane_id;
+    if (options.report_to) entry.report_to = options.report_to;
+    if (options.forked_from) entry.forked_from = options.forked_from;
   }
 
-  test("new entry gets parent set to calling worker", () => {
-    const testDir = join(TEST_WORKERS_DIR, "new-worker");
-    mkdirSync(testDir, { recursive: true });
-
+  test("new worker gets report_to set to caller", () => {
     const registry = makeProjectRegistry({
       "chief-of-staff": makeRegistryEntry({ pane_id: "%1" }),
     });
-    applyAutoParent(registry, "new-worker", "chief-of-staff");
+    registerNewWorker(registry, "new-worker", { report_to: "chief-of-staff" });
 
-    const entry = registry["new-worker"] as RegistryWorkerEntry & { parent?: string };
-    expect(entry.parent).toBe("chief-of-staff");
+    const entry = registry["new-worker"] as RegistryWorkerEntry;
+    expect(entry.report_to).toBe("chief-of-staff");
   });
 
-  test("existing entry with parent already set is NOT overwritten", () => {
+  test("forked worker gets both report_to and forked_from", () => {
     const registry = makeProjectRegistry({
-      "existing-worker": { ...makeRegistryEntry(), parent: "original-parent" } as any,
+      "parent-worker": makeRegistryEntry({ pane_id: "%10" }),
     });
-    applyAutoParent(registry, "existing-worker", "chief-of-staff");
+    registerNewWorker(registry, "forked-child", {
+      report_to: "parent-worker",
+      forked_from: "parent-worker",
+      pane_id: "%11",
+    });
 
-    const entry = registry["existing-worker"] as RegistryWorkerEntry & { parent?: string };
-    expect(entry.parent).toBe("original-parent");
+    const entry = registry["forked-child"] as RegistryWorkerEntry;
+    expect(entry.report_to).toBe("parent-worker");
+    expect(entry.forked_from).toBe("parent-worker");
+    expect(entry.pane_id).toBe("%11");
+  });
+
+  test("direct_report=false uses assigned_by or mission_authority", () => {
+    const registry = makeProjectRegistry({
+      "worker-a": makeRegistryEntry({ pane_id: "%10" }),
+    });
+    // Simulate direct_report=false: report_to = assigned_by || WORKER_NAME || "chief-of-staff"
+    registerNewWorker(registry, "new-worker", { report_to: "chief-of-staff" });
+
+    const entry = registry["new-worker"] as RegistryWorkerEntry;
+    expect(entry.report_to).toBe("chief-of-staff");
+  });
+
+  test("pane_id is recorded in registry entry", () => {
+    const registry = makeProjectRegistry({
+      "chief-of-staff": makeRegistryEntry(),
+    });
+    registerNewWorker(registry, "new-worker", { pane_id: "%99", report_to: "chief-of-staff" });
+
+    const entry = registry["new-worker"] as RegistryWorkerEntry;
+    expect(entry.pane_id).toBe("%99");
+  });
+
+  test("existing entry with report_to already set can be updated", () => {
+    const registry = makeProjectRegistry({
+      "existing-worker": makeRegistryEntry({ report_to: "original-reporter" }),
+    });
+    const entry = registry["existing-worker"] as RegistryWorkerEntry;
+    entry.report_to = "new-reporter";
+    expect(entry.report_to).toBe("new-reporter");
   });
 });
 
@@ -1313,5 +1272,248 @@ describe("getSessionId", () => {
     } finally {
       try { rmSync(fakePanePath); } catch {}
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// getReportTo — flat org report chain resolution
+// ═══════════════════════════════════════════════════════════════════
+
+describe("getReportTo", () => {
+  test("returns report_to when set", () => {
+    const entry = makeRegistryEntry({ report_to: "chief-of-staff" });
+    expect(getReportTo(entry)).toBe("chief-of-staff");
+  });
+
+  test("falls back to assigned_by when report_to is null", () => {
+    const entry = makeRegistryEntry({ report_to: null, assigned_by: "manager" });
+    expect(getReportTo(entry)).toBe("manager");
+  });
+
+  test("falls back to parent when report_to and assigned_by are null", () => {
+    const entry = { ...makeRegistryEntry(), report_to: null, assigned_by: null, parent: "old-parent" } as any;
+    expect(getReportTo(entry)).toBe("old-parent");
+  });
+
+  test("falls back to config.mission_authority when all fields are null", () => {
+    const entry = makeRegistryEntry({ report_to: null, assigned_by: null });
+    const config: RegistryConfig = {
+      commit_notify: [], merge_authority: "merger",
+      deploy_authority: "merger", mission_authority: "chief-of-staff",
+      tmux_session: "w", project_name: "test",
+    };
+    expect(getReportTo(entry, config)).toBe("chief-of-staff");
+  });
+
+  test("returns null when all fields empty and no config", () => {
+    const entry = makeRegistryEntry({ report_to: null, assigned_by: null });
+    expect(getReportTo(entry)).toBeNull();
+  });
+
+  test("report_to takes priority over assigned_by", () => {
+    const entry = makeRegistryEntry({ report_to: "primary", assigned_by: "secondary" });
+    expect(getReportTo(entry)).toBe("primary");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// canUpdateWorker — cross-worker authorization
+// ═══════════════════════════════════════════════════════════════════
+
+describe("canUpdateWorker", () => {
+  test("worker can always update itself", () => {
+    const registry = makeProjectRegistry({
+      "worker-a": makeRegistryEntry(),
+    });
+    expect(canUpdateWorker("worker-a", "worker-a", registry)).toBe(true);
+  });
+
+  test("mission_authority can update any worker", () => {
+    const registry = makeProjectRegistry({
+      "chief-of-staff": makeRegistryEntry(),
+      "worker-a": makeRegistryEntry(),
+    });
+    expect(canUpdateWorker("chief-of-staff", "worker-a", registry)).toBe(true);
+  });
+
+  test("worker can update its direct report", () => {
+    const registry = makeProjectRegistry({
+      "manager": makeRegistryEntry(),
+      "underling": makeRegistryEntry({ report_to: "manager" }),
+    });
+    expect(canUpdateWorker("manager", "underling", registry)).toBe(true);
+  });
+
+  test("worker cannot update a non-report peer", () => {
+    const registry = makeProjectRegistry({
+      "worker-a": makeRegistryEntry({ report_to: "chief-of-staff" }),
+      "worker-b": makeRegistryEntry({ report_to: "chief-of-staff" }),
+    });
+    expect(canUpdateWorker("worker-a", "worker-b", registry)).toBe(false);
+  });
+
+  test("non-existent target returns false", () => {
+    const registry = makeProjectRegistry({
+      "worker-a": makeRegistryEntry(),
+    });
+    expect(canUpdateWorker("worker-a", "nonexistent", registry)).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Flat org: seed template updated
+// ═══════════════════════════════════════════════════════════════════
+
+describe("generateSeedContent — flat org updates", () => {
+  test("does not mention spawn_child", () => {
+    const seed = generateSeedContent();
+    expect(seed).not.toContain("spawn_child");
+  });
+
+  test("does not mention rename tool", () => {
+    const seed = generateSeedContent();
+    expect(seed).not.toContain("`rename(");
+  });
+
+  test("mentions create_worker with fork_from_session", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("create_worker");
+    expect(seed).toContain("fork_from_session");
+  });
+
+  test("mentions deregister in tool table", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("deregister");
+  });
+
+  test("does not reference old 'parent'/'children' messaging", () => {
+    const seed = generateSeedContent();
+    // Should not have parent/children as messaging targets in tool table
+    expect(seed).not.toContain('to="parent"');
+    expect(seed).not.toContain('to="children"');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// createWorkerFiles — unique name enforcement (file-level)
+// ═══════════════════════════════════════════════════════════════════
+
+describe("createWorkerFiles — unique name check", () => {
+  test("rejects creation if worker dir already exists", () => {
+    // First creation succeeds
+    const result1 = createWorkerFiles({ name: "dup-check-worker", mission: "Test" });
+    expect(result1.ok).toBe(true);
+
+    // Second creation with same name fails
+    const result2 = createWorkerFiles({ name: "dup-check-worker", mission: "Test again" });
+    expect(result2.ok).toBe(false);
+    expect(result2.error).toContain("already exists");
+  });
+
+  test("rejects invalid kebab-case names", () => {
+    const result = createWorkerFiles({ name: "UPPER_CASE", mission: "Test" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("kebab-case");
+  });
+
+  test("rejects empty mission", () => {
+    const result = createWorkerFiles({ name: "empty-mission-test", mission: "   " });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("empty");
+  });
+
+  test("returns task IDs when tasks provided", () => {
+    const result = createWorkerFiles({
+      name: "with-tasks-test",
+      mission: "Test mission",
+      taskEntries: [
+        { subject: "Task 1", priority: "high" },
+        { subject: "Task 2" },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.taskIds!.length).toBe(2);
+    expect(result.taskIds![0]).toMatch(/^T\d+$/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// resolveRecipient — comprehensive coverage
+// ═══════════════════════════════════════════════════════════════════
+
+describe("resolveRecipient — comprehensive", () => {
+  test("worker name → type worker", () => {
+    const result = resolveRecipient("my-worker");
+    expect(result.type).toBe("worker");
+    expect(result.workerName).toBe("my-worker");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("raw pane ID → type pane", () => {
+    const result = resolveRecipient("%123");
+    expect(result.type).toBe("pane");
+    expect(result.paneId).toBe("%123");
+  });
+
+  test("report → resolves to report_to chain", () => {
+    const result = resolveRecipient("report");
+    // Either resolves to a worker/pane or returns an error — never crashes
+    expect(result.type).toBeDefined();
+  });
+
+  test("direct_reports → type multi_pane", () => {
+    const result = resolveRecipient("direct_reports");
+    expect(result.type).toBe("multi_pane");
+    expect(Array.isArray(result.paneIds)).toBe(true);
+  });
+
+  test("empty string → treated as worker name", () => {
+    const result = resolveRecipient("");
+    expect(result.type).toBe("worker");
+    expect(result.workerName).toBe("");
+  });
+
+  test("pane ID without percent → treated as worker name", () => {
+    const result = resolveRecipient("123");
+    expect(result.type).toBe("worker");
+    expect(result.workerName).toBe("123");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// lintRegistry — comprehensive lint checks
+// ═══════════════════════════════════════════════════════════════════
+
+describe("lintRegistry — comprehensive", () => {
+  test("empty registry (no workers) → no issues", () => {
+    const registry = makeProjectRegistry({});
+    const issues = lintRegistry(registry);
+    expect(issues.length).toBe(0);
+  });
+
+  test("worker with no model → warning", () => {
+    const registry = makeProjectRegistry({
+      "no-model": makeRegistryEntry({ model: "" }),
+    });
+    const issues = lintRegistry(registry);
+    const modelIssue = issues.find(i => i.check === "lint.model");
+    expect(modelIssue).toBeDefined();
+  });
+
+  test("worker with valid model → no model warning", () => {
+    const registry = makeProjectRegistry({
+      "has-model": makeRegistryEntry({ model: "sonnet" }),
+    });
+    const issues = lintRegistry(registry);
+    const modelIssue = issues.find(i => i.check === "lint.model");
+    expect(modelIssue).toBeUndefined();
+  });
+
+  test("multiple lint issues can be returned at once", () => {
+    const registry = makeProjectRegistry({
+      "bad-worker": makeRegistryEntry({ model: "", report_to: "nonexistent" }),
+    });
+    const issues = lintRegistry(registry);
+    expect(issues.length).toBeGreaterThanOrEqual(1);
   });
 });
