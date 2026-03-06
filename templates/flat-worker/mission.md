@@ -33,6 +33,22 @@ Suggested cadences:
 - Optimization/review workers: `10800`–`14400` (3–4h)
 - One-shot workers: `"perpetual": false` (no `sleep_duration` needed)
 
+## Available Scripts
+
+Check `.claude/scripts/` before writing inline bash. Reusable scripts persist across recycles.
+
+**Shared** (all workers):
+```
+.claude/scripts/worker/deploy-to-slot.sh   # Deploy to your isolated test slot
+.claude/scripts/worker/pre-validate.sh     # TypeScript + build check before merge
+.claude/scripts/request-merge.sh           # Send merge request to merger
+.claude/scripts/worker-status.sh           # Fleet health overview
+```
+
+**Worker-specific** (check `.claude/scripts/{{WORKER_NAME}}/` — create scripts here for tasks you do repeatedly):
+
+If you do something twice, save it as a script. Scripts are your long-term memory for operations.
+
 ## Credentials
 <!-- Add project-specific credentials here -->
 
