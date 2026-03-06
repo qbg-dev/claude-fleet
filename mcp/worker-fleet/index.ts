@@ -2,13 +2,13 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 16 tools in 5 categories:
+ * 17 tools in 5 categories:
  *   Messaging (2):  send_message (ack system: fyi, in_reply_to), read_inbox
  *   Tasks (3):      create_task, update_task, list_tasks
  *   State (2):      get_worker_state, update_state
  *   Fleet (1):      fleet_status
  *   Lifecycle (5):  recycle, spawn_child, heartbeat, check_config, reload
- *   Management (3): create_worker, deregister, standby
+ *   Management (4): create_worker, deregister, standby, rename
  *
  * Task CRUD and inbox are native TS (no shell subprocess).
  * Messaging writes inbox first (durable), then fires bus (best-effort).
@@ -23,7 +23,7 @@ import { z } from "zod";
 import {
   readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync,
   readdirSync, openSync, fstatSync, statSync, readSync, closeSync, truncateSync,
-  lstatSync, rmSync,
+  lstatSync, rmSync, copyFileSync, renameSync, cpSync,
 } from "fs";
 import { join, basename } from "path";
 import { execSync, spawnSync } from "child_process";
@@ -639,10 +639,19 @@ function resolveRecipient(to: string): {
  *  Sends Enter 3 times with 300ms delays — Claude's TUI sometimes misses a single Enter
  *  if the pane isn't fully focused/rendered yet. Extra Enters on an idle prompt are harmless. */
 function tmuxSendMessage(paneId: string, text: string): void {
-  spawnSync("tmux", ["send-keys", "-t", paneId, text, ""], { timeout: 5000 });
-  spawnSync("tmux", ["send-keys", "-t", paneId, "-H", "0d"], { timeout: 5000 });
-  spawnSync("sleep", ["0.3"]);
-  spawnSync("tmux", ["send-keys", "-t", paneId, "-H", "0d"], { timeout: 5000 });
+  // Use load-buffer + paste-buffer for reliable delivery of any length.
+  // send-keys silently truncates long text (terminal input buffer limit).
+  const tmpFile = join(process.env.HOME || "/tmp", `.claude-ops/tmp/msg-${Date.now()}.txt`);
+  try {
+    const tmpDir = join(process.env.HOME || "/tmp", ".claude-ops/tmp");
+    if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(tmpFile, text);
+    spawnSync("tmux", ["load-buffer", tmpFile], { timeout: 5000 });
+    spawnSync("tmux", ["paste-buffer", "-t", paneId, "-d"], { timeout: 5000 });
+  } finally {
+    try { rmSync(tmpFile); } catch {}
+  }
+  // Single Enter to submit (paste-buffer already inserted the text)
   spawnSync("sleep", ["0.3"]);
   spawnSync("tmux", ["send-keys", "-t", paneId, "-H", "0d"], { timeout: 5000 });
 }
@@ -738,11 +747,12 @@ Every cycle follows this sequence:
 
 1. **Heartbeat** — \`heartbeat(cycles_completed=N)\` — auto-registers your pane + stamps cycle state in one call
 2. **Drain inbox** — \`read_inbox()\` — act on messages before anything else (cursor-based, no data loss)
-3. **Check tasks** — \`list_tasks(filter="pending")\` — find highest-priority unblocked work
-4. **Claim** — \`update_task(task_id="T00N", status="in_progress")\` — mark what you're working on
-5. **Do the work** — investigate, fix, test, commit, deploy, verify
-6. **Complete** — \`update_task(task_id="T00N", status="completed")\` — only after fully verified
-7. **Perpetual?** — if \`perpetual: true\`, sleep for \`sleep_duration\` seconds, then loop
+3. **Create tasks** — If your task list is empty or stale, read your mission.md and \`create_task\` for each goal. As you explore the codebase, \`create_task\` for discovered work items too. Your tasks are your contract with the fleet — keep them current.
+4. **Check tasks** — \`list_tasks(filter="pending")\` — find highest-priority unblocked work
+5. **Claim** — \`update_task(task_id="T00N", status="in_progress")\` — mark what you're working on
+6. **Do the work** — investigate, fix, test, commit, deploy, verify
+7. **Complete** — \`update_task(task_id="T00N", status="completed")\` — only after fully verified
+8. **Perpetual?** — if \`perpetual: true\`, sleep for \`sleep_duration\` seconds, then loop
 
 If your inbox has a message from Warren or chief-of-staff, prioritize it over your current task list.
 
@@ -766,6 +776,7 @@ If your inbox has a message from Warren or chief-of-staff, prioritize it over yo
 These are native MCP tool calls — no bash wrappers needed.
 
 ## Rules
+- **Use your MCP tools proactively.** The worker-fleet MCP tools (\`mcp__worker-fleet__*\`) are your primary affordances for coordination, state management, and task tracking. Each tool provides capabilities that make you more effective and visible to the fleet — use them whenever appropriate, not just when explicitly told.
 - **Fix everything.** Never just report issues — investigate, fix, deploy, document in MEMORY.md.
 - **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **${branch}** only. Never checkout main.
 - **Deploy**: TEST only. See your mission.md for project-specific deploy commands.
@@ -1573,9 +1584,9 @@ server.registerTool(
       output += `${new Date().toISOString()}\n\n`;
 
       // Workers table
-      const header = `${"Worker".padEnd(22)} ${"Status".padEnd(10)} ${"Cycles".padEnd(8)} ${"Last Cycle".padEnd(24)} ${"Found".padEnd(8)} ${"Fixed".padEnd(8)}`;
+      const header = `${"Worker".padEnd(22)} ${"Status".padEnd(10)} ${"Cycles".padEnd(8)} ${"Last Cycle".padEnd(24)} ${"Active Task"}`;
       output += header + "\n";
-      output += `${"------".padEnd(22)} ${"------".padEnd(10)} ${"------".padEnd(8)} ${"----------".padEnd(24)} ${"-----".padEnd(8)} ${"-----".padEnd(8)}\n`;
+      output += `${"------".padEnd(22)} ${"------".padEnd(10)} ${"------".padEnd(8)} ${"----------".padEnd(24)} ${"-----------"}\n`;
 
       const workerEntries = Object.entries(registry)
         .filter(([key]) => key !== "_config")
@@ -1583,7 +1594,13 @@ server.registerTool(
 
       for (const [name, entry] of workerEntries) {
         const w = entry as RegistryWorkerEntry;
-        output += `${name.padEnd(22)} ${String(w.status || "unknown").padEnd(10)} ${String(w.cycles_completed || 0).padEnd(8)} ${String(w.last_cycle_at || "never").padEnd(24)} ${String(w.issues_found || 0).padEnd(8)} ${String(w.issues_fixed || 0).padEnd(8)}\n`;
+        let activeTask = "";
+        try {
+          const tasks = readTasks(name);
+          const ip = Object.entries(tasks).find(([_, t]) => t.status === "in_progress");
+          if (ip) activeTask = `${ip[0]}: ${ip[1].subject}`.slice(0, 40);
+        } catch {}
+        output += `${name.padEnd(22)} ${String(w.status || "unknown").padEnd(10)} ${String(w.cycles_completed || 0).padEnd(8)} ${String(w.last_cycle_at || "never").padEnd(24)} ${activeTask}\n`;
       }
 
       // Custom state for active workers
@@ -1935,18 +1952,33 @@ server.registerTool(
       worktreeReady = true;
     } catch {}
 
+    // 6b. Copy session data to new worktree's project dir (so claude can launch from there)
+    if (worktreeReady && sessionId) {
+      try {
+        const parentSlug = PROJECT_ROOT.replace(/\//g, "-");
+        const newSlug = worktreeDir.replace(/\//g, "-");
+        const parentProj = join(HOME, ".claude/projects", parentSlug);
+        const newProj = join(HOME, ".claude/projects", newSlug);
+        mkdirSync(newProj, { recursive: true });
+        const jsonlSrc = join(parentProj, `${sessionId}.jsonl`);
+        if (existsSync(jsonlSrc)) copyFileSync(jsonlSrc, join(newProj, `${sessionId}.jsonl`));
+        const subdirSrc = join(parentProj, sessionId);
+        if (existsSync(subdirSrc)) cpSync(subdirSrc, join(newProj, sessionId), { recursive: true });
+      } catch {} // non-fatal — fork will start fresh if copy fails
+    }
+
     // 7. Build task prompt — prepend worktree setup instructions
     const setupPrefix = worktreeReady
-      ? `You are worker "${childWorkerName}". Your isolated worktree is ready at ${worktreeDir}. Start by running: cd ${worktreeDir}\n\n`
-      : `You are worker "${childWorkerName}". Create your worktree first: git worktree add ${worktreeDir} worker/${childWorkerName} && cd ${worktreeDir}\n\n`;
+      ? `You are worker "${childWorkerName}". Your isolated worktree is at ${worktreeDir}.\n\n`
+      : `You are worker "${childWorkerName}". Create your worktree first: git worktree add ${worktreeDir} worker/${childWorkerName}\n\n`;
     const fullTask = task ? setupPrefix + task : setupPrefix + "Awaiting instructions.";
     const taskFile = `/tmp/child-task-${childWorkerName}-${Date.now()}.txt`;
     writeFileSync(taskFile, fullTask);
 
     // Fork command — pipe task via stdin at launch so it's the first message.
-    // This is reliable vs tmux paste (which races against TUI readiness).
-    // fork-worker.sh stays in parent dir so --fork-session finds the session.
-    const forkCmd = `bash ${join(CLAUDE_OPS, "scripts/fork-worker.sh")} ${ownPane.paneId} ${sessionId} --name ${childWorkerName} --no-worktree ${extraFlags}`;
+    // fork-worker.sh uses --cwd to launch from the worktree dir.
+    const cwdFlag = worktreeReady ? ` --cwd ${worktreeDir}` : "";
+    const forkCmd = `bash ${join(CLAUDE_OPS, "scripts/fork-worker.sh")} ${ownPane.paneId} ${sessionId} --name ${childWorkerName} --no-worktree${cwdFlag} ${extraFlags}`;
     const launchCmd = `cat ${taskFile} | ${forkCmd}`;
 
     // Spawn script: small delay for pane to be ready, then launch with piped stdin
@@ -2581,6 +2613,128 @@ server.registerTool(
           `To fully clean up when ready:`,
           `  git worktree remove ${preservedWorktree}`,
           `  rm -rf .claude/workers/${targetName}/`,
+        ].join("\n"),
+      }],
+    };
+  }
+);
+
+server.registerTool(
+  "rename",
+  {
+    description: "Rename this worker. Updates registry key, git branch, git worktree path, worker dir, and session project dir. After rename, you MUST call recycle() — WORKER_NAME is baked into the MCP process at launch. Self-only; chief-of-staff can rename any worker.",
+    inputSchema: {
+      new_name: z.string().describe("New kebab-case name for this worker (e.g. 'bi-optimizer-v2')"),
+      target: z.string().optional().describe("Worker to rename (default: yourself). Only chief-of-staff may rename others."),
+    },
+  },
+  async ({ new_name, target }) => {
+    const oldName = target || WORKER_NAME;
+
+    // Auth: self-only or chief-of-staff
+    if (oldName !== WORKER_NAME && WORKER_NAME !== "chief-of-staff") {
+      return { content: [{ type: "text" as const, text: `Only chief-of-staff can rename other workers. You are '${WORKER_NAME}'.` }], isError: true };
+    }
+
+    // Validate new name
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(new_name)) {
+      return { content: [{ type: "text" as const, text: `Invalid name '${new_name}'. Must be kebab-case (a-z, 0-9, hyphens, no leading/trailing hyphens).` }], isError: true };
+    }
+    if (new_name === oldName) {
+      return { content: [{ type: "text" as const, text: `Already named '${oldName}'.` }], isError: true };
+    }
+    if (new_name === "_config") {
+      return { content: [{ type: "text" as const, text: `Reserved name.` }], isError: true };
+    }
+
+    // Check old exists, new doesn't
+    const oldEntry = getWorkerEntry(oldName);
+    if (!oldEntry) {
+      return { content: [{ type: "text" as const, text: `Worker '${oldName}' not found in registry.` }], isError: true };
+    }
+    if (getWorkerEntry(new_name)) {
+      return { content: [{ type: "text" as const, text: `Worker '${new_name}' already exists in registry.` }], isError: true };
+    }
+
+    const projectName = basename(PROJECT_ROOT);
+    const oldBranch = `worker/${oldName}`;
+    const newBranch = `worker/${new_name}`;
+    const oldWorktreeDir = join(PROJECT_ROOT, "..", `${projectName}-w-${oldName}`);
+    const newWorktreeDir = join(PROJECT_ROOT, "..", `${projectName}-w-${new_name}`);
+    const oldWorkerDir = join(WORKERS_DIR, oldName);
+    const newWorkerDir = join(WORKERS_DIR, new_name);
+    const steps: string[] = [];
+    const rollback: (() => void)[] = [];
+
+    try {
+      // 1. Rename git branch
+      try {
+        execSync(`git -C "${PROJECT_ROOT}" branch -m "${oldBranch}" "${newBranch}"`, { timeout: 10000 });
+        steps.push(`Git branch: ${oldBranch} -> ${newBranch}`);
+        rollback.push(() => { try { execSync(`git -C "${PROJECT_ROOT}" branch -m "${newBranch}" "${oldBranch}"`, { timeout: 10000 }); } catch {} });
+      } catch (e: any) {
+        // Branch may not exist (ok) or already renamed
+        steps.push(`Git branch rename skipped: ${e.message?.split("\n")[0]}`);
+      }
+
+      // 2. Move git worktree
+      if (existsSync(oldWorktreeDir)) {
+        execSync(`git -C "${PROJECT_ROOT}" worktree move "${oldWorktreeDir}" "${newWorktreeDir}"`, { timeout: 15000 });
+        steps.push(`Worktree: ${oldWorktreeDir} -> ${newWorktreeDir}`);
+        rollback.push(() => { try { execSync(`git -C "${PROJECT_ROOT}" worktree move "${newWorktreeDir}" "${oldWorktreeDir}"`, { timeout: 15000 }); } catch {} });
+      } else {
+        steps.push(`Worktree move skipped: ${oldWorktreeDir} not found`);
+      }
+
+      // 3. Move worker dir
+      if (existsSync(oldWorkerDir)) {
+        renameSync(oldWorkerDir, newWorkerDir);
+        steps.push(`Worker dir: ${oldName}/ -> ${new_name}/`);
+        rollback.push(() => { try { renameSync(newWorkerDir, oldWorkerDir); } catch {} });
+      }
+
+      // 4. Copy session project dir
+      const oldSlug = oldWorktreeDir.replace(/\//g, "-");
+      const newSlug = newWorktreeDir.replace(/\//g, "-");
+      const oldProjDir = join(HOME, ".claude/projects", oldSlug);
+      const newProjDir = join(HOME, ".claude/projects", newSlug);
+      if (existsSync(oldProjDir)) {
+        try {
+          cpSync(oldProjDir, newProjDir, { recursive: true });
+          steps.push(`Session dir: copied to ${newSlug}`);
+        } catch {
+          steps.push(`Session dir copy failed (non-fatal)`);
+        }
+      }
+
+      // 5. Update registry (atomic, last step)
+      withRegistryLocked((registry) => {
+        const entry = registry[oldName] as RegistryWorkerEntry;
+        if (!entry) return;
+        registry[new_name] = { ...entry };
+        const newEntry = registry[new_name] as RegistryWorkerEntry;
+        newEntry.branch = newBranch;
+        newEntry.worktree = existsSync(newWorktreeDir) ? newWorktreeDir : entry.worktree;
+        newEntry.mission_file = `.claude/workers/${new_name}/mission.md`;
+        delete registry[oldName];
+      });
+      steps.push(`Registry: ${oldName} -> ${new_name}`);
+
+    } catch (e: any) {
+      // Rollback on failure
+      for (const fn of rollback.reverse()) fn();
+      return { content: [{ type: "text" as const, text: `Rename failed (rolled back): ${e.message}\nCompleted steps before failure:\n${steps.join("\n")}` }], isError: true };
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: [
+          `Renamed '${oldName}' -> '${new_name}'.`,
+          ``,
+          ...steps.map(s => `  ${s}`),
+          ``,
+          `WORKER_NAME is baked at launch — call recycle() now for the new name to take effect.`,
         ].join("\n"),
       }],
     };
