@@ -196,6 +196,36 @@ _clear_cos_notified() {
   rm -f "$runtime/cos-notified" 2>/dev/null || true
 }
 
+# ── Move a finished non-perpetual worker's pane to "inactive" window ──
+_move_to_inactive() {
+  local worker="$1" pane_id="$2"
+  local session
+  session=$(jq -r --arg n "$worker" '.[$n].tmux_session // "w"' "$REGISTRY" 2>/dev/null)
+  [ "$session" = "null" ] && session="w"
+
+  local inactive_win="inactive"
+
+  # Create inactive window if it doesn't exist
+  if ! tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -qxF "$inactive_win"; then
+    tmux new-window -t "$session" -n "$inactive_win" -d 2>/dev/null || true
+  fi
+
+  # Move the pane (join-pane moves it into the target window)
+  tmux join-pane -t "$session:$inactive_win" -s "$pane_id" -d 2>/dev/null || true
+  tmux select-layout -t "$session:$inactive_win" tiled 2>/dev/null || true
+
+  # Update registry: clear pane_id so watchdog stops checking
+  local _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
+  mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
+  local _WAIT=0
+  while ! mkdir "$_LOCK_DIR" 2>/dev/null; do sleep 0.5; _WAIT=$((_WAIT+1)); [ "$_WAIT" -ge 10 ] && break; done
+  local _tmp; _tmp=$(mktemp)
+  jq --arg n "$worker" '.[$n].pane_id = "" | .[$n].status = "inactive"' "$REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$REGISTRY" || rm -f "$_tmp"
+  rmdir "$_LOCK_DIR" 2>/dev/null || true
+
+  _log "INACTIVE: $worker — moved pane $pane_id to $session:$inactive_win"
+}
+
 # ── Kill Claude process tree in a pane ─────────────────────────────
 _kill_claude_in_pane() {
   local pane_id="$1"
@@ -457,8 +487,9 @@ check_worker() {
         _relaunch_claude "$worker" "$pane_id" "${wt_dir:-$PROJECT_ROOT}"
         return 1  # signal respawn happened (for stagger)
       else
-        _log "BARE-SHELL-NONPERP: $worker (pane $pane_id) — no Claude TUI, notifying chief-of-staff"
-        _notify_chief_of_staff_dead_worker "$worker" "bare-shell" "Pane $pane_id exists but Claude process is not running. "
+        _log "BARE-SHELL-NONPERP: $worker (pane $pane_id) — no Claude TUI, moving to inactive"
+        _move_to_inactive "$worker" "$pane_id"
+        _notify_chief_of_staff_dead_worker "$worker" "bare-shell → inactive" "Pane moved to inactive window. "
       fi
     else
       # Claude TUI is present — clear any stale cos-notified flag
@@ -525,10 +556,18 @@ check_worker() {
 
   # ── Pane is dead ──
 
-  # Non-perpetual workers: notify chief-of-staff, don't respawn
+  # Non-perpetual workers: clear pane_id + mark inactive, notify chief-of-staff
   if [ "$perpetual" != "true" ]; then
-    _log "DEAD-NONPERP: $worker (pane $pane_id) — not respawning, notifying chief-of-staff"
-    _notify_chief_of_staff_dead_worker "$worker" "dead pane" "Pane $pane_id no longer exists in tmux. "
+    _log "DEAD-NONPERP: $worker (pane $pane_id) — marking inactive"
+    # Pane is gone, just update registry status
+    local _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
+    mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
+    local _WAIT=0
+    while ! mkdir "$_LOCK_DIR" 2>/dev/null; do sleep 0.5; _WAIT=$((_WAIT+1)); [ "$_WAIT" -ge 10 ] && break; done
+    local _tmp; _tmp=$(mktemp)
+    jq --arg n "$worker" '.[$n].pane_id = "" | .[$n].status = "inactive"' "$REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$REGISTRY" || rm -f "$_tmp"
+    rmdir "$_LOCK_DIR" 2>/dev/null || true
+    _notify_chief_of_staff_dead_worker "$worker" "dead → inactive" "Pane $pane_id no longer exists. "
     return
   fi
 

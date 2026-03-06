@@ -45,40 +45,28 @@ WORKTREE_DIR="$PROJECT_ROOT/../${PROJECT_NAME}-w-$WORKER"
 
 [ ! -d "$WORKER_DIR" ] && { echo "ERROR: worker dir not found: $WORKER_DIR"; exit 1; }
 
-# Read worker config from permissions.json (source of truth), fall back to registry.json
+# Read worker config — registry.json is the single source of truth for all runtime config.
+# permissions.json is only used for disallowed_tools (deny-list).
 PERMS="$WORKER_DIR/permissions.json"
 MODEL="sonnet"
 PERM_MODE="bypassPermissions"
 WINDOW_GROUP=""
 
-if [ -f "$PERMS" ]; then
-  # permissions.json is the source of truth for worker config
-  _P_MODEL=$(jq -r '.model // empty' "$PERMS" 2>/dev/null || echo "")
-  [ -n "$_P_MODEL" ] && MODEL="$_P_MODEL"
-  _P_PERM=$(jq -r '.permission_mode // empty' "$PERMS" 2>/dev/null || echo "")
-  [ -n "$_P_PERM" ] && PERM_MODE="$_P_PERM"
-  WINDOW_GROUP=$(jq -r '.window // empty' "$PERMS" 2>/dev/null || echo "")
-fi
-
-# Fall back to registry.json for model/perm if not in permissions.json
 if [ -f "$REGISTRY" ]; then
-  if [ "$MODEL" = "sonnet" ]; then
-    _REG_MODEL=$(jq -r --arg n "$WORKER" '.[$n].model // empty' "$REGISTRY" 2>/dev/null || echo "")
-    [ -n "$_REG_MODEL" ] && MODEL="$_REG_MODEL"
-  fi
-  if [ "$PERM_MODE" = "bypassPermissions" ]; then
-    _REG_PERM=$(jq -r --arg n "$WORKER" '.[$n].permission_mode // empty' "$REGISTRY" 2>/dev/null || echo "")
-    [ -n "$_REG_PERM" ] && PERM_MODE="$_REG_PERM"
-  fi
+  _REG_MODEL=$(jq -r --arg n "$WORKER" '.[$n].model // empty' "$REGISTRY" 2>/dev/null || echo "")
+  [ -n "$_REG_MODEL" ] && MODEL="$_REG_MODEL"
+  _REG_PERM=$(jq -r --arg n "$WORKER" '.[$n].permission_mode // empty' "$REGISTRY" 2>/dev/null || echo "")
+  [ -n "$_REG_PERM" ] && PERM_MODE="$_REG_PERM"
+  WINDOW_GROUP=$(jq -r --arg n "$WORKER" '.[$n].window // empty' "$REGISTRY" 2>/dev/null || echo "")
   # Read tmux session from registry _config
   _REG_SESS=$(jq -r '._config.tmux_session // empty' "$REGISTRY" 2>/dev/null || echo "")
   [ -n "$_REG_SESS" ] && TARGET_SESSION="$_REG_SESS"
 fi
 
-# CLI --window overrides permissions.json
+# CLI --window overrides registry
 [ -n "$CLI_WINDOW" ] && WINDOW_GROUP="$CLI_WINDOW"
 
-# Default: window name = worker name (every worker has a window value)
+# Default: window name = worker name
 [ -z "$WINDOW_GROUP" ] && WINDOW_GROUP="$WORKER"
 
 # Ensure tmux session exists
@@ -188,17 +176,13 @@ if [ -f "$REGISTRY" ]; then
     sleep 0.5; _WAIT=$((_WAIT + 1))
     [ "$_WAIT" -ge 10 ] && break
   done
-  # Cache full config from permissions.json into registry
-  _PERMS_JSON="{}"
-  [ -f "$PERMS" ] && _PERMS_JSON=$(cat "$PERMS" 2>/dev/null || echo "{}")
-
+  # Update registry with runtime pane info (registry is source of truth for config)
   TMP_REG=$(mktemp)
   jq --arg name "$WORKER" --arg pid "$WORKER_PANE" --arg target "${_PANE_TARGET:-}" \
     --arg sess "$TARGET_SESSION" --arg branch "$BRANCH" \
     --arg wt "$WORKTREE_DIR" --arg now "$_NOW" --arg win "$WINDOW_GROUP" \
     --arg model "$MODEL" --arg perm "$PERM_MODE" \
-    --argjson perms "$_PERMS_JSON" \
-    '.[$name] = (.[$name] // {}) * $perms |
+    '.[$name] = (.[$name] // {}) |
      .[$name].pane_id = $pid |
      .[$name].pane_target = $target |
      .[$name].tmux_session = $sess |
@@ -207,14 +191,19 @@ if [ -f "$REGISTRY" ]; then
      .[$name].window = $win |
      .[$name].model = $model |
      .[$name].permission_mode = $perm |
+     .[$name].status = "active" |
      .[$name].session_id = ""' \
     "$REGISTRY" > "$TMP_REG" 2>/dev/null && mv "$TMP_REG" "$REGISTRY" || rm -f "$TMP_REG"
   rmdir "$_LOCK_DIR" 2>/dev/null || true
 fi
 
-# Read disallowed_tools from permissions.json
+# Read disallowed_tools — registry first, then permissions.json fallback
 DISALLOWED_TOOLS=""
-if [ -f "$PERMS" ]; then
+if [ -f "$REGISTRY" ]; then
+  _DT=$(jq -r --arg n "$WORKER" '.[$n].disallowed_tools // [] | join(",")' "$REGISTRY" 2>/dev/null || echo "")
+  [ -n "$_DT" ] && DISALLOWED_TOOLS="$_DT"
+fi
+if [ -z "$DISALLOWED_TOOLS" ] && [ -f "$PERMS" ]; then
   _DT=$(jq -r '.disallowed_tools // [] | join(",")' "$PERMS" 2>/dev/null || echo "")
   [ -n "$_DT" ] && DISALLOWED_TOOLS="$_DT"
 fi
