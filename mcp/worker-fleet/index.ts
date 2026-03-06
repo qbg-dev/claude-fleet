@@ -639,20 +639,23 @@ function resolveRecipient(to: string): {
  *  Sends Enter 3 times with 300ms delays — Claude's TUI sometimes misses a single Enter
  *  if the pane isn't fully focused/rendered yet. Extra Enters on an idle prompt are harmless. */
 function tmuxSendMessage(paneId: string, text: string): void {
-  // Use load-buffer + paste-buffer for reliable delivery of any length.
+  // Use named buffer + paste-buffer for reliable delivery of any length.
   // send-keys silently truncates long text (terminal input buffer limit).
-  const tmpFile = join(process.env.HOME || "/tmp", `.claude-ops/tmp/msg-${Date.now()}.txt`);
+  // Named buffer avoids race conditions when multiple messages send concurrently.
+  const bufName = `msg-${paneId.replace("%", "")}-${Date.now()}`;
+  const tmpFile = join(process.env.HOME || "/tmp", `.claude-ops/tmp/${bufName}.txt`);
   try {
     const tmpDir = join(process.env.HOME || "/tmp", ".claude-ops/tmp");
     if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
     writeFileSync(tmpFile, text);
-    spawnSync("tmux", ["load-buffer", tmpFile], { timeout: 5000 });
-    spawnSync("tmux", ["paste-buffer", "-t", paneId, "-d"], { timeout: 5000 });
+    spawnSync("tmux", ["load-buffer", "-b", bufName, tmpFile], { timeout: 5000 });
+    spawnSync("tmux", ["paste-buffer", "-b", bufName, "-t", paneId, "-d"], { timeout: 5000 });
   } finally {
     try { rmSync(tmpFile); } catch {}
+    try { spawnSync("tmux", ["delete-buffer", "-b", bufName], { timeout: 2000 }); } catch {}
   }
-  // Single Enter to submit (paste-buffer already inserted the text)
-  spawnSync("sleep", ["0.3"]);
+  // Wait for paste to register in the pane's input, then submit
+  spawnSync("sleep", ["0.5"], { timeout: 2000 });
   spawnSync("tmux", ["send-keys", "-t", paneId, "-H", "0d"], { timeout: 5000 });
 }
 
@@ -2546,9 +2549,9 @@ server.registerTool(
 server.registerTool(
   "standby",
   {
-    description: "Put a worker into standby mode — keeps it in the registry (easy to restart later) but tells the watchdog to leave it alone. Use when a worker has finished its immediate task but may be needed again. The worker's pane is killed gracefully. To bring it back, use create_worker(launch=true) or bash launch-flat-worker.sh. Same auth rules as deregister: self-only unless you're chief-of-staff.",
+    description: "Put a worker into standby mode — keeps it in the registry (easy to restart later) but tells the watchdog to leave it alone. The worker's pane is killed gracefully. To bring it back, use create_worker(launch=true) or launch-flat-worker.sh. Auth: self-only unless you're the mission_authority (from _config).",
     inputSchema: {
-      name: z.string().optional().describe("Worker to put in standby (default: yourself). Only chief-of-staff may put other workers in standby."),
+      name: z.string().optional().describe("Worker to put in standby (default: yourself). Only mission_authority can standby other workers."),
       reason: z.string().optional().describe("Why it's going to standby — stored in handoff.md"),
     },
   },
