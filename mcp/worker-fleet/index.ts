@@ -771,6 +771,7 @@ If your inbox has a message from Warren or chief-of-staff, prioritize it over yo
 | \`recycle(message?)\` | Self-recycle: write handoff, restart fresh with new context |
 | \`spawn_child(task?)\` | Fork yourself into a new pane to the right |
 | \`heartbeat(cycles_completed?, extra?)\` | Call at start of each cycle: auto-registers pane + stamps last_cycle_at, status, cycles_completed |
+| \`rename(new_name)\` | Self-rename: updates git branch, worktree, worker dir, and registry. Requires \`recycle()\` after to pick up new WORKER_NAME |
 | \`reload()\` | Hot-restart: exit + resume same session to pick up new MCP config |
 
 These are native MCP tool calls — no bash wrappers needed.
@@ -2145,6 +2146,20 @@ server.registerTool(
     if (cycles_completed !== undefined) parts.push(`cycles: ${cycles_completed}`);
     if (autoFixed.length > 0) parts.push(`auto-fixed: ${autoFixed.join(", ")}`);
     if (extra) parts.push(`custom: ${Object.keys(extra).join(", ")}`);
+
+    // Nudge if no in-progress task
+    try {
+      const tasks = readTasks(WORKER_NAME);
+      const hasInProgress = Object.values(tasks).some(t => t.status === "in_progress");
+      if (!hasInProgress) {
+        const hasPending = Object.values(tasks).some(t => t.status === "pending");
+        if (hasPending) {
+          parts.push("\n⚠️ No task marked in_progress. Use list_tasks() then update_task(status='in_progress') to claim your current work.");
+        } else {
+          parts.push("\n⚠️ Task list is empty. Use create_task() to register your goals from mission.md, then update_task(status='in_progress') to claim work.");
+        }
+      }
+    } catch {}
 
     return withPendingReminder({ content: [{ type: "text" as const, text: parts.join(" | ") }] });
   }
