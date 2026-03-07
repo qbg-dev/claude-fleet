@@ -31,6 +31,12 @@ jobs:
           mkdir -p ~/.claude-ops/state/locks ~/.claude-ops/bus/side-effects
           mkdir -p ~/.claude-ops/harness/manifests ~/.claude-ops/harness/reports
 
+      - name: Bootstrap Claude settings (required by lint-hooks tests)
+        run: |
+          mkdir -p ~/.claude
+          echo '{"hooks":{}}' > ~/.claude/settings.json
+          bash ~/.claude-ops/scripts/setup-hooks.sh --core-only 2>/dev/null || true
+
       - name: Run test suite
         run: |
           # Skip test suites that require local environment (project-specific harnesses,
