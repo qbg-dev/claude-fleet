@@ -19475,7 +19475,8 @@ import {
   cpSync
 } from "fs";
 import { join, basename } from "path";
-import { execSync, spawnSync } from "child_process";
+import { execSync, spawnSync, spawn } from "child_process";
+import { randomUUID } from "crypto";
 var HOME = process.env.HOME;
 var PROJECT_ROOT = process.env.PROJECT_ROOT || process.cwd();
 var CLAUDE_OPS = process.env.CLAUDE_OPS_DIR || join(HOME, ".claude-ops");
@@ -19953,11 +19954,37 @@ function resolveRecipient(to) {
   }
   return { type: "worker", workerName: to };
 }
-function tmuxSendMessage(paneId, text) {
-  const bufName = `msg-${paneId.replace("%", "")}-${Date.now()}`;
-  const tmpFile = join(process.env.HOME || "/tmp", `.claude-ops/tmp/${bufName}.txt`);
+function isPaneIdle(paneId) {
   try {
-    const tmpDir = join(process.env.HOME || "/tmp", ".claude-ops/tmp");
+    const capture = spawnSync("tmux", ["capture-pane", "-t", paneId, "-p"], {
+      encoding: "utf-8",
+      timeout: 3000
+    });
+    const lastLine = (capture.stdout || "").trim().split(`
+`).pop() || "";
+    return lastLine.includes("bypass permissions") && !lastLine.includes("(running)");
+  } catch {
+    return true;
+  }
+}
+function tmuxSendMessage(paneId, text) {
+  if (!isPaneIdle(paneId)) {
+    const tmpDir = join(HOME, ".claude-ops/tmp");
+    if (!existsSync(tmpDir))
+      mkdirSync(tmpDir, { recursive: true });
+    const msgFile = join(tmpDir, `retry-${randomUUID()}.txt`);
+    writeFileSync(msgFile, text);
+    const deliverScript = join(CLAUDE_OPS, "mcp/worker-fleet/deliver-tmux-msg.sh");
+    spawn("bash", [deliverScript, paneId, msgFile], {
+      detached: true,
+      stdio: "ignore"
+    }).unref();
+    return;
+  }
+  const bufName = `msg-${paneId.replace("%", "")}-${Date.now()}`;
+  const tmpFile = join(HOME, `.claude-ops/tmp/${bufName}.txt`);
+  try {
+    const tmpDir = join(HOME, ".claude-ops/tmp");
     if (!existsSync(tmpDir))
       mkdirSync(tmpDir, { recursive: true });
     writeFileSync(tmpFile, text);
@@ -20245,6 +20272,18 @@ function withLint(result) {
 Reply: send_message(to=<sender>, in_reply_to="<msg_id>", content="...", summary="...")`;
     }
   }
+  try {
+    const inboxPath = getInboxPath(WORKER_NAME);
+    if (existsSync(inboxPath)) {
+      const fileSize = statSync(inboxPath).size;
+      const cursorOffset = cursor?.offset || 0;
+      if (fileSize > cursorOffset) {
+        text += `
+
+\uD83D\uDCEC New inbox messages available \u2014 call read_inbox() to see them`;
+      }
+    }
+  } catch {}
   return { content: [{ type: "text", text }] };
 }
 function withPendingReminder(result) {
@@ -20254,8 +20293,8 @@ var server = new McpServer({
   name: "worker-fleet",
   version: "2.0.0"
 });
-server.registerTool("send_message", { description: `Primary inter-worker communication. Messages require a reply by default \u2014 the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive \u2014 use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you.`, inputSchema: {
-  to: exports_external.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), or raw pane ID '%NN'"),
+server.registerTool("send_message", { description: `Primary inter-worker communication. Messages require a reply by default \u2014 the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive \u2014 use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you. Use to="user" to escalate to Warren (writes to triage queue + macOS notification).`, inputSchema: {
+  to: exports_external.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to Warren via triage queue), or raw pane ID '%NN'"),
   content: exports_external.string().describe("Message content"),
   summary: exports_external.string().describe("Short preview (5-10 words)"),
   fyi: exports_external.boolean().optional().describe("If true, no reply expected \u2014 informational only (default: false = reply expected)"),
@@ -20289,6 +20328,32 @@ server.registerTool("send_message", { description: `Primary inter-worker communi
       msg += `
 Failed: ${failures.join(", ")}`;
     return { content: [{ type: "text", text: msg }] };
+  }
+  if (to === "user") {
+    try {
+      const triageDir = join(PROJECT_ROOT, ".claude/triage");
+      if (!existsSync(triageDir))
+        mkdirSync(triageDir, { recursive: true });
+      const triagePath = join(triageDir, "queue.jsonl");
+      const id = `tq-${Date.now()}`;
+      const entry = {
+        id,
+        category: "worker-escalation",
+        title: summary || content.slice(0, 60),
+        detail: content,
+        source: WORKER_NAME,
+        added_at: new Date().toISOString(),
+        status: "pending"
+      };
+      appendFileSync(triagePath, JSON.stringify(entry) + `
+`);
+      try {
+        execSync(`"${join(CLAUDE_OPS, "bin/notify")}" ${JSON.stringify(`[${WORKER_NAME}] ${summary || content.slice(0, 60)}`)} "Worker Escalation"`, { cwd: PROJECT_ROOT, timeout: 5000, shell: "/bin/bash" });
+      } catch {}
+      return withPendingReminder({ content: [{ type: "text", text: `Escalated to user [${id}] \u2014 written to triage queue + notification sent` }] });
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error writing to triage queue: ${e.message}` }], isError: true };
+    }
   }
   const resolved = resolveRecipient(to);
   if (resolved.error) {

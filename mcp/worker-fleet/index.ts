@@ -26,7 +26,8 @@ import {
   lstatSync, rmSync, copyFileSync, cpSync,
 } from "fs";
 import { join, basename } from "path";
-import { execSync, spawnSync } from "child_process";
+import { execSync, spawnSync, spawn } from "child_process";
+import { randomUUID } from "crypto";
 
 // ── Configuration ────────────────────────────────────────────────────
 const HOME = process.env.HOME!;
@@ -688,19 +689,48 @@ function resolveRecipient(to: string): {
   return { type: "worker", workerName: to };
 }
 
+/** Check if a tmux pane is idle (at the Claude REPL prompt, not running tools).
+ *  Captures the last visible line — if it contains "bypass permissions" without "(running)",
+ *  the worker is waiting for input. Returns true on error (assume idle — safer to deliver). */
+function isPaneIdle(paneId: string): boolean {
+  try {
+    const capture = spawnSync("tmux", ["capture-pane", "-t", paneId, "-p"], {
+      encoding: "utf-8", timeout: 3000,
+    });
+    const lastLine = (capture.stdout || "").trim().split("\n").pop() || "";
+    return lastLine.includes("bypass permissions") && !lastLine.includes("(running)");
+  } catch {
+    return true; // assume idle on error — better to deliver than silently drop
+  }
+}
+
 /** Send text + Enter to a tmux pane. Uses -H 0d for Enter (not literal \n which tmux ignores).
  *  Uses spawnSync (no shell) to avoid backtick/dollar-sign interpretation that was
  *  silently truncating messages containing code references like `--service web`.
- *  Sends Enter 3 times with 300ms delays — Claude's TUI sometimes misses a single Enter
- *  if the pane isn't fully focused/rendered yet. Extra Enters on an idle prompt are harmless. */
+ *
+ *  If the pane is busy (mid-response), writes the message to a tmpfile and spawns a
+ *  background retry via deliver-tmux-msg.sh (15s delay, max 2 retries). The inbox.jsonl
+ *  write already happened before this point, so no message is ever lost — this only
+ *  controls when the tmux paste+Enter fires. */
 function tmuxSendMessage(paneId: string, text: string): void {
-  // Use named buffer + paste-buffer for reliable delivery of any length.
-  // send-keys silently truncates long text (terminal input buffer limit).
-  // Named buffer avoids race conditions when multiple messages send concurrently.
+  if (!isPaneIdle(paneId)) {
+    // Pane is busy — schedule background retry in 15s
+    const tmpDir = join(HOME, ".claude-ops/tmp");
+    if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
+    const msgFile = join(tmpDir, `retry-${randomUUID()}.txt`);
+    writeFileSync(msgFile, text);
+    const deliverScript = join(CLAUDE_OPS, "mcp/worker-fleet/deliver-tmux-msg.sh");
+    spawn("bash", [deliverScript, paneId, msgFile], {
+      detached: true, stdio: "ignore",
+    }).unref();
+    return;
+  }
+
+  // Pane is idle — deliver immediately via paste-buffer
   const bufName = `msg-${paneId.replace("%", "")}-${Date.now()}`;
-  const tmpFile = join(process.env.HOME || "/tmp", `.claude-ops/tmp/${bufName}.txt`);
+  const tmpFile = join(HOME, `.claude-ops/tmp/${bufName}.txt`);
   try {
-    const tmpDir = join(process.env.HOME || "/tmp", ".claude-ops/tmp");
+    const tmpDir = join(HOME, ".claude-ops/tmp");
     if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
     writeFileSync(tmpFile, text);
     spawnSync("tmux", ["load-buffer", "-b", bufName, tmpFile], { timeout: 5000 });
@@ -1029,6 +1059,18 @@ function withLint(result: { content: { type: "text"; text: string }[] }): typeof
     }
   }
 
+  // 3. Unread inbox nudge (lightweight — stat only, no file read)
+  try {
+    const inboxPath = getInboxPath(WORKER_NAME);
+    if (existsSync(inboxPath)) {
+      const fileSize = statSync(inboxPath).size;
+      const cursorOffset = cursor?.offset || 0;
+      if (fileSize > cursorOffset) {
+        text += `\n\n📬 New inbox messages available — call read_inbox() to see them`;
+      }
+    }
+  } catch {}
+
   return { content: [{ type: "text" as const, text }] };
 }
 
@@ -1049,8 +1091,8 @@ const server = new McpServer({
 
 server.registerTool(
   "send_message",
-  { description: `Primary inter-worker communication. Messages require a reply by default — the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive — use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you.`, inputSchema: {
-    to: z.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), or raw pane ID '%NN'"),
+  { description: `Primary inter-worker communication. Messages require a reply by default — the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive — use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you. Use to="user" to escalate to Warren (writes to triage queue + macOS notification).`, inputSchema: {
+    to: z.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to Warren via triage queue), or raw pane ID '%NN'"),
     content: z.string().describe("Message content"),
     summary: z.string().describe("Short preview (5-10 words)"),
     fyi: z.boolean().optional().describe("If true, no reply expected — informational only (default: false = reply expected)"),
@@ -1085,6 +1127,38 @@ server.registerTool(
       let msg = `Broadcast to ${successes.length} workers`;
       if (failures.length > 0) msg += `\nFailed: ${failures.join(", ")}`;
       return { content: [{ type: "text" as const, text: msg }] };
+    }
+
+    // User escalation path: to="user" writes to triage queue + fires notification
+    if (to === "user") {
+      try {
+        const triageDir = join(PROJECT_ROOT, ".claude/triage");
+        if (!existsSync(triageDir)) mkdirSync(triageDir, { recursive: true });
+        const triagePath = join(triageDir, "queue.jsonl");
+        const id = `tq-${Date.now()}`;
+        const entry = {
+          id,
+          category: "worker-escalation",
+          title: summary || content.slice(0, 60),
+          detail: content,
+          source: WORKER_NAME,
+          added_at: new Date().toISOString(),
+          status: "pending",
+        };
+        appendFileSync(triagePath, JSON.stringify(entry) + "\n");
+
+        // Fire macOS notification via notify (best-effort)
+        try {
+          execSync(
+            `"${join(CLAUDE_OPS, "bin/notify")}" ${JSON.stringify(`[${WORKER_NAME}] ${summary || content.slice(0, 60)}`)} "Worker Escalation"`,
+            { cwd: PROJECT_ROOT, timeout: 5000, shell: "/bin/bash" }
+          );
+        } catch {}
+
+        return withPendingReminder({ content: [{ type: "text" as const, text: `Escalated to user [${id}] — written to triage queue + notification sent` }] });
+      } catch (e: any) {
+        return { content: [{ type: "text" as const, text: `Error writing to triage queue: ${e.message}` }], isError: true };
+      }
     }
 
     const resolved = resolveRecipient(to);
