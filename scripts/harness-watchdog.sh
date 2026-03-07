@@ -77,6 +77,27 @@ _is_crash_looped() {
   [ -f "$CRASH_DIR/${worker}.crash-loop" ]
 }
 
+# ── Registry lock helpers (atomic mkdir-based, shared with fleet MCP) ──
+_REG_LOCK="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
+_lock_registry() {
+  mkdir -p "$(dirname "$_REG_LOCK")" 2>/dev/null || true
+  local _w=0
+  while ! mkdir "$_REG_LOCK" 2>/dev/null; do
+    sleep 0.5; _w=$((_w+1)); [ "$_w" -ge 10 ] && break
+  done
+}
+_unlock_registry() { rmdir "$_REG_LOCK" 2>/dev/null || true; }
+
+# ── Locked jq update on registry.json ──
+# Usage: _registry_jq_update '.[$n].status = "inactive"' --arg n "$worker"
+_registry_jq_update() {
+  local _filter="$1"; shift
+  _lock_registry
+  local _tmp; _tmp=$(mktemp)
+  jq "$_filter" "$@" "$REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$REGISTRY" || rm -f "$_tmp"
+  _unlock_registry
+}
+
 # ── Worker runtime dir (per-worker state for stuck detection) ──────
 _worker_runtime() {
   local dir="$RUNTIME_DIR/$1"
@@ -131,15 +152,15 @@ _check_scrollback_stuck() {
   last_line=$(echo "$content" | tail -1)
   local hash_file="$runtime/scrollback-hash"
 
+  # Compute hash once (used in both branches)
+  local current_hash
+  current_hash=$(echo "$content" | md5 2>/dev/null || echo "$content" | md5sum 2>/dev/null | cut -d' ' -f1)
+  local prev_hash=""
+  [ -f "$hash_file" ] && prev_hash=$(cat "$hash_file" 2>/dev/null)
+  echo "$current_hash" > "$hash_file"
+
   if echo "$last_line" | grep -qF 'bypass permissions'; then
     # Statusline looks idle — use scrollback diff to detect actual activity
-    local current_hash
-    current_hash=$(echo "$content" | md5 2>/dev/null || echo "$content" | md5sum 2>/dev/null | cut -d' ' -f1)
-
-    local prev_hash=""
-    [ -f "$hash_file" ] && prev_hash=$(cat "$hash_file" 2>/dev/null)
-    echo "$current_hash" > "$hash_file"
-
     if [ -n "$prev_hash" ] && [ "$current_hash" != "$prev_hash" ]; then
       # Scrollback content changed since last check — worker is active
       rm -f "$marker" 2>/dev/null || true
@@ -156,11 +177,6 @@ _check_scrollback_stuck() {
     local since; since=$(cat "$marker" 2>/dev/null || echo "$now_ts")
     echo $(( now_ts - since ))
     return
-  else
-    # Worker not at idle statusline — update hash for next comparison
-    local current_hash
-    current_hash=$(echo "$content" | md5 2>/dev/null || echo "$content" | md5sum 2>/dev/null | cut -d' ' -f1)
-    echo "$current_hash" > "$hash_file"
   fi
 
   # Not matching stuck pattern — clear marker
@@ -223,13 +239,7 @@ _move_to_inactive() {
   tmux select-layout -t "$session:$inactive_win" tiled 2>/dev/null || true
 
   # Update registry: clear pane_id so watchdog stops checking
-  local _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
-  mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
-  local _WAIT=0
-  while ! mkdir "$_LOCK_DIR" 2>/dev/null; do sleep 0.5; _WAIT=$((_WAIT+1)); [ "$_WAIT" -ge 10 ] && break; done
-  local _tmp; _tmp=$(mktemp)
-  jq --arg n "$worker" '.[$n].pane_id = "" | .[$n].status = "inactive"' "$REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$REGISTRY" || rm -f "$_tmp"
-  rmdir "$_LOCK_DIR" 2>/dev/null || true
+  _registry_jq_update '.[$n].pane_id = "" | .[$n].status = "inactive"' --arg n "$worker"
 
   _log "INACTIVE: $worker — moved pane $pane_id to $session:$inactive_win"
 }
@@ -315,16 +325,10 @@ _build_claude_cmd() {
 _record_relaunch() {
   local worker="$1" reason="$2"
   local _now_iso; _now_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  local _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
-  mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
-  local _WAIT=0
-  while ! mkdir "$_LOCK_DIR" 2>/dev/null; do sleep 0.5; _WAIT=$((_WAIT+1)); [ "$_WAIT" -ge 10 ] && break; done
-  local _tmp; _tmp=$(mktemp)
-  jq --arg n "$worker" --arg ts "$_now_iso" --arg r "$reason" '
+  _registry_jq_update '
     .[$n].watchdog_relaunches = ((.[$n].watchdog_relaunches // 0) + 1) |
     .[$n].last_relaunch = {at: $ts, reason: $r}
-  ' "$REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$REGISTRY" || rm -f "$_tmp"
-  rmdir "$_LOCK_DIR" 2>/dev/null || true
+  ' --arg n "$worker" --arg ts "$_now_iso" --arg r "$reason"
   # Touch liveness so watchdog doesn't immediately re-detect as stuck
   local _RUNTIME_DIR="${HOME}/.claude-ops/state/watchdog-runtime/${worker}"
   mkdir -p "$_RUNTIME_DIR" 2>/dev/null || true
@@ -416,18 +420,8 @@ _resume_in_pane() {
 # ── Registry update helper ────────────────────────────────────────
 _registry_update_pane() {
   local worker="$1" pane_id="$2" pane_target="$3"
-  local _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
-  mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
-  local _WAIT=0
-  while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
-    sleep 0.5; _WAIT=$((_WAIT + 1))
-    [ "$_WAIT" -ge 10 ] && break
-  done
-  local tmp; tmp=$(mktemp)
-  jq --arg n "$worker" --arg pid "$pane_id" --arg target "$pane_target" \
-    '.[$n].pane_id = $pid | .[$n].pane_target = $target' \
-    "$REGISTRY" > "$tmp" 2>/dev/null && mv "$tmp" "$REGISTRY" || rm -f "$tmp"
-  rmdir "$_LOCK_DIR" 2>/dev/null || true
+  _registry_jq_update '.[$n].pane_id = $pid | .[$n].pane_target = $target' \
+    --arg n "$worker" --arg pid "$pane_id" --arg target "$pane_target"
 }
 
 # ── Re-launch Claude in a NEW pane (dead pane respawn) ────────────
@@ -485,14 +479,23 @@ check_worker() {
   # Skip _config key
   [ "$worker" = "_config" ] && return
 
-  # Read worker entry from registry
-  local pane_id; pane_id=$(jq -r --arg n "$worker" '.[$n].pane_id // empty' "$REGISTRY" 2>/dev/null)
+  # Batch-read all needed fields in one jq call (avoids 7+ subprocess spawns per worker)
+  local _fields
+  _fields=$(jq -r --arg n "$worker" '.[$n] | [
+    (.pane_id // ""),
+    (.perpetual // false | tostring),
+    (.status // "idle"),
+    (.sleep_duration // 0 | tostring),
+    (.window // ""),
+    (.tmux_session // "w"),
+    (.worktree // "")
+  ] | join("\t")' "$REGISTRY" 2>/dev/null) || return
 
-  # Read perpetual flag early (needed to decide what to do with pane_id=null)
-  local perpetual; perpetual=$(jq -r --arg n "$worker" '.[$n].perpetual // false' "$REGISTRY" 2>/dev/null)
+  local pane_id perpetual status sleep_dur window session worktree
+  IFS=$'\t' read -r pane_id perpetual status sleep_dur window session worktree <<< "$_fields"
+  [ "$sleep_dur" = "null" ] && sleep_dur=0
 
   # Skip workers in standby mode — they're intentionally dormant
-  local status; status=$(jq -r --arg n "$worker" '.[$n].status // "idle"' "$REGISTRY" 2>/dev/null)
   if [ "$status" = "standby" ]; then
     return
   fi
@@ -511,8 +514,6 @@ check_worker() {
 
   # Skip crash-looped workers
   _is_crash_looped "$worker" && return
-  local sleep_dur; sleep_dur=$(jq -r --arg n "$worker" '.[$n].sleep_duration // 0' "$REGISTRY" 2>/dev/null)
-  [ "$sleep_dur" = "null" ] && sleep_dur=0
 
   local now_ts; now_ts=$(date -u +%s)
 
@@ -621,14 +622,7 @@ check_worker() {
   # Non-perpetual workers: clear pane_id + mark inactive, notify chief-of-staff
   if [ "$perpetual" != "true" ]; then
     _log "DEAD-NONPERP: $worker (pane $pane_id) — marking inactive"
-    # Pane is gone, just update registry status
-    local _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
-    mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
-    local _WAIT=0
-    while ! mkdir "$_LOCK_DIR" 2>/dev/null; do sleep 0.5; _WAIT=$((_WAIT+1)); [ "$_WAIT" -ge 10 ] && break; done
-    local _tmp; _tmp=$(mktemp)
-    jq --arg n "$worker" '.[$n].pane_id = "" | .[$n].status = "inactive"' "$REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$REGISTRY" || rm -f "$_tmp"
-    rmdir "$_LOCK_DIR" 2>/dev/null || true
+    _registry_jq_update '.[$n].pane_id = "" | .[$n].status = "inactive"' --arg n "$worker"
     _notify_chief_of_staff_dead_worker "$worker" "dead → inactive" "Pane $pane_id no longer exists. "
     return
   fi
@@ -644,10 +638,7 @@ check_worker() {
     return
   fi
 
-  # Read window and session from registry
-  local window; window=$(jq -r --arg n "$worker" '.[$n].window // empty' "$REGISTRY" 2>/dev/null)
-  local session; session=$(jq -r --arg n "$worker" '.[$n].tmux_session // "w"' "$REGISTRY" 2>/dev/null)
-  local worktree; worktree=$(jq -r --arg n "$worker" '.[$n].worktree // empty' "$REGISTRY" 2>/dev/null)
+  # window, session, worktree already batch-read above
 
   # Check if tmux session exists at all
   if ! tmux has-session -t "$session" 2>/dev/null; then
