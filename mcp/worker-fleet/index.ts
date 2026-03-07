@@ -714,14 +714,9 @@ function tmuxSendMessage(paneId: string, text: string): void {
   spawnSync("tmux", ["send-keys", "-t", paneId, "-H", "0d"], { timeout: 5000 });
 }
 
-/** Check if a tmux pane is alive */
+/** Check if a tmux pane is alive (single tmux call — display-message fails if pane/session gone) */
 function isPaneAlive(paneId: string): boolean {
   try {
-    const result = spawnSync("tmux", ["has-session", "-t", paneId], {
-      encoding: "utf-8", timeout: 3000,
-    });
-    if (result.status !== 0) return false;
-    // has-session checks the session, but we need to verify the pane specifically
     const check = spawnSync("tmux", ["display-message", "-t", paneId, "-p", "#{pane_id}"], {
       encoding: "utf-8", timeout: 3000,
     });
