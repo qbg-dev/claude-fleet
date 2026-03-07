@@ -836,7 +836,7 @@ Read these files NOW in this order:
 Your MEMORY.md is auto-loaded by Claude (see "persistent auto memory directory" in your context).
 Use Edit/Write to update it directly at that path. Then begin working immediately.
 
-If your inbox has a message from Warren or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}
+If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}
 
 ${loadCompactionContext(branch, _missionAuth)}`;
 
@@ -1091,8 +1091,8 @@ const server = new McpServer({
 
 server.registerTool(
   "send_message",
-  { description: `Primary inter-worker communication. Messages require a reply by default — the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive — use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you. Use to="user" to escalate to Warren (writes to triage queue + macOS notification).`, inputSchema: {
-    to: z.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to Warren via triage queue), or raw pane ID '%NN'"),
+  { description: `Primary inter-worker communication. Messages require a reply by default — the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive — use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you. Use to="user" to escalate to the human operator (writes to triage queue + desktop notification).`, inputSchema: {
+    to: z.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to the human operator via triage queue), or raw pane ID '%NN'"),
     content: z.string().describe("Message content"),
     summary: z.string().describe("Short preview (5-10 words)"),
     fyi: z.boolean().optional().describe("If true, no reply expected — informational only (default: false = reply expected)"),
@@ -1265,7 +1265,7 @@ server.registerTool(
 
 server.registerTool(
   "read_inbox",
-  { description: "Read messages sent to you by other workers or Warren. Call at the start of every cycle to act on pending instructions before checking tasks. Uses a cursor so repeated calls only return new messages — no data loss on restart. Use clear=true only if you want to explicitly purge old messages.", inputSchema: {
+  { description: "Read messages sent to you by other workers or the user. Call at the start of every cycle to act on pending instructions before checking tasks. Uses a cursor so repeated calls only return new messages — no data loss on restart. Use clear=true only if you want to explicitly purge old messages.", inputSchema: {
     limit: z.number().optional().describe("Max messages to return (default: all)"),
     since: z.string().optional().describe("ISO timestamp — only messages after this time"),
     clear: z.boolean().optional().describe("If true, clear inbox after reading (replaces clear_inbox)"),
