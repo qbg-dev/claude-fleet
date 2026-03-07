@@ -710,7 +710,7 @@ function tmuxSendMessage(paneId: string, text: string): void {
     try { spawnSync("tmux", ["delete-buffer", "-b", bufName], { timeout: 2000 }); } catch {}
   }
   // Wait for paste to register in the pane's input, then submit
-  spawnSync("sleep", ["0.5"], { timeout: 2000 });
+  (globalThis as any).Bun.sleepSync(500);
   spawnSync("tmux", ["send-keys", "-t", paneId, "-H", "0d"], { timeout: 5000 });
 }
 
@@ -2253,6 +2253,11 @@ server.registerTool(
           execSync(`git -C "${PROJECT_ROOT}" worktree add "${worktreeDir}" "${workerBranch}"`, { encoding: "utf-8", timeout: 10000 });
         }
         worktreeReady = true;
+        // Symlink gitignored essential files (.env, users.json, projects.json) from main repo
+        const setupScript = join(PROJECT_ROOT, ".claude/scripts/worker/setup-worktree.sh");
+        if (existsSync(setupScript)) {
+          try { execSync(`bash "${setupScript}" "${worktreeDir}"`, { timeout: 5000 }); } catch {}
+        }
       } catch {}
 
       // ── Launch helpers (shared by all placement modes) ──
