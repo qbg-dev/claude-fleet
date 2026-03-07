@@ -11,14 +11,43 @@ msg="${1:?Usage: notify \"message\" [\"title\"] [\"url\"]}"
 title="${2:-🔔 Claude}"
 url="${3:-}"
 
-# ── Publish to event bus (side-effect fires notify_human_agent.sh) ──────────────
-# Find PROJECT_ROOT for bus publishing
+# ── Find PROJECT_ROOT ────────────────────────────────────────────────────────
 _PROJECT_ROOT="${PROJECT_ROOT:-}"
 if [ -z "$_PROJECT_ROOT" ] && command -v git >/dev/null 2>&1; then
   _PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 fi
-# Fallback to common project paths
 [ -z "$_PROJECT_ROOT" ] && _PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# ── Append to triage queue (.claude/triage/queue.jsonl) ──────────────────────
+_TRIAGE_DIR="$_PROJECT_ROOT/.claude/triage"
+if [ -n "$_PROJECT_ROOT" ] && [ -d "$_PROJECT_ROOT/.claude" ]; then
+  mkdir -p "$_TRIAGE_DIR" 2>/dev/null || true
+
+  # Auto-detect calling worker from WORKER_NAME env or registry pane_id lookup
+  _FROM_WORKER="${WORKER_NAME:-}"
+  if [ -z "$_FROM_WORKER" ] && [ -n "${TMUX_PANE:-}" ]; then
+    _REG="$_PROJECT_ROOT/.claude/workers/registry.json"
+    if [ -f "$_REG" ]; then
+      _FROM_WORKER=$(jq -r --arg pid "$TMUX_PANE" '
+        to_entries[] | select(.key != "_config") | select(.value.pane_id == $pid) | .key
+      ' "$_REG" 2>/dev/null | head -1 || true)
+    fi
+  fi
+
+  _TQ_ID="tq-$(date +%s)$(printf '%04d' $$)"
+  _TQ_ENTRY=$(jq -nc \
+    --arg id "$_TQ_ID" \
+    --arg title "$msg" \
+    --arg source "${_FROM_WORKER:-notify}" \
+    --arg from "${_FROM_WORKER:-}" \
+    --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{id:$id, category:"notification", title:$title, detail:$title,
+      source:$source, from_worker:(if $from == "" then null else $from end),
+      added_at:$now, status:"pending"}' 2>/dev/null || true)
+  [ -n "$_TQ_ENTRY" ] && printf '%s\n' "$_TQ_ENTRY" >> "$_TRIAGE_DIR/queue.jsonl"
+fi
+
+# ── Publish to event bus (side-effect fires notify_human_agent.sh) ──────────────
 
 BUS_STREAM="$_PROJECT_ROOT/.claude/bus/stream.jsonl"
 if [ -f "$BUS_STREAM" ] || [ -d "$(dirname "$BUS_STREAM")" ]; then
