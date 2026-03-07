@@ -14,7 +14,7 @@ set -uo pipefail
 trap 'exit 0' EXIT
 
 MESSAGE="${*:-Work complete. No summary provided.}"
-PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "/Users/wz/Desktop/zPersonalProjects/Wechat")}"
+PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || { echo "ERROR: PROJECT_ROOT not set and not in a git repo" >&2; exit 1; })}"
 REGISTRY="$PROJECT_ROOT/.claude/workers/registry.json"
 
 # ── 1. Find own pane ID (process-tree walk) ──────────────────────────────────

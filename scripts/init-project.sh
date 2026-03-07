@@ -19,6 +19,7 @@
 set -euo pipefail
 
 CLAUDE_OPS_DIR="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
+source "$CLAUDE_OPS_DIR/lib/resolve-deps.sh"
 
 # Colors
 if [[ -t 1 ]]; then
@@ -67,6 +68,14 @@ echo "  Project: $PROJECT_NAME"
 echo "  Path:    $PROJECT_DIR"
 echo ""
 
+# ── Prerequisites ──
+step "0/9 Checking prerequisites..."
+if ! check_deps git jq bun tmux; then
+  err "Missing dependencies. Install them and re-run."
+  exit 1
+fi
+info "All dependencies found (git, jq, bun=$BUN, tmux)"
+
 # ── Step 1: Git repo ──
 step "1/9 Checking git repo..."
 if [ -d "$PROJECT_DIR/.git" ]; then
@@ -98,7 +107,7 @@ if [ -f "$MCP_FILE" ]; then
     info ".mcp.json already has worker-fleet configured"
   else
     # Add worker-fleet to existing .mcp.json
-    jq --arg ops "$CLAUDE_OPS_DIR" --arg bun "$HOME/.bun/bin/bun" '.mcpServers["worker-fleet"] = {
+    jq --arg ops "$CLAUDE_OPS_DIR" --arg bun "$BUN" '.mcpServers["worker-fleet"] = {
       "command": $bun,
       "args": ["run", ($ops + "/mcp/worker-fleet/index.ts")],
       "env": {
@@ -112,7 +121,7 @@ else
 {
   "mcpServers": {
     "worker-fleet": {
-      "command": "$HOME/.bun/bin/bun",
+      "command": "$BUN",
       "args": ["run", "$CLAUDE_OPS_DIR/mcp/worker-fleet/index.ts"],
       "env": {
         "PROJECT_ROOT": "$PROJECT_DIR"

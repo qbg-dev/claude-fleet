@@ -25,13 +25,16 @@
 
 set -euo pipefail
 
+CLAUDE_OPS_DIR="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
+source "$CLAUDE_OPS_DIR/lib/resolve-deps.sh"
+
 # ── Config ──────────────────────────────────────────────────────
 CHECK_INTERVAL="${WATCHDOG_CHECK_INTERVAL:-30}"
 STUCK_THRESHOLD_SEC="${WATCHDOG_STUCK_THRESHOLD:-600}"  # 10 min no activity = stuck
 MAX_CRASHES_PER_HR="${WATCHDOG_MAX_CRASHES:-3}"
 LOG_FILE="${WATCHDOG_LOG:-${HOME}/.claude-ops/state/watchdog.log}"
 
-PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "/Users/wz/Desktop/zPersonalProjects/Wechat")}"
+PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || { echo "ERROR: PROJECT_ROOT not set and not in a git repo" >&2; exit 1; })}"
 REGISTRY="$PROJECT_ROOT/.claude/workers/registry.json"
 CRASH_DIR="${HOME}/.claude-ops/state/watchdog-crashes"
 RUNTIME_DIR="${HOME}/.claude-ops/state/watchdog-runtime"
@@ -339,7 +342,7 @@ _resume_in_pane() {
   local seed_file="/tmp/worker-${worker}-respawn.txt"
   local _claude_ops="${HOME}/.claude-ops"
   WORKER_NAME="$worker" PROJECT_ROOT="$PROJECT_ROOT" \
-    "${HOME}/.bun/bin/bun" -e "
+    "$BUN" -e "
       const { generateSeedContent } = await import('${_claude_ops}/mcp/worker-fleet/index.ts');
       process.stdout.write(generateSeedContent());
     " > "$seed_file" 2>/dev/null || {
@@ -453,7 +456,7 @@ _relaunch_claude() {
     local seed_file="/tmp/worker-${worker}-watchdog-seed.txt"
     local _claude_ops="${HOME}/.claude-ops"
     WORKER_NAME="$worker" PROJECT_ROOT="$PROJECT_ROOT" \
-      "${HOME}/.bun/bin/bun" -e "
+      "$BUN" -e "
         const { generateSeedContent } = await import('${_claude_ops}/mcp/worker-fleet/index.ts');
         process.stdout.write(generateSeedContent());
       " > "$seed_file" 2>/dev/null || {

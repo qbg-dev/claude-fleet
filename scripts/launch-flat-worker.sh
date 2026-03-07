@@ -14,6 +14,10 @@
 #          bash launch-flat-worker.sh my-worker --session w2 --project /path/to/repo
 set -euo pipefail
 
+CLAUDE_OPS_DIR="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
+source "$CLAUDE_OPS_DIR/lib/resolve-deps.sh"
+check_deps bun jq tmux || { echo "ERROR: Missing dependencies. Install them first." >&2; exit 1; }
+
 WORKER="${1:?WORKER name required (e.g. dashboard-fix, chief-of-staff)}"
 shift
 
@@ -138,7 +142,7 @@ fi
 SEED_FILE="/tmp/worker-${WORKER}-seed.txt"
 _CLAUDE_OPS="${HOME}/.claude-ops"
 WORKER_NAME="$WORKER" PROJECT_ROOT="$PROJECT_ROOT" \
-  "${HOME}/.bun/bin/bun" -e "
+  "$BUN" -e "
     const { generateSeedContent } = await import('${_CLAUDE_OPS}/mcp/worker-fleet/index.ts');
     process.stdout.write(generateSeedContent());
   " > "$SEED_FILE" 2>/dev/null || {

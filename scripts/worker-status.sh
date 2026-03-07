@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel 2>/dev/null || echo "/Users/wz/Desktop/zPersonalProjects/Wechat")"
+PROJECT_ROOT="$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel 2>/dev/null || { echo "ERROR: PROJECT_ROOT not set and not in a git repo" >&2; exit 1; })"
 REGISTRY="$PROJECT_ROOT/.claude/workers/registry.json"
 
 [ ! -f "$REGISTRY" ] && { echo "No registry found at $REGISTRY"; exit 1; }

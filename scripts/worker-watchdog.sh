@@ -25,6 +25,9 @@
 
 set -euo pipefail
 
+CLAUDE_OPS_DIR="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
+source "$CLAUDE_OPS_DIR/lib/resolve-deps.sh"
+
 # ── Config ──────────────────────────────────────────────────────
 CHECK_INTERVAL="${WATCHDOG_CHECK_INTERVAL:-30}"
 STUCK_THRESHOLD_SEC="${WATCHDOG_STUCK_THRESHOLD:-1200}"  # 20 min no activity = stuck
@@ -308,7 +311,7 @@ _kill_and_relaunch_in_pane() {
   local seed_file="/tmp/worker-${worker_name}-relaunch.txt"
   local _claude_ops="${HOME}/.claude-ops"
   WORKER_NAME="$worker_name" PROJECT_ROOT="$PROJECT_ROOT" \
-    "${HOME}/.bun/bin/bun" -e "
+    "$BUN" -e "
       const { generateSeedContent } = await import('${_claude_ops}/mcp/worker-fleet/index.ts');
       process.stdout.write(generateSeedContent());
     " > "$seed_file" 2>/dev/null || {
