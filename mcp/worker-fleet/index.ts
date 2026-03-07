@@ -2,12 +2,13 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 12 tools in 4 categories:
+ * Tools in 5 categories:
  *   Messaging (2):  send_message, read_inbox
  *   Tasks (3):      create_task, update_task, list_tasks
  *   State (2):      get_worker_state (name="all" for fleet overview), update_state
- *   Lifecycle (1):  recycle (resume=true for hot-restart)
- *   Management (4): create_worker, get_worker_template, deregister, standby
+ *   Stop Checks (3): add_stop_check, complete_stop_check, list_stop_checks
+ *   Lifecycle (1):  recycle (resume=true for hot-restart, gated on stop checks)
+ *   Management (5): create_worker, get_worker_template, register, deregister, standby
  *
  * Task CRUD and inbox are native TS (no shell subprocess).
  * Messaging writes inbox first (durable), then fires bus (best-effort).
@@ -61,6 +62,19 @@ function detectWorkerName(): string {
 }
 
 const WORKER_NAME = detectWorkerName();
+
+// ── Stop Checks (in-memory, per-session) ────────────────────────────
+// Workers register verification items during their cycle. recycle() gates
+// on all checks being completed — forces end-to-end verification.
+interface StopCheck {
+  id: string;
+  description: string;
+  added_at: string;
+  completed: boolean;
+  completed_at?: string;
+}
+const stopChecks: Map<string, StopCheck> = new Map();
+let _stopCheckCounter = 0;
 
 // Cache git branch at module load for fast diagnostics (no subprocess at check time)
 let _cachedBranch: string | null = null;
@@ -763,11 +777,26 @@ If your inbox has a message from Warren or ${_missionAuth} (mission_authority), 
 | \`list_tasks(filter?)\` | List tasks; \`worker="all"\` for cross-worker view |
 | \`get_worker_state(name?)\` | Read worker state; \`name="all"\` for fleet overview |
 | \`update_state(key, value)\` | Persist state across recycles (saved in registry, included in next seed) |
-| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart (reload config) |
+| \`add_stop_check(description)\` | Register a verification you MUST do before recycling |
+| \`complete_stop_check(id)\` | Mark a check done after verifying (\`id="all"\` to clear) |
+| \`list_stop_checks()\` | See all checks and their status |
+| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart. **Blocked if stop checks pending.** |
 | \`create_worker(name, mission)\` | Fork into a new worker |
 | \`deregister(name)\` | Remove a worker from the registry |
 
 Every tool response includes lint warnings if issues are detected — fix them immediately.
+
+## Stop Checks (End-to-End Verification)
+When you make changes, register what needs verifying:
+\`\`\`
+add_stop_check("verify TypeScript compiles")
+add_stop_check("test deploy to slot — check UI loads")
+add_stop_check("no console errors on slot URL")
+\`\`\`
+\`recycle()\` will REFUSE until all checks are completed. After verifying each:
+\`\`\`
+complete_stop_check("sc-1", result="PASS — no TS errors")
+\`\`\`
 
 ## Rules
 - **Fix everything.** Never just report issues — investigate, fix, deploy, document in MEMORY.md.
@@ -1615,16 +1644,129 @@ function _replaceMemorySection(existing: string, section: string, content: strin
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// STOP CHECKS — self-registered verification items, gated at recycle()
+// ═══════════════════════════════════════════════════════════════════
+
+server.registerTool(
+  "add_stop_check",
+  {
+    description: "Register a verification item you MUST complete before recycling. Use this whenever you make a change that needs end-to-end verification (e.g. 'verify TypeScript compiles', 'test deploy to slot', 'check no console errors'). recycle() will refuse until all checks are completed.",
+    inputSchema: {
+      description: z.string().describe("What needs to be verified before you stop"),
+    },
+  },
+  async ({ description }) => {
+    const id = `sc-${++_stopCheckCounter}`;
+    stopChecks.set(id, {
+      id,
+      description,
+      added_at: new Date().toISOString(),
+      completed: false,
+    });
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Stop check registered: [${id}] ${description}\n${stopChecks.size} total check(s), ${[...stopChecks.values()].filter(c => !c.completed).length} pending.`,
+      }],
+    };
+  }
+);
+
+server.registerTool(
+  "complete_stop_check",
+  {
+    description: "Mark a stop check as completed after you've verified it. Pass the check ID (e.g. 'sc-1') or 'all' to mark everything done.",
+    inputSchema: {
+      id: z.string().describe("Check ID (e.g. 'sc-1') or 'all' to complete everything"),
+      result: z.string().optional().describe("Brief verification result (e.g. 'PASS — no TS errors', 'PASS — slot loads correctly')"),
+    },
+  },
+  async ({ id, result }) => {
+    if (id === "all") {
+      const pending = [...stopChecks.values()].filter(c => !c.completed);
+      if (pending.length === 0) {
+        return { content: [{ type: "text" as const, text: "No pending checks to complete." }] };
+      }
+      const now = new Date().toISOString();
+      for (const check of pending) {
+        check.completed = true;
+        check.completed_at = now;
+      }
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Completed ${pending.length} check(s). All stop checks cleared — ready to recycle.`,
+        }],
+      };
+    }
+
+    const check = stopChecks.get(id);
+    if (!check) {
+      return { content: [{ type: "text" as const, text: `No check with ID '${id}'. Use list_stop_checks to see registered checks.` }], isError: true };
+    }
+    check.completed = true;
+    check.completed_at = new Date().toISOString();
+
+    const pending = [...stopChecks.values()].filter(c => !c.completed);
+    const resultNote = result ? ` (${result})` : "";
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Completed: [${id}] ${check.description}${resultNote}\n${pending.length} check(s) remaining.` +
+          (pending.length === 0 ? " All clear — ready to recycle." : ""),
+      }],
+    };
+  }
+);
+
+server.registerTool(
+  "list_stop_checks",
+  {
+    description: "List all registered stop checks and their status.",
+    inputSchema: {},
+  },
+  async () => {
+    if (stopChecks.size === 0) {
+      return { content: [{ type: "text" as const, text: "No stop checks registered this session." }] };
+    }
+    const lines: string[] = [];
+    for (const check of stopChecks.values()) {
+      const status = check.completed ? "✓ DONE" : "○ PENDING";
+      const time = check.completed_at ? ` (completed ${check.completed_at})` : "";
+      lines.push(`  [${check.id}] ${status} — ${check.description}${time}`);
+    }
+    const pending = [...stopChecks.values()].filter(c => !c.completed).length;
+    lines.push("");
+    lines.push(pending === 0 ? "All checks completed — ready to recycle." : `${pending} pending check(s) — complete before recycling.`);
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════
 // LIFECYCLE TOOLS (4) — recycle, heartbeat, check_config, reload
 // ═══════════════════════════════════════════════════════════════════
 
 server.registerTool(
   "recycle",
-  { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (no seed). Use to reload MCP configuration, pick up model changes, or refresh tool definitions.", inputSchema: {
+  { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (no seed). Refuses to proceed if you have pending stop checks — complete them first or pass force=true.", inputSchema: {
     message: z.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
     resume: z.boolean().optional().describe("If true, hot-restart: exit and resume the same session (no seed). Use to reload MCP config, model changes, or tool definitions."),
+    force: z.boolean().optional().describe("If true, skip stop check gate (use only when checks are genuinely not applicable)"),
   } },
-  async ({ message, resume }) => {
+  async ({ message, resume, force }) => {
+    // 0. Gate on stop checks
+    const pendingChecks = [...stopChecks.values()].filter(c => !c.completed);
+    if (pendingChecks.length > 0 && !force) {
+      const checkList = pendingChecks.map(c => `  [${c.id}] ${c.description}`).join("\n");
+      return {
+        content: [{
+          type: "text" as const,
+          text: `BLOCKED: ${pendingChecks.length} pending stop check(s) — complete these before recycling:\n\n${checkList}\n\nUse complete_stop_check(id) to mark each done after verifying, or recycle(force=true) to skip.`,
+        }],
+        isError: true,
+      };
+    }
+
     // 1. Find own pane
     const ownPane = findOwnPane();
     if (!ownPane) {

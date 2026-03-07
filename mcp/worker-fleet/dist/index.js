@@ -19506,6 +19506,8 @@ function detectWorkerName() {
   return "operator";
 }
 var WORKER_NAME = detectWorkerName();
+var stopChecks = new Map;
+var _stopCheckCounter = 0;
 var _cachedBranch = null;
 try {
   _cachedBranch = execSync("git rev-parse --abbrev-ref HEAD", {
@@ -20040,11 +20042,26 @@ If your inbox has a message from Warren or ${_missionAuth} (mission_authority), 
 | \`list_tasks(filter?)\` | List tasks; \`worker="all"\` for cross-worker view |
 | \`get_worker_state(name?)\` | Read worker state; \`name="all"\` for fleet overview |
 | \`update_state(key, value)\` | Persist state across recycles (saved in registry, included in next seed) |
-| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart (reload config) |
+| \`add_stop_check(description)\` | Register a verification you MUST do before recycling |
+| \`complete_stop_check(id)\` | Mark a check done after verifying (\`id="all"\` to clear) |
+| \`list_stop_checks()\` | See all checks and their status |
+| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart. **Blocked if stop checks pending.** |
 | \`create_worker(name, mission)\` | Fork into a new worker |
 | \`deregister(name)\` | Remove a worker from the registry |
 
 Every tool response includes lint warnings if issues are detected \u2014 fix them immediately.
+
+## Stop Checks (End-to-End Verification)
+When you make changes, register what needs verifying:
+\`\`\`
+add_stop_check("verify TypeScript compiles")
+add_stop_check("test deploy to slot \u2014 check UI loads")
+add_stop_check("no console errors on slot URL")
+\`\`\`
+\`recycle()\` will REFUSE until all checks are completed. After verifying each:
+\`\`\`
+complete_stop_check("sc-1", result="PASS \u2014 no TS errors")
+\`\`\`
 
 ## Rules
 - **Fix everything.** Never just report issues \u2014 investigate, fix, deploy, document in MEMORY.md.
@@ -20796,10 +20813,107 @@ function _replaceMemorySection(existing, section, content) {
 ` : "") + newBlock + (after ? `
 ` + after : "");
 }
-server.registerTool("recycle", { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (no seed). Use to reload MCP configuration, pick up model changes, or refresh tool definitions.", inputSchema: {
+server.registerTool("add_stop_check", {
+  description: "Register a verification item you MUST complete before recycling. Use this whenever you make a change that needs end-to-end verification (e.g. 'verify TypeScript compiles', 'test deploy to slot', 'check no console errors'). recycle() will refuse until all checks are completed.",
+  inputSchema: {
+    description: exports_external.string().describe("What needs to be verified before you stop")
+  }
+}, async ({ description }) => {
+  const id = `sc-${++_stopCheckCounter}`;
+  stopChecks.set(id, {
+    id,
+    description,
+    added_at: new Date().toISOString(),
+    completed: false
+  });
+  return {
+    content: [{
+      type: "text",
+      text: `Stop check registered: [${id}] ${description}
+${stopChecks.size} total check(s), ${[...stopChecks.values()].filter((c) => !c.completed).length} pending.`
+    }]
+  };
+});
+server.registerTool("complete_stop_check", {
+  description: "Mark a stop check as completed after you've verified it. Pass the check ID (e.g. 'sc-1') or 'all' to mark everything done.",
+  inputSchema: {
+    id: exports_external.string().describe("Check ID (e.g. 'sc-1') or 'all' to complete everything"),
+    result: exports_external.string().optional().describe("Brief verification result (e.g. 'PASS \u2014 no TS errors', 'PASS \u2014 slot loads correctly')")
+  }
+}, async ({ id, result }) => {
+  if (id === "all") {
+    const pending2 = [...stopChecks.values()].filter((c) => !c.completed);
+    if (pending2.length === 0) {
+      return { content: [{ type: "text", text: "No pending checks to complete." }] };
+    }
+    const now = new Date().toISOString();
+    for (const check3 of pending2) {
+      check3.completed = true;
+      check3.completed_at = now;
+    }
+    return {
+      content: [{
+        type: "text",
+        text: `Completed ${pending2.length} check(s). All stop checks cleared \u2014 ready to recycle.`
+      }]
+    };
+  }
+  const check2 = stopChecks.get(id);
+  if (!check2) {
+    return { content: [{ type: "text", text: `No check with ID '${id}'. Use list_stop_checks to see registered checks.` }], isError: true };
+  }
+  check2.completed = true;
+  check2.completed_at = new Date().toISOString();
+  const pending = [...stopChecks.values()].filter((c) => !c.completed);
+  const resultNote = result ? ` (${result})` : "";
+  return {
+    content: [{
+      type: "text",
+      text: `Completed: [${id}] ${check2.description}${resultNote}
+${pending.length} check(s) remaining.` + (pending.length === 0 ? " All clear \u2014 ready to recycle." : "")
+    }]
+  };
+});
+server.registerTool("list_stop_checks", {
+  description: "List all registered stop checks and their status.",
+  inputSchema: {}
+}, async () => {
+  if (stopChecks.size === 0) {
+    return { content: [{ type: "text", text: "No stop checks registered this session." }] };
+  }
+  const lines = [];
+  for (const check2 of stopChecks.values()) {
+    const status = check2.completed ? "\u2713 DONE" : "\u25CB PENDING";
+    const time3 = check2.completed_at ? ` (completed ${check2.completed_at})` : "";
+    lines.push(`  [${check2.id}] ${status} \u2014 ${check2.description}${time3}`);
+  }
+  const pending = [...stopChecks.values()].filter((c) => !c.completed).length;
+  lines.push("");
+  lines.push(pending === 0 ? "All checks completed \u2014 ready to recycle." : `${pending} pending check(s) \u2014 complete before recycling.`);
+  return { content: [{ type: "text", text: lines.join(`
+`) }] };
+});
+server.registerTool("recycle", { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (no seed). Refuses to proceed if you have pending stop checks \u2014 complete them first or pass force=true.", inputSchema: {
   message: exports_external.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
-  resume: exports_external.boolean().optional().describe("If true, hot-restart: exit and resume the same session (no seed). Use to reload MCP config, model changes, or tool definitions.")
-} }, async ({ message, resume }) => {
+  resume: exports_external.boolean().optional().describe("If true, hot-restart: exit and resume the same session (no seed). Use to reload MCP config, model changes, or tool definitions."),
+  force: exports_external.boolean().optional().describe("If true, skip stop check gate (use only when checks are genuinely not applicable)")
+} }, async ({ message, resume, force }) => {
+  const pendingChecks = [...stopChecks.values()].filter((c) => !c.completed);
+  if (pendingChecks.length > 0 && !force) {
+    const checkList = pendingChecks.map((c) => `  [${c.id}] ${c.description}`).join(`
+`);
+    return {
+      content: [{
+        type: "text",
+        text: `BLOCKED: ${pendingChecks.length} pending stop check(s) \u2014 complete these before recycling:
+
+${checkList}
+
+Use complete_stop_check(id) to mark each done after verifying, or recycle(force=true) to skip.`
+      }],
+      isError: true
+    };
+  }
   const ownPane = findOwnPane();
   if (!ownPane) {
     return { content: [{ type: "text", text: "Error: Could not find own pane in registry. Are you running in tmux?" }], isError: true };
