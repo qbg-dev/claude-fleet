@@ -1999,9 +1999,9 @@ server.registerTool(
     tasks: z.string().optional().describe("JSON array of tasks: [{subject, description?, priority?}]"),
     fork_from_session: z.boolean().optional().describe("Fork the caller's Claude session so the new worker inherits conversation context (default: false). Requires launch=true."),
     direct_report: z.boolean().optional().describe("Set report_to to the calling worker instead of mission_authority (default: false)"),
-    placement: z.enum(["window", "beside", "new-window"]).optional().describe("Where to place the pane: 'window' (join named window group, default), 'beside' (split next to caller), 'new-window' (fresh named window)"),
+    placement: z.enum(["window", "beside", "new-window"]).optional().describe("Deprecated — all workers launch into window groups. Kept for backward compat."),
   } },
-  async ({ name, mission, type, model, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, fork_from_session, direct_report, placement }) => {
+  async ({ name, mission, type, model, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, fork_from_session, direct_report, placement: _placement }) => {
     try {
       // Change 4: Enforce unique worker names
       const existingRegistry = readRegistry();
@@ -2149,29 +2149,20 @@ server.registerTool(
         });
       }
 
-      /** Write a spawn script and run it in the background. Returns launchInfo string. */
-      function spawnInPane(paneId: string, cmd: string, label: string, cleanupFiles: string[] = []): string {
-        const spawnScript = `/tmp/spawn-worker-${name}-${Date.now()}.sh`;
-        const rmCmd = cleanupFiles.length > 0 ? `\nrm -f ${cleanupFiles.map(f => `"${f}"`).join(" ")} "${spawnScript}"` : `\nrm -f "${spawnScript}"`;
-        writeFileSync(spawnScript, `#!/bin/bash\nsleep 1\ntmux send-keys -t "${paneId}" "${cmd}" && tmux send-keys -t "${paneId}" -H 0d${rmCmd}\n`);
-        execSync(`nohup bash "${spawnScript}" > /tmp/spawn-worker-${name}.log 2>&1 &`, { shell: "/bin/bash", timeout: 5000 });
-        return `\n  Launched (${label}): pane ${paneId}`;
-      }
-
       // ── Optional launch ──
+      // ALL launches go through launch-flat-worker.sh (reliable: waits for TUI, paste-buffer, retries).
+      // Fork uses fork-worker.sh (inherits conversation context).
+      // Never use spawnInPane + tmux send-keys — it's fragile and breaks on escaping.
       let launchInfo = "";
       if (launch) {
-        const effectivePlacement = placement || "window";
-        const cwd = worktreeReady ? worktreeDir : PROJECT_ROOT;
-
         if (fork_from_session) {
-          // Fork path: inherit caller's conversation context
+          // Fork path: inherit caller's conversation context via fork-worker.sh
           const ownPane = findOwnPane();
           const sessionId = ownPane ? getSessionId(ownPane.paneId) : null;
           if (!ownPane) {
-            launchInfo = `\n  Launch: FAILED — could not find own pane (not in tmux?)`;
+            launchInfo = `\n  Launch: SKIPPED — could not find own pane (not in tmux?). Run manually: bash fork-worker.sh`;
           } else if (!sessionId) {
-            launchInfo = `\n  Launch: FAILED — no session ID for pane ${ownPane.paneId}`;
+            launchInfo = `\n  Launch: SKIPPED — no session ID for pane ${ownPane.paneId}. Run manually: bash fork-worker.sh`;
           } else {
             // Copy session data to new worktree's project dir
             if (worktreeReady) {
@@ -2188,36 +2179,50 @@ server.registerTool(
               } catch {} // non-fatal
             }
 
+            // Use fork-worker.sh synchronously (it handles pane creation, TUI wait, seed injection)
+            const forkScript = join(CLAUDE_OPS, "scripts/fork-worker.sh");
+            const workerModel = selectedModel || "opus";
+            const forkArgs = [
+              forkScript, ownPane.paneId, sessionId,
+              "--name", name, "--no-worktree",
+              "--model", workerModel,
+            ];
+            if (worktreeReady) forkArgs.push("--cwd", worktreeDir);
+            forkArgs.push("--dangerously-skip-permissions");
+            const workerDir = join(PROJECT_ROOT, ".claude/workers", name);
+            forkArgs.push("--add-dir", workerDir);
             try {
-              const childPaneId = createPane(effectivePlacement, cwd);
+              // Create the target pane first, then run fork-worker.sh inside it
+              const childPaneId = createPane("window", worktreeReady ? worktreeDir : PROJECT_ROOT);
               if (!childPaneId?.startsWith("%")) {
-                launchInfo = `\n  Launch: FAILED — pane creation returned: ${childPaneId}`;
+                launchInfo = `\n  Launch: SKIPPED — pane creation failed. Run manually.`;
               } else {
                 registerPane(childPaneId);
-                const workerModel = selectedModel || "opus";
-                const workerDir = join(PROJECT_ROOT, ".claude/workers", name);
-                const extraFlags = `--model ${workerModel} --dangerously-skip-permissions --add-dir ${workerDir}`;
-                const cwdFlag = worktreeReady ? ` --cwd ${worktreeDir}` : "";
-                const forkCmd = `bash ${join(CLAUDE_OPS, "scripts/fork-worker.sh")} ${ownPane.paneId} ${sessionId} --name ${name} --no-worktree${cwdFlag} ${extraFlags}`;
-                const taskFile = `/tmp/create-worker-task-${name}-${Date.now()}.txt`;
-                const setupPrefix = worktreeReady
-                  ? `You are worker "${name}". Your isolated worktree is at ${worktreeDir}.\n\n`
-                  : `You are worker "${name}". Create your worktree first: git worktree add ${worktreeDir} worker/${name}\n\n`;
-                writeFileSync(taskFile, setupPrefix + mission.slice(0, 500));
-                launchInfo = spawnInPane(childPaneId, `cat ${taskFile} | ${forkCmd}`, `fork from ${sessionId}`, [taskFile]);
+                // Run fork-worker.sh synchronously in a subshell — it handles everything
+                const forkResult = spawnSync("bash", forkArgs, {
+                  encoding: "utf-8", timeout: 120_000,
+                  env: { ...process.env, PROJECT_ROOT, TMUX_PANE: childPaneId, WORKER_NAME: name },
+                  cwd: worktreeReady ? worktreeDir : PROJECT_ROOT,
+                });
+                if (forkResult.status === 0) {
+                  launchInfo = `\n  Launched (fork from ${sessionId}): pane ${childPaneId}`;
+                } else {
+                  launchInfo = `\n  Launch: FAILED (exit ${forkResult.status}) — ${(forkResult.stderr || "").slice(0, 200)}`;
+                }
               }
             } catch (e: any) {
               launchInfo = `\n  Launch: FAILED — ${e.message}`;
             }
           }
-        } else if (effectivePlacement === "window" && !fork_from_session) {
-          // Default "window" placement without fork — delegate to launch-flat-worker.sh
+        } else {
+          // Non-fork: always delegate to launch-flat-worker.sh (reliable path)
           const launchScript = join(CLAUDE_OPS, "scripts/launch-flat-worker.sh");
           if (!existsSync(launchScript)) {
             launchInfo = `\n  Launch: FAILED — script not found: ${launchScript}`;
           } else {
             const launchArgs = [launchScript, name, "--project", PROJECT_ROOT];
-            if (permissions.window) launchArgs.push("--window", permissions.window);
+            const winGroup = windowGroup || permissions.window;
+            if (winGroup) launchArgs.push("--window", winGroup);
             const launchResult = spawnSync("bash", launchArgs, {
               encoding: "utf-8", timeout: 120_000,
               env: { ...process.env, PROJECT_ROOT },
@@ -2228,24 +2233,6 @@ server.registerTool(
             } else {
               launchInfo = `\n  Launch: FAILED (exit ${launchResult.status}) — ${(launchResult.stderr || "").slice(0, 200)}`;
             }
-          }
-        } else {
-          // Fresh session with "beside" or "new-window" placement
-          try {
-            const childPaneId = createPane(effectivePlacement, cwd);
-            if (!childPaneId?.startsWith("%")) {
-              launchInfo = `\n  Launch: FAILED — pane creation returned: ${childPaneId}`;
-            } else {
-              registerPane(childPaneId);
-              const workerModel = selectedModel || "opus";
-              const workerDir = join(PROJECT_ROOT, ".claude/workers", name);
-              const claudeCmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${workerModel} --dangerously-skip-permissions --add-dir ${workerDir}`;
-              const seedFile = `/tmp/seed-${name}-${Date.now()}.txt`;
-              writeFileSync(seedFile, `You are worker "${name}". Your isolated worktree is at ${worktreeReady ? worktreeDir : "(create it)"}.\nRead ${join(WORKERS_DIR, name, "mission.md")} now and begin work.`);
-              launchInfo = spawnInPane(childPaneId, `cat ${seedFile} | ${claudeCmd}`, effectivePlacement, [seedFile]);
-            }
-          } catch (e: any) {
-            launchInfo = `\n  Launch: FAILED — ${e.message}`;
           }
         }
       } else {
