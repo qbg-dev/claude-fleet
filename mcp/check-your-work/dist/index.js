@@ -19558,20 +19558,19 @@ async function runCodexReview(args) {
   ];
   if (args.title)
     cmdArgs.push("--title", args.title);
-  cmdArgs.push(reviewPrompt);
   log(`\u2500\u2500 Starting review of commit ${args.commitSha} \u2500\u2500`);
   if (args.title)
     log(`  Title: ${args.title}`);
   if (args.extraInstructions)
     log(`  Focus: ${args.extraInstructions}`);
-  log(`  Command: ${CODEX_BIN} review --commit ${args.commitSha} (prompt: ${reviewPrompt.length} chars)`);
+  log(`  Command: ${CODEX_BIN} review --commit ${args.commitSha} - (prompt: ${reviewPrompt.length} chars)`);
   const timeout = args.timeout || 600000;
   let timedOut = false;
   return new Promise((resolve2, reject) => {
     const child = spawn(CODEX_BIN, cmdArgs, {
       cwd: PROJECT_ROOT,
       env: { ...process.env, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"]
     });
     let stdout = "";
     let stderr = "";
@@ -19584,6 +19583,8 @@ async function runCodexReview(args) {
           log(`  [codex] ${line}`);
       }
     });
+    child.stdin.write(reviewPrompt);
+    child.stdin.end();
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString();
       stderr += text;
@@ -19602,21 +19603,19 @@ async function runCodexReview(args) {
     child.on("close", (code) => {
       clearTimeout(timer);
       log(`\u2500\u2500 Review complete (exit code: ${code}) \u2500\u2500`);
+      const output = stdout.trim() || stderr.trim();
       if (timedOut) {
-        const partial2 = stdout.trim();
-        if (partial2) {
+        if (output) {
           resolve2(`[TIMEOUT after ${Math.round(timeout / 1000)}s \u2014 partial output below]
 
-${partial2}`);
+${output}`);
         } else {
           reject(new Error(`Codex timed out after ${Math.round(timeout / 1000)}s with no output. The diff may be too large. Try increasing timeout_ms or reviewing smaller commits. Log: tail -f ${LOG_FILE}`));
         }
-      } else if (stdout.trim()) {
-        resolve2(stdout.trim());
+      } else if (output) {
+        resolve2(output);
       } else if (code !== 0) {
-        reject(new Error(`Codex exited with code ${code}. Check log: tail -f ${LOG_FILE}
-
-Stderr: ${stderr.slice(0, 500)}`));
+        reject(new Error(`Codex exited with code ${code}. Check log: tail -f ${LOG_FILE}`));
       } else {
         resolve2("(No output from reviewer)");
       }

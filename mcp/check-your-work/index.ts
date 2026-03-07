@@ -132,20 +132,18 @@ async function runCodexReview(args: {
     .filter(Boolean)
     .join("\n\n");
 
-  // Pass review instructions as the PROMPT argument (not stdin — stdin piping can cause hangs)
+  // Pass review instructions via stdin (--commit can't take positional PROMPT arg)
   const cmdArgs = [
     "review",
     "-c", `model="${CODEX_MODEL}"`,
     "--commit", args.commitSha,
   ];
   if (args.title) cmdArgs.push("--title", args.title);
-  // Append the prompt as positional arg
-  cmdArgs.push(reviewPrompt);
 
   log(`── Starting review of commit ${args.commitSha} ──`);
   if (args.title) log(`  Title: ${args.title}`);
   if (args.extraInstructions) log(`  Focus: ${args.extraInstructions}`);
-  log(`  Command: ${CODEX_BIN} review --commit ${args.commitSha} (prompt: ${reviewPrompt.length} chars)`);
+  log(`  Command: ${CODEX_BIN} review --commit ${args.commitSha} - (prompt: ${reviewPrompt.length} chars)`);
 
   const timeout = args.timeout || 600000; // 10 min default — large diffs with xhigh reasoning need time
   let timedOut = false;
@@ -154,7 +152,7 @@ async function runCodexReview(args: {
     const child = spawn(CODEX_BIN, cmdArgs, {
       cwd: PROJECT_ROOT,
       env: { ...process.env, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"],  // no stdin needed — prompt is positional arg
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
     let stdout = "";
@@ -167,6 +165,10 @@ async function runCodexReview(args: {
         if (line.trim()) log(`  [codex] ${line}`);
       }
     });
+
+    // Send the review prompt via stdin, then close
+    child.stdin.write(reviewPrompt);
+    child.stdin.end();
 
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
@@ -186,18 +188,19 @@ async function runCodexReview(args: {
     child.on("close", (code) => {
       clearTimeout(timer);
       log(`── Review complete (exit code: ${code}) ──`);
+      // Codex writes its review output to stderr (TUI-style), not stdout.
+      // Use whichever has content, preferring stdout.
+      const output = (stdout.trim() || stderr.trim());
       if (timedOut) {
-        // Return partial output if any, with timeout notice
-        const partial = stdout.trim();
-        if (partial) {
-          resolve(`[TIMEOUT after ${Math.round(timeout/1000)}s — partial output below]\n\n${partial}`);
+        if (output) {
+          resolve(`[TIMEOUT after ${Math.round(timeout/1000)}s — partial output below]\n\n${output}`);
         } else {
           reject(new Error(`Codex timed out after ${Math.round(timeout/1000)}s with no output. The diff may be too large. Try increasing timeout_ms or reviewing smaller commits. Log: tail -f ${LOG_FILE}`));
         }
-      } else if (stdout.trim()) {
-        resolve(stdout.trim());
+      } else if (output) {
+        resolve(output);
       } else if (code !== 0) {
-        reject(new Error(`Codex exited with code ${code}. Check log: tail -f ${LOG_FILE}\n\nStderr: ${stderr.slice(0, 500)}`));
+        reject(new Error(`Codex exited with code ${code}. Check log: tail -f ${LOG_FILE}`));
       } else {
         resolve("(No output from reviewer)");
       }
