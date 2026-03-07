@@ -292,7 +292,7 @@ function ensureWorkerInRegistry(registry: ProjectRegistry, name: string): Regist
     session_id: null,
     session_file: null,
     mission_file: `.claude/workers/${name}/mission.md`,
-    custom: {},
+    custom: { runtime: "claude" },
   };
 
   registry[name] = entry;
@@ -1118,8 +1118,10 @@ const server = new McpServer({
 
 server.registerTool(
   "send_message",
-  { description: `Primary inter-worker communication. Messages require a reply by default — the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive — use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you. Use to="user" to escalate to the human operator (writes to triage queue + desktop notification).`, inputSchema: {
-    to: z.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to the human operator via triage queue), or raw pane ID '%NN'"),
+  { description: `Primary inter-worker communication. Messages require a reply by default — the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive — use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you.
+
+Use to="user" to escalate to the human operator (writes to triage queue + desktop notification). You SHOULD notify the user when: (1) substantial design or architecture decisions need human judgment, (2) security or safety implications arise (auth changes, permission models, data access), (3) business logic changes that affect how the product works for end users, (4) authentication or authorization modifications, (5) adding significant product surface area (new pages, features, user-facing flows), (6) removing or deprecating functionality users depend on, (7) coordination with external stakeholders is needed, (8) you're blocked and need product direction. When in doubt, escalate — the cost of an unnecessary notification is far lower than the cost of an unauthorized change.`, inputSchema: {
+    to: z.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to the human operator via triage queue + desktop notification), or raw pane ID '%NN'"),
     content: z.string().describe("Message content"),
     summary: z.string().describe("Short preview (5-10 words)"),
     fyi: z.boolean().optional().describe("If true, no reply expected — informational only (default: false = reply expected)"),
@@ -1600,8 +1602,8 @@ server.registerTool(
 
         const projectName = basename(PROJECT_ROOT);
         let output = `=== Fleet Status (${projectName}) ===\n${new Date().toISOString()}\n\n`;
-        const header = `${"Worker".padEnd(22)} ${"Status".padEnd(10)} ${"Pane".padEnd(12)} ${"Active Task"}`;
-        output += header + "\n" + `${"------".padEnd(22)} ${"------".padEnd(10)} ${"----".padEnd(12)} ${"-----------"}\n`;
+        const header = `${"Worker".padEnd(22)} ${"Runtime".padEnd(9)} ${"Status".padEnd(10)} ${"Pane".padEnd(12)} ${"Active Task"}`;
+        output += header + "\n" + `${"------".padEnd(22)} ${"-------".padEnd(9)} ${"------".padEnd(10)} ${"----".padEnd(12)} ${"-----------"}\n`;
 
         const entries = Object.entries(registry).filter(([k]) => k !== "_config").sort(([a], [b]) => a.localeCompare(b));
         for (const [n, entry] of entries) {
@@ -1613,7 +1615,8 @@ server.registerTool(
             if (ip) task = `${ip[0]}: ${ip[1].subject}`.slice(0, 40);
           } catch {}
           const paneStatus = w.pane_id ? (checkPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD`) : "—";
-          output += `${n.padEnd(22)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${task}\n`;
+          const runtime = String(w.custom?.runtime || "claude");
+          output += `${n.padEnd(22)} ${runtime.padEnd(9)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${task}\n`;
         }
 
         // Custom state
@@ -2746,6 +2749,10 @@ server.registerTool(
         if (perpetual !== undefined) entry.perpetual = perpetual;
         if (sleep_duration !== undefined) entry.sleep_duration = sleep_duration;
         entry.report_to = report_to || entry.report_to || defaultReportTo;
+        entry.custom = {
+          ...(entry.custom || {}),
+          runtime: entry.custom?.runtime || process.env.WORKER_RUNTIME || "claude",
+        };
         if (ownPane) {
           entry.pane_id = ownPane.paneId;
           entry.pane_target = paneTarget;

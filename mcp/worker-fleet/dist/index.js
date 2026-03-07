@@ -19649,7 +19649,7 @@ function ensureWorkerInRegistry(registry2, name) {
     session_id: null,
     session_file: null,
     mission_file: `.claude/workers/${name}/mission.md`,
-    custom: {}
+    custom: { runtime: "claude" }
   };
   registry2[name] = entry;
   return entry;
@@ -19901,6 +19901,29 @@ function writeToInbox(recipientName, message) {
     appendFileSync(inboxPath, JSON.stringify(payload) + `
 `);
     return { ok: true, msg_id: msgId };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+function writeToTriageQueue(content, summary, fromWorker) {
+  try {
+    const triageDir = join(PROJECT_ROOT, ".claude/triage");
+    if (!existsSync(triageDir))
+      mkdirSync(triageDir, { recursive: true });
+    const triagePath = join(triageDir, "queue.jsonl");
+    const id = `tq-${Date.now()}`;
+    const entry = {
+      id,
+      category: "worker-escalation",
+      title: summary || content.slice(0, 60),
+      detail: content,
+      source: fromWorker,
+      added_at: new Date().toISOString(),
+      status: "pending"
+    };
+    appendFileSync(triagePath, JSON.stringify(entry) + `
+`);
+    return { ok: true, id };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -20293,8 +20316,10 @@ var server = new McpServer({
   name: "worker-fleet",
   version: "2.0.0"
 });
-server.registerTool("send_message", { description: `Primary inter-worker communication. Messages require a reply by default \u2014 the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive \u2014 use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you. Use to="user" to escalate to the human operator (writes to triage queue + desktop notification).`, inputSchema: {
-  to: exports_external.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to the human operator via triage queue), or raw pane ID '%NN'"),
+server.registerTool("send_message", { description: `Primary inter-worker communication. Messages require a reply by default \u2014 the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive \u2014 use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you.
+
+Use to="user" to escalate to the human operator (writes to triage queue + desktop notification). You SHOULD notify the user when: (1) substantial design or architecture decisions need human judgment, (2) security or safety implications arise (auth changes, permission models, data access), (3) business logic changes that affect how the product works for end users, (4) authentication or authorization modifications, (5) adding significant product surface area (new pages, features, user-facing flows), (6) removing or deprecating functionality users depend on, (7) coordination with external stakeholders is needed, (8) you're blocked and need product direction. When in doubt, escalate \u2014 the cost of an unnecessary notification is far lower than the cost of an unauthorized change.`, inputSchema: {
+  to: exports_external.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to the human operator via triage queue + desktop notification), or raw pane ID '%NN'"),
   content: exports_external.string().describe("Message content"),
   summary: exports_external.string().describe("Short preview (5-10 words)"),
   fyi: exports_external.boolean().optional().describe("If true, no reply expected \u2014 informational only (default: false = reply expected)"),
@@ -20330,30 +20355,14 @@ Failed: ${failures.join(", ")}`;
     return { content: [{ type: "text", text: msg }] };
   }
   if (to === "user") {
-    try {
-      const triageDir = join(PROJECT_ROOT, ".claude/triage");
-      if (!existsSync(triageDir))
-        mkdirSync(triageDir, { recursive: true });
-      const triagePath = join(triageDir, "queue.jsonl");
-      const id = `tq-${Date.now()}`;
-      const entry = {
-        id,
-        category: "worker-escalation",
-        title: summary || content.slice(0, 60),
-        detail: content,
-        source: WORKER_NAME,
-        added_at: new Date().toISOString(),
-        status: "pending"
-      };
-      appendFileSync(triagePath, JSON.stringify(entry) + `
-`);
-      try {
-        execSync(`"${join(CLAUDE_OPS, "bin/notify")}" ${JSON.stringify(`[${WORKER_NAME}] ${summary || content.slice(0, 60)}`)} "Worker Escalation"`, { cwd: PROJECT_ROOT, timeout: 5000, shell: "/bin/bash" });
-      } catch {}
-      return withPendingReminder({ content: [{ type: "text", text: `Escalated to user [${id}] \u2014 written to triage queue + notification sent` }] });
-    } catch (e) {
-      return { content: [{ type: "text", text: `Error writing to triage queue: ${e.message}` }], isError: true };
+    const result = writeToTriageQueue(content, summary, WORKER_NAME);
+    if (!result.ok) {
+      return { content: [{ type: "text", text: `Error writing to triage queue: ${result.error}` }], isError: true };
     }
+    try {
+      execSync(`"${join(CLAUDE_OPS, "bin/notify")}" ${JSON.stringify(`[${WORKER_NAME}] ${summary || content.slice(0, 60)}`)} "Worker Escalation"`, { cwd: PROJECT_ROOT, timeout: 5000, shell: "/bin/bash" });
+    } catch {}
+    return withPendingReminder({ content: [{ type: "text", text: `Escalated to user [${result.id}] \u2014 written to triage queue + notification sent` }] });
   }
   const resolved = resolveRecipient(to);
   if (resolved.error) {
@@ -20728,9 +20737,9 @@ server.registerTool("get_worker_state", { description: "Read worker state from r
 ${new Date().toISOString()}
 
 `;
-      const header = `${"Worker".padEnd(22)} ${"Status".padEnd(10)} ${"Pane".padEnd(12)} ${"Active Task"}`;
+      const header = `${"Worker".padEnd(22)} ${"Runtime".padEnd(9)} ${"Status".padEnd(10)} ${"Pane".padEnd(12)} ${"Active Task"}`;
       output += header + `
-` + `${"------".padEnd(22)} ${"------".padEnd(10)} ${"----".padEnd(12)} ${"-----------"}
+` + `${"------".padEnd(22)} ${"-------".padEnd(9)} ${"------".padEnd(10)} ${"----".padEnd(12)} ${"-----------"}
 `;
       const entries = Object.entries(registry2).filter(([k]) => k !== "_config").sort(([a], [b]) => a.localeCompare(b));
       for (const [n, entry2] of entries) {
@@ -20743,7 +20752,8 @@ ${new Date().toISOString()}
             task = `${ip[0]}: ${ip[1].subject}`.slice(0, 40);
         } catch {}
         const paneStatus = w.pane_id ? checkPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD` : "\u2014";
-        output += `${n.padEnd(22)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${task}
+        const runtime = String(w.custom?.runtime || "claude");
+        output += `${n.padEnd(22)} ${runtime.padEnd(9)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${task}
 `;
       }
       const stateLines = [];
@@ -21718,6 +21728,10 @@ server.registerTool("register", {
       if (sleep_duration !== undefined)
         entry.sleep_duration = sleep_duration;
       entry.report_to = report_to || entry.report_to || defaultReportTo;
+      entry.custom = {
+        ...entry.custom || {},
+        runtime: entry.custom?.runtime || process.env.WORKER_RUNTIME || "claude"
+      };
       if (ownPane) {
         entry.pane_id = ownPane.paneId;
         entry.pane_target = paneTarget;
@@ -21839,6 +21853,7 @@ if (__require.main == __require.module) {
   });
 }
 export {
+  writeToTriageQueue,
   writeToInbox,
   writeTasks,
   writeInboxCursor,
