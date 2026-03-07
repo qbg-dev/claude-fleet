@@ -13,10 +13,12 @@ LOOP FOREVER:
   1. Test each issue above
   2. For PARTIAL/FAIL items: investigate root cause -> fix -> deploy -> verify
   3. Update state.json + save findings to auto-memory
-  4. Graceful stop — watchdog respawns after sleep_duration seconds
+  4. Call recycle() — watchdog respawns after sleep_duration seconds
 ```
 
 **NEVER set status="done".** This worker runs until killed.
+
+> **⚠ NEVER `sleep N` to wait between cycles.** Call `recycle()` and exit — the watchdog owns the timer. Running `sleep 900` inside your session blocks the session and prevents respawn on crash.
 
 ## Respawn Configuration
 
