@@ -171,47 +171,26 @@ SLEEP_DUR3=$(PROJECT_ROOT="$PROJ_DIR" harness_sleep_duration "worker/no-state" 2
 assert_equals "sleep_duration: unregistered worker returns 'none'" "none" "$SLEEP_DUR3"
 
 echo ""
-echo "── harness-watchdog: UTC date parsing (no TZ offset bug) ──"
+echo "── harness-watchdog: liveness-based stuck detection ──"
 
 WATCHDOG_SH="$HOME/.claude-ops/scripts/harness-watchdog.sh"
 
-# Test: watchdog uses 'date -j -u' (with -u flag) when parsing last_cycle_at timestamps.
-# Bug (fixed commit 3be6505): 'date -j -f "%Y-%m-%dT%H:%M:%S"' without -u treats
-# input as LOCAL time (EST=UTC-5), making recent UTC cycles appear 5h in the future
-# so the watchdog never respawns perpetual workers.
-TOTAL=$((TOTAL + 1))
-if grep -q 'date -j -u -f "%Y-%m-%dT%H:%M:%S"' "$WATCHDOG_SH" 2>/dev/null; then
-  echo -e "  ${GREEN}PASS${RESET} watchdog uses date -j -u for UTC timestamp parsing"
-  PASS=$((PASS + 1))
-else
-  echo -e "  ${RED}FAIL${RESET} watchdog must use 'date -j -u' (not bare 'date -j') for UTC timestamps"
-  echo "    Bug: bare 'date -j -f' treats input as local time, causing up to 5h offset on macOS"
-  FAIL=$((FAIL + 1))
-fi
+# Test: watchdog reads liveness file for stuck detection (not ISO timestamp parsing)
+# Refactor (2026-03-06): replaced last_cycle_at ISO parsing with epoch-based liveness files.
+assert_file_contains "watchdog reads liveness file for active detection" \
+  "$WATCHDOG_SH" "liveness"
 
-# Test: no bare 'date -j -f' without -u in the watchdog's sleep duration path
-BARE_DATE_J=$(grep -n 'date -j -f "%Y-%m-%dT' "$WATCHDOG_SH" 2>/dev/null | grep -v '\-u' || true)
-assert_empty "watchdog: no bare 'date -j -f' without -u flag" "$BARE_DATE_J"
+# Test: watchdog uses _record_relaunch for respawn tracking
+assert_file_contains "watchdog calls _record_relaunch on respawn" \
+  "$WATCHDOG_SH" "_record_relaunch"
 
-# Test: watchdog strips Z/+ suffix before parsing (handles "2026-03-04T04:32:46Z" format)
-STRIPS_Z=$(grep -n '_clean_ts=.*\[Z+\]' "$WATCHDOG_SH" 2>/dev/null || true)
-TOTAL=$((TOTAL + 1))
-if [ -n "$STRIPS_Z" ]; then
-  echo -e "  ${GREEN}PASS${RESET} watchdog strips Z/+ suffix from ISO timestamp before parsing"
-  PASS=$((PASS + 1))
-else
-  echo -e "  ${RED}FAIL${RESET} watchdog should strip Z/+ suffix (e.g. '%%[Z+]*') before date -j"
-  FAIL=$((FAIL + 1))
-fi
+# Test: _record_relaunch increments watchdog_relaunches counter
+assert_file_contains "watchdog tracks relaunch count in registry" \
+  "$WATCHDOG_SH" "watchdog_relaunches"
 
-# Runtime test: verify the UTC parse correctly computes epoch for a known UTC time
-# "2026-01-01T12:00:00Z" should parse to the same epoch on any timezone
-EXPECTED_EPOCH=$(TZ=UTC date -d "2026-01-01T12:00:00" +%s 2>/dev/null || echo 0)
-if [ "$EXPECTED_EPOCH" -gt 0 ]; then
-  _clean="2026-01-01T12:00:00"
-  PARSED_EPOCH=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "$_clean" +%s 2>/dev/null || echo 0)
-  assert_equals "UTC parse: 2026-01-01T12:00:00Z gives correct epoch" "$EXPECTED_EPOCH" "$PARSED_EPOCH"
-fi
+# Test: _record_relaunch records reason for each relaunch
+assert_file_contains "watchdog records relaunch reason" \
+  "$WATCHDOG_SH" "last_relaunch"
 
 echo ""
 echo "── merge-trigger-watchdog: registry.json chief-of-staff lookup ──"
@@ -235,35 +214,22 @@ assert_file_contains "merge-trigger-watchdog: FLAT_REG variable defined" \
   "$MERGE_WD" "FLAT_REG="
 
 echo ""
-echo "── harness-watchdog: last_cycle_at stamped on respawn (kill-loop prevention) ──"
+echo "── harness-watchdog: _record_relaunch prevents kill-loop ──"
 
-# Bug (fixed commit ff5aa08): watchdog respawned workers repeatedly without
-# updating last_cycle_at, causing a kill-loop on the next watchdog pass.
-# Fix: stamp last_cycle_at = now in registry.json immediately after launching Claude.
+# Refactor (2026-03-06): replaced last_cycle_at stamping with _record_relaunch.
+# _record_relaunch touches liveness file after respawn to prevent immediate re-detection.
 WATCHDOG_SH2="$HOME/.claude-ops/scripts/harness-watchdog.sh"
 
-# Test: watchdog stamps last_cycle_at on respawn
-TOTAL=$((TOTAL + 1))
-if grep -q 'last_cycle_at = \$ts\|last_cycle_at=.*ts\|last_cycle_at.*_now_iso' "$WATCHDOG_SH2" 2>/dev/null; then
-  echo -e "  ${GREEN}PASS${RESET} watchdog stamps last_cycle_at on respawn"
-  PASS=$((PASS + 1))
-else
-  echo -e "  ${RED}FAIL${RESET} watchdog must stamp last_cycle_at on respawn (prevents kill-loop)"
-  FAIL=$((FAIL + 1))
-fi
+# Test: _record_relaunch touches liveness after respawn (prevents kill-loop)
+assert_file_contains "_record_relaunch touches liveness after respawn" \
+  "$WATCHDOG_SH2" 'RUNTIME_DIR/liveness"'
 
-# Test: stamp uses date -u (UTC) to match the UTC format read back by the respawn check
-TOTAL=$((TOTAL + 1))
-if grep -q "date -u +\"%Y-%m-%dT%H:%M:%SZ\"" "$WATCHDOG_SH2" 2>/dev/null; then
-  echo -e "  ${GREEN}PASS${RESET} watchdog stamp uses UTC ISO format"
-  PASS=$((PASS + 1))
-else
-  echo -e "  ${RED}FAIL${RESET} watchdog stamp must use 'date -u +\"%Y-%m-%dT%H:%M:%SZ\"'"
-  FAIL=$((FAIL + 1))
-fi
+# Test: _record_relaunch uses UTC ISO for last_relaunch.at timestamp
+assert_file_contains "_record_relaunch stamp uses UTC ISO format" \
+  "$WATCHDOG_SH2" 'date -u +"%Y-%m-%dT%H:%M:%SZ"'
 
-# Test: stamp is protected by registry lock (mkdir-based)
-assert_file_contains "last_cycle_at stamp acquires registry lock" \
+# Test: _record_relaunch is protected by registry lock (mkdir-based)
+assert_file_contains "_record_relaunch acquires registry lock" \
   "$WATCHDOG_SH2" "mkdir \"\$_LOCK_DIR\""
 
 # Runtime test: verify stamped timestamp is recent (within 5 seconds)
