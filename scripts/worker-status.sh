@@ -30,12 +30,13 @@ cmd_table() {
     [ "$worker" = "_config" ] && continue
 
     local pane_id window model perpetual cycles status
-    pane_id=$(jq -r --arg n "$worker" '.[$n].pane_id // "-"' "$REGISTRY" 2>/dev/null)
-    window=$(jq -r --arg n "$worker" '.[$n].window // "-"' "$REGISTRY" 2>/dev/null)
-    model=$(jq -r --arg n "$worker" '.[$n].model // "sonnet"' "$REGISTRY" 2>/dev/null)
-    perpetual=$(jq -r --arg n "$worker" '.[$n].perpetual // false' "$REGISTRY" 2>/dev/null)
-    cycles=$(jq -r --arg n "$worker" '.[$n].cycles_completed // 0' "$REGISTRY" 2>/dev/null)
-    status=$(jq -r --arg n "$worker" '.[$n].status // "unknown"' "$REGISTRY" 2>/dev/null)
+    local _fields
+    _fields=$(jq -r --arg n "$worker" '.[$n] | [
+      (.pane_id // "-"), (.window // "-"), (.model // "sonnet"),
+      (.perpetual // false | tostring), (.cycles_completed // 0 | tostring),
+      (.status // "unknown")
+    ] | join("\t")' "$REGISTRY" 2>/dev/null || echo "")
+    IFS=$'\t' read -r pane_id window model perpetual cycles status <<< "$_fields"
 
     # Check pane alive
     local state="no-pane"
