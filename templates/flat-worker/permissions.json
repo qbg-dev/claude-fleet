@@ -1,12 +1,13 @@
 {
-  "model": "sonnet",
+  "model": "opus",
   "permission_mode": "bypassPermissions",
-  "disallowedTools": [
+  "disallowed_tools": [
     "Bash(git checkout main*)",
     "Bash(git merge*)",
     "Bash(git push*)",
     "Bash(git reset --hard*)",
     "Bash(git clean*)",
-    "Bash(rm -rf*)"
+    "Bash(rm -rf*)",
+    "Bash(sudo *)"
   ]
 }

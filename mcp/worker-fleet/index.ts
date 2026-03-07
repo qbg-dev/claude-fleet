@@ -1486,11 +1486,22 @@ server.registerTool(
     try {
       // Fleet-wide overview
       if (name === "all") {
+        // Cache pane liveness to avoid duplicate subprocess calls per worker
+        const paneAliveCache = new Map<string, boolean>();
+        const checkPaneAlive = (paneId: string): boolean => {
+          const cached = paneAliveCache.get(paneId);
+          if (cached !== undefined) return cached;
+          const alive = isPaneAlive(paneId);
+          paneAliveCache.set(paneId, alive);
+          return alive;
+        };
+
         const registry = withRegistryLocked((reg) => {
-          // Auto-discover workers from filesystem
+          // Auto-discover workers from filesystem (only if they have mission.md)
           try {
             const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
               .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+              .filter(d => existsSync(join(WORKERS_DIR, d.name, "mission.md")))
               .map(d => d.name);
             for (const n of dirs) ensureWorkerInRegistry(reg, n);
           } catch {}
@@ -1498,7 +1509,7 @@ server.registerTool(
           for (const [key, entry] of Object.entries(reg)) {
             if (key === "_config" || typeof entry !== "object" || !entry) continue;
             const w = entry as RegistryWorkerEntry;
-            if (w.pane_id && !isPaneAlive(w.pane_id)) {
+            if (w.pane_id && !checkPaneAlive(w.pane_id)) {
               w.pane_id = null; w.pane_target = null; w.session_id = null;
             }
           }
@@ -1519,7 +1530,7 @@ server.registerTool(
             const ip = Object.entries(tasks).find(([_, t]) => t.status === "in_progress");
             if (ip) task = `${ip[0]}: ${ip[1].subject}`.slice(0, 40);
           } catch {}
-          const paneStatus = w.pane_id ? (isPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD`) : "—";
+          const paneStatus = w.pane_id ? (checkPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD`) : "—";
           output += `${n.padEnd(22)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${task}\n`;
         }
 

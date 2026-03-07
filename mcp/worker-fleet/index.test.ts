@@ -1517,30 +1517,31 @@ describe("createWorkerFiles — type templates", () => {
     expect(result.permissions?.disallowedTools).toContain("Edit");
   });
 
-  test("type=implementer sets sonnet, perpetual=false", () => {
+  test("type=implementer sets opus, perpetual=false", () => {
     const result = createWorkerFiles({
       name: "tpl-impl-test",
       mission: "# Test Implementer",
       type: "implementer",
     });
     expect(result.ok).toBe(true);
-    expect(result.model).toBe("sonnet");
+    expect(result.model).toBe("opus");
     expect(result.perpetual).toBe(false);
     expect(result.permissions?.disallowedTools).not.toContain("Edit");
   });
 
-  test("type=coordinator has minimal denyList (allows merge/push)", () => {
+  test("type=coordinator uses defaults (no template dir)", () => {
     const result = createWorkerFiles({
       name: "tpl-coord-test",
       mission: "# Test Coordinator",
       type: "coordinator",
     });
     expect(result.ok).toBe(true);
-    expect(result.model).toBe("sonnet");
-    expect(result.perpetual).toBe(true);
-    // coordinator denyList should NOT include merge/push
-    expect(result.permissions?.disallowedTools).not.toContain("Bash(git merge*)");
-    expect(result.permissions?.disallowedTools).not.toContain("Bash(git push*)");
+    expect(result.model).toBe("opus");
+    // No coordinator template dir → falls back to defaults
+    expect(result.perpetual).toBe(false);
+    // Default denyList includes merge/push
+    expect(result.permissions?.disallowedTools).toContain("Bash(git merge*)");
+    expect(result.permissions?.disallowedTools).toContain("Bash(git push*)");
   });
 
   test("type=optimizer sets opus, perpetual=true, sleep=7200", () => {

@@ -24,7 +24,7 @@ LOOP FOREVER:
 
 ## Respawn Configuration
 
-Set in `state.json` before first cycle. The watchdog reads these on every check:
+Set in `registry.json` (via `update_state()`). The watchdog reads these on every check:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -72,11 +72,15 @@ When a reflection reveals a convention, gotcha, or pattern worth sharing, includ
 
 ## Deploy Protocol
 
+Workers deploy to isolated test slots only. Direct `deploy.sh` and `deploy-prod.sh` are blocked.
+
 ```bash
-# Backend changes
-./scripts/deploy.sh --skip-langfuse --service web
-# UI-only changes
-./scripts/deploy.sh --skip-langfuse --service static
-# Prod (after test verification)
-echo y | ./scripts/deploy-prod.sh --skip-langfuse --service <static|web>
+# Deploy to your slot (auto-detected from worktree name)
+bash .claude/scripts/worker/deploy-to-slot.sh --service static   # UI-only (zero downtime)
+bash .claude/scripts/worker/deploy-to-slot.sh --service web       # Backend changes
+
+# Pre-validate before requesting merge
+bash .claude/scripts/worker/pre-validate.sh --quick
 ```
+
+After verifying on your slot, send a merge request to the merger. The merger handles main test + prod deploys.

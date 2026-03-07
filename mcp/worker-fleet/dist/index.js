@@ -18644,7 +18644,6 @@ class ExperimentalMcpServerTasks {
     return mcpServerInternal._createRegisteredTool(name, config2.title, config2.description, config2.inputSchema, config2.outputSchema, config2.annotations, execution, config2._meta, handler);
   }
 }
-
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js
 class McpServer {
   constructor(serverInfo, options) {
@@ -19366,7 +19365,7 @@ var EMPTY_COMPLETION_RESULT = {
 };
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
-import process2 from "node:process";
+import process2 from "process";
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 class ReadBuffer {
@@ -19455,6 +19454,7 @@ class StdioServerTransport {
     });
   }
 }
+
 // index.ts
 import {
   readFileSync,
@@ -19516,6 +19516,32 @@ function detectWorkerName() {
 var WORKER_NAME = detectWorkerName();
 var stopChecks = new Map;
 var _stopCheckCounter = 0;
+var STOP_CHECKS_FILE = `/tmp/claude-stop-checks-${WORKER_NAME}.json`;
+function _persistStopChecks() {
+  try {
+    const checks4 = [...stopChecks.values()];
+    if (checks4.length === 0) {
+      try {
+        rmSync(STOP_CHECKS_FILE);
+      } catch {}
+      return;
+    }
+    writeFileSync(STOP_CHECKS_FILE, JSON.stringify({ worker: WORKER_NAME, checks: checks4 }, null, 2));
+  } catch {}
+}
+try {
+  if (existsSync(STOP_CHECKS_FILE)) {
+    const data = JSON.parse(readFileSync(STOP_CHECKS_FILE, "utf-8"));
+    if (data.worker === WORKER_NAME && Array.isArray(data.checks)) {
+      for (const c of data.checks) {
+        stopChecks.set(c.id, c);
+        const num = parseInt(c.id.replace("sc-", ""), 10);
+        if (num > _stopCheckCounter)
+          _stopCheckCounter = num;
+      }
+    }
+  }
+} catch {}
 var _cachedBranch = null;
 try {
   _cachedBranch = execSync("git rev-parse --abbrev-ref HEAD", {
@@ -20611,9 +20637,18 @@ server.registerTool("get_worker_state", { description: "Read worker state from r
 } }, async ({ name }) => {
   try {
     if (name === "all") {
+      const paneAliveCache = new Map;
+      const checkPaneAlive = (paneId) => {
+        const cached2 = paneAliveCache.get(paneId);
+        if (cached2 !== undefined)
+          return cached2;
+        const alive = isPaneAlive(paneId);
+        paneAliveCache.set(paneId, alive);
+        return alive;
+      };
       const registry2 = withRegistryLocked((reg) => {
         try {
-          const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_")).map((d) => d.name);
+          const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_")).filter((d) => existsSync(join(WORKERS_DIR, d.name, "mission.md"))).map((d) => d.name);
           for (const n of dirs)
             ensureWorkerInRegistry(reg, n);
         } catch {}
@@ -20621,7 +20656,7 @@ server.registerTool("get_worker_state", { description: "Read worker state from r
           if (key === "_config" || typeof entry2 !== "object" || !entry2)
             continue;
           const w = entry2;
-          if (w.pane_id && !isPaneAlive(w.pane_id)) {
+          if (w.pane_id && !checkPaneAlive(w.pane_id)) {
             w.pane_id = null;
             w.pane_target = null;
             w.session_id = null;
@@ -20648,7 +20683,7 @@ ${new Date().toISOString()}
           if (ip)
             task = `${ip[0]}: ${ip[1].subject}`.slice(0, 40);
         } catch {}
-        const paneStatus = w.pane_id ? isPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD` : "\u2014";
+        const paneStatus = w.pane_id ? checkPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD` : "\u2014";
         output += `${n.padEnd(22)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${task}
 `;
       }
@@ -20792,6 +20827,7 @@ server.registerTool("add_stop_check", {
     added_at: new Date().toISOString(),
     completed: false
   });
+  _persistStopChecks();
   return {
     content: [{
       type: "text",
@@ -20817,6 +20853,7 @@ server.registerTool("complete_stop_check", {
       check3.completed = true;
       check3.completed_at = now;
     }
+    _persistStopChecks();
     return {
       content: [{
         type: "text",
@@ -20830,6 +20867,9 @@ server.registerTool("complete_stop_check", {
   }
   check2.completed = true;
   check2.completed_at = new Date().toISOString();
+  if (result)
+    check2.result = result;
+  _persistStopChecks();
   const pending = [...stopChecks.values()].filter((c) => !c.completed);
   const resultNote = result ? ` (${result})` : "";
   return {
@@ -21727,7 +21767,7 @@ async function main() {
   const transport = new StdioServerTransport;
   await server.connect(transport);
 }
-if (__require.main == __require.module) {
+if (import.meta.main) {
   main().catch((e) => {
     console.error("worker-fleet MCP server fatal:", e);
     process.exit(1);

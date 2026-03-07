@@ -46,7 +46,12 @@ MODE="daemon"
 
 # ── Logging ─────────────────────────────────────────────────────
 mkdir -p "$(dirname "$LOG_FILE")" "$CRASH_DIR" "$RUNTIME_DIR"
-_log() { echo "[$(date -u +%FT%TZ)] watchdog: $*" | tee -a "$LOG_FILE" >&2; }
+_log() {
+  local _m="[$(date -u +%FT%TZ)] watchdog: $*"
+  echo "$_m" >> "$LOG_FILE"
+  # Only echo to stderr when running in a terminal (launchd stderr → same LOG_FILE = duplicates)
+  [ -t 2 ] && echo "$_m" >&2 || true
+}
 
 # ── Crash count management ────────────────────────────────────────
 _crash_count_file() { echo "$CRASH_DIR/$1.json"; }
