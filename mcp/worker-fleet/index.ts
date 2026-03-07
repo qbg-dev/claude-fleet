@@ -763,10 +763,9 @@ If your inbox has a message from Warren or ${_missionAuth} (mission_authority), 
 | \`list_tasks(filter?)\` | List tasks; \`worker="all"\` for cross-worker view |
 | \`get_worker_state(name?)\` | Read worker state; \`name="all"\` for fleet overview |
 | \`update_state(key, value)\` | Persist state across recycles (saved in registry, included in next seed) |
-| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart (reload config). Use \`standby()\` to stop. |
+| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart (reload config) |
 | \`create_worker(name, mission)\` | Fork into a new worker |
 | \`deregister(name)\` | Remove a worker from the registry |
-| \`standby()\` | Toggle active/standby |
 
 Every tool response includes lint warnings if issues are detected — fix them immediately.
 
@@ -1621,7 +1620,7 @@ function _replaceMemorySection(existing: string, section: string, content: strin
 
 server.registerTool(
   "recycle",
-  { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (no seed). Use to reload MCP configuration, pick up model changes, or refresh tool definitions. To stop working, use standby() instead.", inputSchema: {
+  { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (no seed). Use to reload MCP configuration, pick up model changes, or refresh tool definitions.", inputSchema: {
     message: z.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
     resume: z.boolean().optional().describe("If true, hot-restart: exit and resume the same session (no seed). Use to reload MCP config, model changes, or tool definitions."),
   } },
@@ -2316,7 +2315,7 @@ server.registerTool(
 server.registerTool(
   "standby",
   {
-    description: "Toggle standby mode. If active → standby (pane moved to standby window, watchdog ignores). If standby → wake (relaunch + move back). IMPORTANT: Do NOT go to standby unless the user explicitly asks, or you are clearly done with no possible follow-up questions. The user relies on your pane position to find you — moving to standby makes you hard to locate. Auth: self-only unless you're the mission_authority.",
+    description: "Toggle standby mode. If active → standby (pane moved to standby window, watchdog ignores). If standby → wake (relaunch + move back). USER-ONLY: This tool is invoked by the user via /standby — workers must NEVER call this proactively. Auth: self-only unless you're the mission_authority.",
     inputSchema: {
       name: z.string().optional().describe("Worker to toggle standby (default: yourself). Only mission_authority can standby/wake other workers."),
       reason: z.string().optional().describe("Why it's going to/coming from standby"),
