@@ -98,13 +98,11 @@ if [ -f "$MCP_FILE" ]; then
     info ".mcp.json already has worker-fleet configured"
   else
     # Add worker-fleet to existing .mcp.json
-    jq --arg ops "$CLAUDE_OPS_DIR" '.mcpServers["worker-fleet"] = {
-      "type": "stdio",
-      "command": "node",
-      "args": [($ops + "/mcp/worker-fleet/index.js")],
+    jq --arg ops "$CLAUDE_OPS_DIR" --arg bun "$HOME/.bun/bin/bun" '.mcpServers["worker-fleet"] = {
+      "command": $bun,
+      "args": ["run", ($ops + "/mcp/worker-fleet/index.ts")],
       "env": {
-        "PROJECT_ROOT": "'"$PROJECT_DIR"'",
-        "WORKER_FLEET_LOG": "/tmp/worker-fleet.log"
+        "PROJECT_ROOT": "'"$PROJECT_DIR"'"
       }
     }' "$MCP_FILE" > "$MCP_FILE.tmp" && mv "$MCP_FILE.tmp" "$MCP_FILE"
     info "Added worker-fleet to existing .mcp.json"
@@ -114,12 +112,10 @@ else
 {
   "mcpServers": {
     "worker-fleet": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["$CLAUDE_OPS_DIR/mcp/worker-fleet/index.js"],
+      "command": "$HOME/.bun/bin/bun",
+      "args": ["run", "$CLAUDE_OPS_DIR/mcp/worker-fleet/index.ts"],
       "env": {
-        "PROJECT_ROOT": "$PROJECT_DIR",
-        "WORKER_FLEET_LOG": "/tmp/worker-fleet.log"
+        "PROJECT_ROOT": "$PROJECT_DIR"
       }
     }
   }
@@ -300,6 +296,7 @@ COSEOF
       "sleep_duration": 900,
       "cycles_completed": 0,
       "report_to": null,
+      "window": "main",
       "custom": {}
     }}' "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
     info "Added chief-of-staff to registry"
@@ -327,7 +324,7 @@ echo ""
 echo "  Next steps:"
 echo "    1. Review .claude/workers/registry.json"
 echo "    2. Create workers: bash ~/.claude-ops/scripts/launch-flat-worker.sh <name>"
-echo "    3. Monitor: use fleet_status() MCP tool in any Claude session"
+echo "    3. Monitor: use get_worker_state(name='all') MCP tool in any Claude session"
 echo ""
 echo "  Docs: cat ~/.claude-ops/CLAUDE.md"
 echo ""

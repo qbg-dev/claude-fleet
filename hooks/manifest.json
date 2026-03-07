@@ -127,6 +127,14 @@
       "description": "Saves critical context before conversation compaction"
     },
     {
+      "id": "liveness-heartbeat-stop",
+      "event": "Stop",
+      "path": "~/.claude-ops/hooks/publishers/liveness-heartbeat.sh",
+      "required": true,
+      "category": "core",
+      "description": "Touches liveness timestamp on stop for watchdog stuck detection"
+    },
+    {
       "id": "stop-worker-dispatch",
       "event": "Stop",
       "path": "~/.claude-ops/hooks/gates/stop-worker-dispatch.sh",

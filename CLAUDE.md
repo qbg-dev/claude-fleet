@@ -50,16 +50,16 @@ hooks (settings.json)
 
 MCP server (per-project via .mcp.json)
   messaging:  send_message, read_inbox
-  state:      heartbeat, update_state, fleet_status
+  state:      get_worker_state (name="all" for fleet), update_state
   tasks:      create_task, update_task, list_tasks
-  lifecycle:  create_worker, deregister, standby, recycle
+  lifecycle:  recycle (resume=true for hot-restart), create_worker, deregister, standby
 ```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `mcp/worker-fleet/index.ts` | MCP server (14 tools) |
+| `mcp/worker-fleet/index.ts` | MCP server (12 tools) |
 | `scripts/harness-watchdog.sh` | Respawn daemon |
 | `scripts/launch-flat-worker.sh` | Create worktree + pane + seed Claude |
 | `scripts/init-project.sh` | Bootstrap any repo |
@@ -71,9 +71,9 @@ MCP server (per-project via .mcp.json)
 
 Runs via launchd (`com.claude-ops.harness-watchdog`), checks every 30s.
 
-**Stuck detection**: (1) `(running)` in statusline → active, skip. (2) Scrollback MD5 unchanged between checks → idle. (3) Known blocking patterns → stuck timer.
+**Stuck detection**: Liveness heartbeat hook (fires on every tool call, prompt submit, stop) writes epoch to `~/.claude-ops/state/watchdog-runtime/{worker}/liveness`. Watchdog checks: if `now - liveness > 60s` → stuck. Scrollback MD5 diff as secondary signal.
 
-**Respawn**: Kill Claude → stamp `last_cycle_at` → rebuild command from registry → send to pane → wait for TUI → inject seed.
+**Respawn**: Kill Claude → `_record_relaunch(worker, reason)` (increments `watchdog_relaunches` + writes `last_relaunch.{at, reason}` in registry) → touch liveness → rebuild command → send to pane → wait for TUI → inject seed.
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.claude-ops.harness-watchdog  # restart

@@ -303,6 +303,26 @@ _build_claude_cmd() {
   echo "$cmd"
 }
 
+# ── Record a watchdog relaunch in registry ──
+_record_relaunch() {
+  local worker="$1" reason="$2"
+  local _now_iso; _now_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  local _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
+  mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
+  local _WAIT=0
+  while ! mkdir "$_LOCK_DIR" 2>/dev/null; do sleep 0.5; _WAIT=$((_WAIT+1)); [ "$_WAIT" -ge 10 ] && break; done
+  local _tmp; _tmp=$(mktemp)
+  jq --arg n "$worker" --arg ts "$_now_iso" --arg r "$reason" '
+    .[$n].watchdog_relaunches = ((.[$n].watchdog_relaunches // 0) + 1) |
+    .[$n].last_relaunch = {at: $ts, reason: $r}
+  ' "$REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$REGISTRY" || rm -f "$_tmp"
+  rmdir "$_LOCK_DIR" 2>/dev/null || true
+  # Touch liveness so watchdog doesn't immediately re-detect as stuck
+  local _RUNTIME_DIR="${HOME}/.claude-ops/state/watchdog-runtime/${worker}"
+  mkdir -p "$_RUNTIME_DIR" 2>/dev/null || true
+  date +%s > "$_RUNTIME_DIR/liveness"
+}
+
 # ── Resume a worker in its existing pane (unstick or sleep-respawn) ─
 _resume_in_pane() {
   local worker="$1" pane_id="$2" reason="$3"
@@ -326,15 +346,8 @@ _resume_in_pane() {
     echo "Watchdog respawn ($reason). You are worker $worker. Read mission.md, then start your next cycle." > "$seed_file"
   }
 
-  # 4. Stamp last_cycle_at = now so next watchdog pass skips (prevents kill-loop)
-  local _now_iso; _now_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  local _LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
-  mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
-  local _WAIT=0
-  while ! mkdir "$_LOCK_DIR" 2>/dev/null; do sleep 0.5; _WAIT=$((_WAIT+1)); [ "$_WAIT" -ge 10 ] && break; done
-  local _tmp; _tmp=$(mktemp)
-  jq --arg n "$worker" --arg ts "$_now_iso" '.[$n].last_cycle_at = $ts' "$REGISTRY" > "$_tmp" 2>/dev/null && mv "$_tmp" "$REGISTRY" || rm -f "$_tmp"
-  rmdir "$_LOCK_DIR" 2>/dev/null || true
+  # 4. Record relaunch + touch liveness so next watchdog pass skips
+  _record_relaunch "$worker" "$reason"
 
   # 5. Launch Claude
   local claude_cmd
@@ -481,6 +494,7 @@ check_worker() {
     if [ "$perpetual" = "true" ]; then
       _is_crash_looped "$worker" && return
       _log "NO-PANE: $worker — perpetual worker has no pane_id, launching via launch-flat-worker.sh"
+      _record_relaunch "$worker" "no-pane"
       PROJECT_ROOT="$PROJECT_ROOT" bash "$LAUNCH_SCRIPT" "$worker" &
       return 1  # signal respawn happened (for stagger)
     fi
@@ -529,6 +543,7 @@ check_worker() {
       # No Claude TUI indicators at all — likely bare shell from failed respawn
       if [ "$perpetual" = "true" ]; then
         _log "BARE-SHELL: $worker (pane $pane_id) — Claude not running, clean restart"
+        _record_relaunch "$worker" "bare-shell"
         _kill_claude_in_pane "$pane_id"
         sleep 5
         local wt_dir
@@ -545,35 +560,25 @@ check_worker() {
       _clear_cos_notified "$worker"
     fi
 
-    # Check for graceful sleep (worker used recycle MCP tool or finished cycle)
-    # Detect: Claude TUI at prompt + worker's last_cycle_at + sleep_duration elapsed
-    local last_cycle_at; last_cycle_at=$(jq -r --arg n "$worker" '.[$n].last_cycle_at // empty' "$REGISTRY" 2>/dev/null)
-    if [ -n "$last_cycle_at" ] && [ "$last_cycle_at" != "null" ] && [ "$sleep_dur" -gt 0 ] 2>/dev/null; then
-      # Convert ISO timestamp to epoch
-      local cycle_epoch
-      # Strip Z / +HH:MM timezone suffix, then fractional seconds — parse as UTC
-      local _clean_ts="${last_cycle_at%%[Z+]*}"; _clean_ts="${_clean_ts%%.*}"
-      cycle_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "$_clean_ts" +%s 2>/dev/null \
-        || TZ=UTC date -d "${_clean_ts}" +%s 2>/dev/null || echo 0)
-      if [ "$cycle_epoch" -gt 0 ]; then
-        local elapsed=$(( now_ts - cycle_epoch ))
-        local wake_at=$(( cycle_epoch + sleep_dur ))
-        if [ "$elapsed" -ge "$sleep_dur" ]; then
-          # Sleep window elapsed — time to wake up
-          if [ "$perpetual" = "true" ]; then
-            _log "RESPAWN: $worker — graceful sleep done (slept ${elapsed}s of ${sleep_dur}s)"
-            _resume_in_pane "$worker" "$pane_id" "sleep-complete (${elapsed}s of ${sleep_dur}s)"
-            # Clear stuck marker
+    # Check for graceful sleep (perpetual worker waiting for sleep_duration)
+    # Uses liveness file timestamp as "last active" signal
+    if [ "$perpetual" = "true" ] && [ "$sleep_dur" -gt 0 ] 2>/dev/null; then
+      local _liveness_file="${HOME}/.claude-ops/state/watchdog-runtime/${worker}/liveness"
+      if [ -f "$_liveness_file" ]; then
+        local _last_active
+        _last_active=$(cat "$_liveness_file" 2>/dev/null || echo 0)
+        if [ "$_last_active" -gt 0 ] 2>/dev/null; then
+          local _idle_since=$(( now_ts - _last_active ))
+          if [ "$_idle_since" -ge "$sleep_dur" ]; then
+            _log "RESPAWN: $worker — sleep done (idle ${_idle_since}s of ${sleep_dur}s)"
+            _resume_in_pane "$worker" "$pane_id" "sleep-complete (${_idle_since}s of ${sleep_dur}s)"
             local runtime; runtime=$(_worker_runtime "$worker")
             rm -f "$runtime/stuck-candidate" 2>/dev/null || true
             return 1  # signal respawn happened (for stagger)
-          else
-            _log "SKIP: $worker — perpetual:false, not respawning"
           fi
-          return 0
+          # Still within sleep window — don't treat as stuck
+          return
         fi
-        # Still within sleep window — don't treat as stuck
-        return
       fi
     fi
 
@@ -639,6 +644,7 @@ check_worker() {
   # Check if tmux session exists at all
   if ! tmux has-session -t "$session" 2>/dev/null; then
     _log "RESPAWN-FULL: $worker — session '$session' gone, using launch-flat-worker.sh"
+    _record_relaunch "$worker" "session-gone"
     PROJECT_ROOT="$PROJECT_ROOT" bash "$LAUNCH_SCRIPT" "$worker" &
     return 1  # signal respawn happened (for stagger)
   fi
@@ -658,6 +664,7 @@ check_worker() {
     _registry_update_pane "$worker" "$new_pane" "$new_target"
 
     # Re-launch Claude in the new pane
+    _record_relaunch "$worker" "dead-pane-split"
     _relaunch_claude "$worker" "$new_pane" "$wt_dir"
 
     _log "RESPAWN-SPLIT: $worker into window '$window' (pane $new_pane)"
@@ -665,6 +672,7 @@ check_worker() {
   else
     # Window gone — full relaunch via launch-flat-worker.sh
     _log "RESPAWN-FULL: $worker — window '$window' gone, using launch-flat-worker.sh"
+    _record_relaunch "$worker" "window-gone"
     PROJECT_ROOT="$PROJECT_ROOT" bash "$LAUNCH_SCRIPT" "$worker" &
     return 1  # signal respawn happened (for stagger)
   fi

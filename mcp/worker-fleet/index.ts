@@ -2,12 +2,11 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 16 tools in 5 categories:
- *   Messaging (2):  send_message (ack system: fyi, in_reply_to), read_inbox
+ * 12 tools in 4 categories:
+ *   Messaging (2):  send_message, read_inbox
  *   Tasks (3):      create_task, update_task, list_tasks
- *   State (2):      get_worker_state, update_state
- *   Fleet (1):      fleet_status
- *   Lifecycle (4):  recycle, heartbeat, check_config, reload
+ *   State (2):      get_worker_state (name="all" for fleet overview), update_state
+ *   Lifecycle (1):  recycle (resume=true for hot-restart)
  *   Management (4): create_worker, get_worker_template, deregister, standby
  *
  * Task CRUD and inbox are native TS (no shell subprocess).
@@ -114,9 +113,6 @@ interface RegistryWorkerEntry {
   status: string;
   perpetual: boolean;
   sleep_duration: number;
-  cycles_completed: number;
-  last_cycle_at: string | null;
-
   branch: string;
   worktree: string | null;
   window: string | null;
@@ -227,8 +223,6 @@ function ensureWorkerInRegistry(registry: ProjectRegistry, name: string): Regist
     status: "idle",
     perpetual: false,
     sleep_duration: 1800,
-    cycles_completed: 0,
-    last_cycle_at: null,
     branch: `worker/${name}`,
     worktree: worktreeDir,
     window: null,
@@ -273,7 +267,7 @@ function lintRegistry(registry: ProjectRegistry): DiagnosticIssue[] {
 
     // Dead pane
     if (w.pane_id && !isPaneAlive(w.pane_id)) {
-      issues.push({ severity: "warning", check: "lint.dead_pane", message: `Dead pane ${w.pane_id} (worker: ${name})`, fix: "Auto-pruned on fleet_status()" });
+      issues.push({ severity: "warning", check: "lint.dead_pane", message: `Dead pane ${w.pane_id} (worker: ${name})`, fix: "Auto-pruned on get_worker_state(name='all')" });
     }
 
     // worktree doesn't exist (only for non-main-branch workers)
@@ -734,71 +728,59 @@ function generateSeedContent(handoff?: string): string {
   const _seedConfig = readRegistry()._config as RegistryConfig | undefined;
   const _missionAuth = _seedConfig?.mission_authority || "chief-of-staff";
 
+  // Include persisted state in seed so workers resume where they left off
+  let stateBlock = "";
+  try {
+    const reg = readRegistry();
+    const entry = reg[WORKER_NAME] as RegistryWorkerEntry | undefined;
+    if (entry?.custom && Object.keys(entry.custom).length > 0) {
+      stateBlock = `\n\n## Persisted State\n\`\`\`json\n${JSON.stringify(entry.custom, null, 2)}\n\`\`\`\nThese values were saved by your previous instance via \`update_state()\`. Use them to resume context.`;
+    }
+  } catch {}
+
   let seed = `You are worker **${WORKER_NAME}**.
 Worktree: ${worktreeDir} (branch: ${branch})
 Worker config: ${workerDir}/
 
 Read these files NOW in this order:
-1. ${workerDir}/mission.md — your goals and tasks (you own this file — update it as your mission evolves)
-2. Call \`get_worker_state()\` — your current cycle count and status (stored in registry.json)
+1. ${workerDir}/mission.md — your mission and goals (you own this file — update it as your mission evolves)
+2. Call \`read_inbox()\` — check for messages before anything else
 3. Check \`.claude/scripts/${WORKER_NAME}/\` for existing scripts
 
 Your MEMORY.md is auto-loaded by Claude (see "persistent auto memory directory" in your context).
-Use Edit/Write to update it directly at that path. Then begin your cycle immediately.
+Use Edit/Write to update it directly at that path. Then begin working immediately.
 
-## Cycle Pattern
-
-Every cycle follows this sequence:
-
-1. **Heartbeat** — \`heartbeat(cycles_completed=N)\` — auto-registers your pane + stamps cycle state in one call
-2. **Drain inbox** — \`read_inbox()\` — act on messages before anything else (cursor-based, no data loss)
-3. **Create tasks** — If your task list is empty or stale, read your mission.md and \`create_task\` for each goal. As you explore the codebase, \`create_task\` for discovered work items too. Your tasks are your contract with the fleet — keep them current.
-4. **Check tasks** — \`list_tasks(filter="pending")\` — find highest-priority unblocked work
-5. **Claim** — \`update_task(task_id="T00N", status="in_progress")\` — mark what you're working on
-6. **Do the work** — investigate, fix, test, commit, deploy, verify
-7. **Complete** — \`update_task(task_id="T00N", status="completed")\` — only after fully verified
-8. **Perpetual?** — if \`perpetual: true\`, sleep for \`sleep_duration\` seconds, then loop
-
-If your inbox has a message from Warren or ${_missionAuth} (mission_authority), prioritize it over your current task list.
+If your inbox has a message from Warren or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}
 
 ## MCP Tools (\`mcp__worker-fleet__*\`)
 
 | Tool | What it does |
 |------|-------------|
-| \`send_message(to, content, summary, fyi?, in_reply_to?, reply_type?)\` | Send to a worker; \`fyi=true\` = no reply needed; \`in_reply_to="msg_id"\` to ack; \`reply_type="e2e_verify"\` to tag expected reply type |
-| \`read_inbox(limit?, since?, clear?)\` | Read your inbox; messages marked [NEEDS REPLY] require a response via \`in_reply_to\` |
-| \`create_task(subject, priority?, ...)\` | Add a task to your task list |
-| \`update_task(task_id, status?, subject?, owner?, ...)\` | Update task status/fields — claim, complete, delete, reassign |
-| \`list_tasks(filter?, worker?)\` | List tasks; \`worker="all"\` for cross-worker view |
-| \`get_worker_state(name?)\` | Read any worker's state from registry.json |
-| \`update_state(key, value)\` | Update your state in registry.json + emit bus event |
-| \`fleet_status()\` | Full fleet overview (all workers) |
-| \`recycle(message?)\` | Self-recycle: write handoff, restart fresh with new context |
-| \`create_worker(name, mission, launch=true, fork_from_session=true)\` | Fork yourself into a new worker with your conversation context |
-| \`heartbeat(cycles_completed?, extra?)\` | Call at start of each cycle: auto-registers pane + stamps last_cycle_at, status, cycles_completed |
-| \`deregister(name)\` | Remove a worker from the registry (rename = create_worker + deregister) |
-| \`reload()\` | Hot-restart: exit + resume same session to pick up new MCP config |
+| \`send_message(to, content, summary)\` | Message a worker; \`fyi=true\` = no reply needed; \`in_reply_to="msg_id"\` to ack |
+| \`read_inbox()\` | Read your inbox; [NEEDS REPLY] messages require a response |
+| \`create_task(subject)\` | Add a task to your task list |
+| \`update_task(task_id, status)\` | Claim, complete, or delete tasks |
+| \`list_tasks(filter?)\` | List tasks; \`worker="all"\` for cross-worker view |
+| \`get_worker_state(name?)\` | Read worker state; \`name="all"\` for fleet overview |
+| \`update_state(key, value)\` | Persist state across recycles (saved in registry, included in next seed) |
+| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart (same session); \`final=true\` to exit |
+| \`create_worker(name, mission)\` | Fork into a new worker |
+| \`deregister(name)\` | Remove a worker from the registry |
+| \`standby()\` | Toggle active/standby |
 
-These are native MCP tool calls — no bash wrappers needed.
+Every tool response includes lint warnings if issues are detected — fix them immediately.
 
 ## Rules
-- **Use your MCP tools proactively.** The worker-fleet MCP tools (\`mcp__worker-fleet__*\`) are your primary affordances for coordination, state management, and task tracking. Each tool provides capabilities that make you more effective and visible to the fleet — use them whenever appropriate, not just when explicitly told.
 - **Fix everything.** Never just report issues — investigate, fix, deploy, document in MEMORY.md.
 - **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **${branch}** only. Never checkout main.
 - **Deploy**: TEST only. See your mission.md for project-specific deploy commands.
-- **Verify before completing**: Tests pass + TypeScript clean + deploy succeeds + endpoint/UI verified.
-- **Report everything to ${_missionAuth} via MCP**: On any bug, error, test failure, completed task, or finding worth noting — use \`send_message(to="${_missionAuth}", content="...", summary="...")\`. Never append to inbox.jsonl directly. Never silently move on.
-- **Send results back**: When your mission produces output (analysis, compiled data, recommendations) — send it to ${_missionAuth} via \`send_message\`.
+- **Report to ${_missionAuth}**: On any bug, error, completed task, or finding — use \`send_message(to="${_missionAuth}", ...)\`. Never silently move on.
 
 ## If You Run Continuously (Perpetual Mode)
 
-Each cycle: **Observe → Decide → Act → Measure → Adapt** — you're an LLM, not a cron job. Adapt.
-
-- **Save learnings**: Edit your MEMORY.md (auto-loaded path — see "persistent auto memory directory" in your context). Claude picks it up next session automatically.
-- **Scripts first**: Check \`.claude/scripts/${WORKER_NAME}/\` before writing inline bash. If you do something twice, save it as a script there. Scripts persist across recycles; one-off bash commands don't.
-- **Adapt sleep**: Call \`update_state("sleep_duration", N)\` to tune your cycle interval.
-- **Discover new work**: Read server logs, other workers' MEMORY.md, Nexus for issues in your domain.
-- **Eliminate waste**: Skip checks that never change; cache expensive lookups.`;
+- **Save learnings**: Edit your MEMORY.md. Claude picks it up next session automatically.
+- **Scripts first**: Check \`.claude/scripts/${WORKER_NAME}/\` before writing inline bash.
+- **Adapt sleep**: Call \`update_state("sleep_duration", N)\` to tune your cycle interval.`;
 
   if (handoff) {
     seed += `\n\n## Handoff from Previous Cycle\n\n${handoff}`;
@@ -855,11 +837,8 @@ function runDiagnostics(): DiagnosticIssue[] {
     // Registry entry (replaces state.json + permissions.json checks)
     const regEntry = getWorkerEntry(WORKER_NAME);
     if (!regEntry) {
-      issues.push({ severity: "error", check: "registry_entry", message: `Worker '${WORKER_NAME}' not in registry.json`, fix: "Run migration or call create_worker to bootstrap entry, then heartbeat() to register" });
+      issues.push({ severity: "error", check: "registry_entry", message: `Worker '${WORKER_NAME}' not in registry.json`, fix: "Run create_worker to bootstrap entry" });
     } else {
-      if (typeof regEntry.cycles_completed !== "number") {
-        issues.push({ severity: "warning", check: "registry.cycles_completed", message: "registry entry missing 'cycles_completed' field", fix: `update_state("cycles_completed", 0)` });
-      }
       if (!regEntry.status) {
         issues.push({ severity: "warning", check: "registry.status", message: "registry entry missing 'status' field", fix: `update_state("status", "idle")` });
       }
@@ -913,12 +892,12 @@ function runDiagnostics(): DiagnosticIssue[] {
   if (process.env.TMUX_PANE) {
     const entry = getWorkerEntry(WORKER_NAME);
     if (!entry) {
-      issues.push({ severity: "error", check: "registry", message: `Worker '${WORKER_NAME}' not in registry.json — watchdog cannot monitor you. Call heartbeat() BEFORE doing anything else.`, fix: "Call heartbeat() immediately" });
+      issues.push({ severity: "error", check: "registry", message: `Worker '${WORKER_NAME}' not in registry.json — watchdog cannot monitor you.`, fix: "Re-launch via launch-flat-worker.sh" });
     } else if (entry.pane_id !== process.env.TMUX_PANE) {
-      issues.push({ severity: "error", check: "registry.pane_id", message: `Pane ${process.env.TMUX_PANE} not registered for '${WORKER_NAME}' in registry.json. Call heartbeat() to fix.`, fix: "Call heartbeat() immediately" });
+      issues.push({ severity: "error", check: "registry.pane_id", message: `Pane ${process.env.TMUX_PANE} not registered for '${WORKER_NAME}' in registry.json.`, fix: "Re-launch via launch-flat-worker.sh" });
     }
   } else {
-    issues.push({ severity: "error", check: "env.TMUX_PANE", message: "TMUX_PANE not set — you are not registered with the fleet. Messaging, watchdog monitoring, and recycle will NOT work.", fix: "Launch via launch-flat-worker.sh or call heartbeat()" });
+    issues.push({ severity: "error", check: "env.TMUX_PANE", message: "TMUX_PANE not set — not running in tmux. Messaging and watchdog will NOT work.", fix: "Launch via launch-flat-worker.sh" });
   }
 
   // ── Registry linter ──
@@ -930,7 +909,7 @@ function runDiagnostics(): DiagnosticIssue[] {
 
   // ── Required scripts ──
   const requiredScripts: [string, string][] = [
-    [CHECK_WORKERS_SH, "fleet_status"],
+    [CHECK_WORKERS_SH, "get_worker_state(name='all')"],
   ];
   for (const [scriptPath, toolName] of requiredScripts) {
     if (!existsSync(scriptPath)) {
@@ -979,7 +958,6 @@ function runDiagnostics(): DiagnosticIssue[] {
 // ── Cached diagnostics — 3 min TTL, lazy on first tool call ─────────
 let _diagCache: { issues: DiagnosticIssue[]; ts: number } | null = null;
 const DIAG_CACHE_TTL_MS = 10_000; // 10 seconds
-let _firstCallDone = false;
 
 function getCachedDiagnostics(): DiagnosticIssue[] {
   if (_diagCache && Date.now() - _diagCache.ts < DIAG_CACHE_TTL_MS) return _diagCache.issues;
@@ -988,48 +966,46 @@ function getCachedDiagnostics(): DiagnosticIssue[] {
   return issues;
 }
 
-/** Prepend critical diagnostic errors to a tool response on the very first tool call */
-function withStartupDiagnostics(result: { content: { type: "text"; text: string }[] }): typeof result {
-  if (_firstCallDone) return result;
-  _firstCallDone = true;
+/** Append lint warnings/errors to every tool response (cached 10s) */
+function withLint(result: { content: { type: "text"; text: string }[] }): typeof result {
+  let text = result.content[0]?.text || "";
+
+  // 1. Diagnostics lint (errors only — warnings are noise)
   const issues = getCachedDiagnostics();
   const errors = issues.filter(i => i.severity === "error");
-  if (errors.length === 0) return result;
-  const prefix = "⚠ Config errors detected (run check_config for full report):\n" +
-    errors.map(i => `  ✘ [${i.check}] ${i.message}${i.fix ? ` → ${i.fix}` : ""}`).join("\n") +
-    "\n\n";
-  return {
-    content: [{ type: "text" as const, text: prefix + result.content[0].text }],
-  };
-}
+  if (errors.length > 0) {
+    text += "\n\n⚠ LINT (" + errors.length + " issue" + (errors.length > 1 ? "s" : "") + "):\n" +
+      errors.map(i => `  ✘ [${i.check}] ${i.message}${i.fix ? ` → ${i.fix}` : ""}`).join("\n");
+  }
 
-/** Append pending reply reminder to any tool response (called on most tool handlers) */
-function withPendingReminder(result: { content: { type: "text"; text: string }[] }): typeof result {
+  // 2. Pending reply reminder
   const cursor = readInboxCursor(WORKER_NAME);
   let pending = cursor?.pending_replies || [];
-  if (pending.length === 0) return result;
-
-  // Auto-prune pending replies from workers that no longer exist
-  const before = pending.length;
-  pending = pending.filter(p => {
-    const senderDir = join(WORKERS_DIR, p.from_name);
-    return existsSync(senderDir);
-  });
-  if (pending.length !== before) {
-    writeInboxCursor(WORKER_NAME, cursor!.offset, pending);
+  if (pending.length > 0) {
+    // Auto-prune pending replies from workers that no longer exist
+    const before = pending.length;
+    pending = pending.filter(p => {
+      const senderDir = join(WORKERS_DIR, p.from_name);
+      return existsSync(senderDir);
+    });
+    if (pending.length !== before) {
+      writeInboxCursor(WORKER_NAME, cursor!.offset, pending);
+    }
+    if (pending.length > 0) {
+      text += `\n\n⚠ ${pending.length} PENDING REPLY(S):\n` +
+        pending.map(p => {
+          const typeTag = p.reply_type ? `[${p.reply_type}] ` : "";
+          return `  ${typeTag}${p.msg_id} from ${p.from_name}: "${p.summary}"`;
+        }).join("\n") +
+        `\nReply: send_message(to=<sender>, in_reply_to="<msg_id>", content="...", summary="...")`;
+    }
   }
-  if (pending.length === 0) return result;
 
-  const suffix = `\n\n⚠ ${pending.length} PENDING REPLY(S):\n` +
-    pending.map(p => {
-      const typeTag = p.reply_type ? `[${p.reply_type}] ` : "";
-      return `  ${typeTag}${p.msg_id} from ${p.from_name}: "${p.summary}"`;
-    }).join("\n") +
-    `\nReply: send_message(to=<sender>, in_reply_to="<msg_id>", content="...", summary="...")`;
+  return { content: [{ type: "text" as const, text }] };
+}
 
-  return {
-    content: [{ type: "text" as const, text: result.content[0].text + suffix }],
-  };
+function withPendingReminder(result: { content: { type: "text"; text: string }[] }): typeof result {
+  return withLint(result);
 }
 
 // ── MCP Server ───────────────────────────────────────────────────────
@@ -1197,7 +1173,7 @@ server.registerTool(
       const { messages } = readInboxFromCursor(WORKER_NAME, { limit, since, clear });
 
       if (messages.length === 0) {
-        return withStartupDiagnostics({ content: [{ type: "text" as const, text: clear ? "Inbox cleared (was empty)" : "No new messages" }] });
+        return withLint({ content: [{ type: "text" as const, text: clear ? "Inbox cleared (was empty)" : "No new messages" }] });
       }
 
       const formatted = messages.map(m => {
@@ -1225,7 +1201,7 @@ server.registerTool(
       }
 
       const suffix = clear ? " (inbox cleared)" : "";
-      return withStartupDiagnostics({ content: [{ type: "text" as const, text: `${messages.length} messages${suffix}:\n${formatted}${pendingSuffix}` }] });
+      return withLint({ content: [{ type: "text" as const, text: `${messages.length} messages${suffix}:\n${formatted}${pendingSuffix}` }] });
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
@@ -1472,23 +1448,73 @@ server.registerTool(
 
 server.registerTool(
   "get_worker_state",
-  { description: "Read persisted state for any worker — cycles completed, sleep duration, last commit, custom metrics. Call at startup to resume where you left off. Omit name to read your own state.", inputSchema: {
-    name: z.string().optional().describe("Worker name (default: self)"),
+  { description: "Read worker state from registry. Omit name for your own state. Use name='all' for full fleet overview (all workers, pane health, custom state).", inputSchema: {
+    name: z.string().optional().describe("Worker name (default: self). Use 'all' for fleet-wide overview."),
   } },
   async ({ name }) => {
     try {
+      // Fleet-wide overview
+      if (name === "all") {
+        const registry = withRegistryLocked((reg) => {
+          // Auto-discover workers from filesystem
+          try {
+            const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
+              .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+              .map(d => d.name);
+            for (const n of dirs) ensureWorkerInRegistry(reg, n);
+          } catch {}
+          // Auto-prune dead panes
+          for (const [key, entry] of Object.entries(reg)) {
+            if (key === "_config" || typeof entry !== "object" || !entry) continue;
+            const w = entry as RegistryWorkerEntry;
+            if (w.pane_id && !isPaneAlive(w.pane_id)) {
+              w.pane_id = null; w.pane_target = null; w.session_id = null;
+            }
+          }
+          return { ...reg };
+        });
+
+        const projectName = basename(PROJECT_ROOT);
+        let output = `=== Fleet Status (${projectName}) ===\n${new Date().toISOString()}\n\n`;
+        const header = `${"Worker".padEnd(22)} ${"Status".padEnd(10)} ${"Pane".padEnd(12)} ${"Active Task"}`;
+        output += header + "\n" + `${"------".padEnd(22)} ${"------".padEnd(10)} ${"----".padEnd(12)} ${"-----------"}\n`;
+
+        const entries = Object.entries(registry).filter(([k]) => k !== "_config").sort(([a], [b]) => a.localeCompare(b));
+        for (const [n, entry] of entries) {
+          const w = entry as RegistryWorkerEntry;
+          let task = "";
+          try {
+            const tasks = readTasks(n);
+            const ip = Object.entries(tasks).find(([_, t]) => t.status === "in_progress");
+            if (ip) task = `${ip[0]}: ${ip[1].subject}`.slice(0, 40);
+          } catch {}
+          const paneStatus = w.pane_id ? (isPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD`) : "—";
+          output += `${n.padEnd(22)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${task}\n`;
+        }
+
+        // Custom state
+        const stateLines: string[] = [];
+        for (const [n, entry] of entries) {
+          const w = entry as RegistryWorkerEntry;
+          if (w.custom && Object.keys(w.custom).length > 0) {
+            stateLines.push(`  ${n}: ${Object.entries(w.custom).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ")}`);
+          }
+        }
+        if (stateLines.length > 0) output += "\n=== State ===\n" + stateLines.join("\n") + "\n";
+
+        return withLint({ content: [{ type: "text" as const, text: output }] });
+      }
+
+      // Single worker state
       const targetName = name || WORKER_NAME;
       const entry = getWorkerEntry(targetName);
       if (!entry) {
         return { content: [{ type: "text" as const, text: `No state for worker '${targetName}'` }], isError: true };
       }
-      // Return state-relevant fields
       const state: Record<string, any> = {
         status: entry.status,
-        cycles_completed: entry.cycles_completed,
         perpetual: entry.perpetual,
         sleep_duration: entry.sleep_duration,
-        last_cycle_at: entry.last_cycle_at,
         ...entry.custom,
       };
       if (entry.last_commit_sha) state.last_commit_sha = entry.last_commit_sha;
@@ -1496,7 +1522,7 @@ server.registerTool(
       if (entry.last_commit_at) state.last_commit_at = entry.last_commit_at;
       if (entry.issues_found) state.issues_found = entry.issues_found;
       if (entry.issues_fixed) state.issues_fixed = entry.issues_fixed;
-      return withPendingReminder({ content: [{ type: "text" as const, text: JSON.stringify(state, null, 2) }] });
+      return withLint({ content: [{ type: "text" as const, text: JSON.stringify(state, null, 2) }] });
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
@@ -1505,8 +1531,8 @@ server.registerTool(
 
 server.registerTool(
   "update_state",
-  { description: "Persist state across recycles — cycle count, sleep duration, custom metrics. Call after every cycle to stamp cycles_completed and last_cycle_at. The watchdog reads last_cycle_at to detect stuck workers, so always update it. Pass `worker` to update another worker's state (requires authority: you must be their report_to or the mission_authority).", inputSchema: {
-    key: z.string().describe("State key to update (e.g. 'status', 'cycles_completed'). Known keys go top-level; unknown keys go into custom."),
+  { description: "Persist state across recycles — sleep duration, custom metrics. Pass `worker` to update another worker's state (requires authority: you must be their report_to or the mission_authority).", inputSchema: {
+    key: z.string().describe("State key to update (e.g. 'status', 'sleep_duration'). Known keys go top-level; unknown keys go into custom."),
     value: z.union([z.string(), z.number(), z.boolean()]).describe("New value"),
     worker: z.string().optional().describe("Target worker name (default: self). Requires authority — caller must be target's report_to or mission_authority."),
   } },
@@ -1524,7 +1550,7 @@ server.registerTool(
 
         const entry = ensureWorkerInRegistry(registry, targetName);
         // Allowlist of state-owned fields (prevents overwriting pane_id, branch, etc.)
-        const STATE_KEYS = new Set(["status","cycles_completed","perpetual","sleep_duration","last_cycle_at",
+        const STATE_KEYS = new Set(["status","perpetual","sleep_duration",
           "last_commit_sha","last_commit_msg","last_commit_at","issues_found","issues_fixed","report_to"]);
         if (STATE_KEYS.has(key)) {
           (entry as any)[key] = value;
@@ -1564,94 +1590,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
-  "fleet_status",
-  { description: "Snapshot of every worker's health — pane alive, status, last cycle, recent commits. Use to understand the fleet before spawning workers, to check if a recipient worker is actually running before messaging, or to diagnose why something isn't responding." },
-  async () => {
-    try {
-      // All reads + prunes inside one lock to avoid TOCTOU race
-      const registry = withRegistryLocked((reg) => {
-        // Auto-discover workers from filesystem
-        try {
-          const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
-            .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
-            .map(d => d.name);
-          for (const name of dirs) {
-            ensureWorkerInRegistry(reg, name);
-          }
-        } catch {}
-
-        // Auto-prune dead panes
-        for (const [key, entry] of Object.entries(reg)) {
-          if (key === "_config" || typeof entry !== "object" || !entry) continue;
-          const w = entry as RegistryWorkerEntry;
-          if (w.pane_id && !isPaneAlive(w.pane_id)) {
-            w.pane_id = null;
-            w.pane_target = null;
-            w.session_id = null;
-          }
-        }
-
-        return { ...reg };
-      });
-
-      // Format output
-      const projectName = basename(PROJECT_ROOT);
-      let output = `=== Worker Fleet Status (${projectName}) ===\n`;
-      output += `${new Date().toISOString()}\n\n`;
-
-      // Workers table
-      const header = `${"Worker".padEnd(22)} ${"Status".padEnd(10)} ${"Cycles".padEnd(8)} ${"Last Cycle".padEnd(24)} ${"Active Task"}`;
-      output += header + "\n";
-      output += `${"------".padEnd(22)} ${"------".padEnd(10)} ${"------".padEnd(8)} ${"----------".padEnd(24)} ${"-----------"}\n`;
-
-      const workerEntries = Object.entries(registry)
-        .filter(([key]) => key !== "_config")
-        .sort(([a], [b]) => a.localeCompare(b));
-
-      for (const [name, entry] of workerEntries) {
-        const w = entry as RegistryWorkerEntry;
-        let activeTask = "";
-        try {
-          const tasks = readTasks(name);
-          const ip = Object.entries(tasks).find(([_, t]) => t.status === "in_progress");
-          if (ip) activeTask = `${ip[0]}: ${ip[1].subject}`.slice(0, 40);
-        } catch {}
-        output += `${name.padEnd(22)} ${String(w.status || "unknown").padEnd(10)} ${String(w.cycles_completed || 0).padEnd(8)} ${String(w.last_cycle_at || "never").padEnd(24)} ${activeTask}\n`;
-      }
-
-      // Custom state for active workers
-      output += "\n=== Worker State ===\n";
-      for (const [name, entry] of workerEntries) {
-        const w = entry as RegistryWorkerEntry;
-        if (w.custom && Object.keys(w.custom).length > 0) {
-          const stateStr = Object.entries(w.custom)
-            .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
-            .join(", ");
-          output += `  ${name}: ${stateStr}\n`;
-        }
-      }
-
-      // Pane check
-      output += "\n=== Pane Check ===\n";
-      for (const [name, entry] of workerEntries) {
-        const w = entry as RegistryWorkerEntry;
-        if (w.pane_id) {
-          const alive = isPaneAlive(w.pane_id);
-          output += `  ${name} (${w.pane_id} ${w.pane_target || "?"}) ${alive ? "⚡" : "❌ dead"}\n`;
-        } else {
-          output += `  ${name}: NO PANE (dead or not started)\n`;
-        }
-      }
-
-      // (dead panes were already auto-pruned inside withRegistryLocked above)
-
-      return withPendingReminder({ content: [{ type: "text" as const, text: output }] });
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
+// fleet_status removed — merged into get_worker_state(name="all")
 
 // ═══════════════════════════════════════════════════════════════════
 // MEMORY TOOL
@@ -1682,11 +1621,12 @@ function _replaceMemorySection(existing: string, section: string, content: strin
 
 server.registerTool(
   "recycle",
-  { description: "Restart yourself with a fresh context window in the same pane. Use when your context is getting full, at the end of a long cycle, or when you've completed your mission. Writes a handoff.md so the next instance knows what happened. Set final=true to exit without restarting (mission complete).", inputSchema: {
+  { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (picks up new MCP config, model changes). final=true: exit without restarting (mission complete).", inputSchema: {
     message: z.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
     final: z.boolean().optional().describe("If true, this is the last cycle — exit cleanly without restarting. Use when work is complete."),
+    resume: z.boolean().optional().describe("If true, hot-restart: exit and resume the same session (no seed). Use to pick up new MCP config or model changes."),
   } },
-  async ({ message, final }) => {
+  async ({ message, final, resume }) => {
     // 1. Find own pane
     const ownPane = findOwnPane();
     if (!ownPane) {
@@ -1779,6 +1719,57 @@ rm -f "${exitScript}"
             `Parent/operator notified.\n` +
             `Do NOT send any more tool calls — /exit will be sent shortly.` +
             pendingWarning,
+        }],
+      };
+    }
+
+    // 4c. Resume mode — hot-restart, same session, no seed
+    if (resume) {
+      const sessionId = getSessionId(ownPane.paneId);
+      if (!sessionId) {
+        return { content: [{ type: "text" as const, text: "Error: Could not detect session ID — cannot resume." }], isError: true };
+      }
+      const model = getWorkerModel();
+      const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
+      const worktreeDir = getWorktreeDir();
+      const resumeCmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model} --dangerously-skip-permissions --add-dir ${workerDir} --resume ${sessionId}`;
+
+      const reloadScript = `/tmp/reload-${WORKER_NAME}-${Date.now()}.sh`;
+      writeFileSync(reloadScript, `#!/bin/bash
+set -uo pipefail
+PANE_ID="${ownPane.paneId}"
+sleep 3
+tmux send-keys -t "$PANE_ID" "/exit"
+tmux send-keys -t "$PANE_ID" -H 0d
+WAIT=0
+while [ "$WAIT" -lt 30 ]; do
+  sleep 2; WAIT=$((WAIT+2))
+  PANE_PID=$(tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null | awk -v id="$PANE_ID" '$1 == id {print $2}')
+  [ -z "$PANE_PID" ] && { echo "FATAL: pane gone"; exit 1; }
+  CLAUDE_RUNNING=false
+  for pid in $(pgrep -P "$PANE_PID" 2>/dev/null); do
+    cmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
+    [[ "$cmd" == *claude* ]] && CLAUDE_RUNNING=true && break
+  done
+  [ "$CLAUDE_RUNNING" = "false" ] && break
+done
+sleep 2
+tmux send-keys -t "$PANE_ID" "cd ${worktreeDir}"
+tmux send-keys -t "$PANE_ID" -H 0d
+sleep 1
+tmux set-buffer -b reload-cmd "echo 'Continue from where you left off.' | ${resumeCmd}"
+tmux paste-buffer -b reload-cmd -t "$PANE_ID"
+tmux send-keys -t "$PANE_ID" -H 0d
+tmux delete-buffer -b reload-cmd 2>/dev/null || true
+rm -f "${reloadScript}"
+`);
+
+      execSync(`nohup bash "${reloadScript}" > /dev/null 2>&1 &`, { shell: "/bin/bash", timeout: 5000 });
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Hot-restarting — /exit in ~3s, then session ${sessionId} resumes.\nModel: ${model}\nDo NOT send any more tool calls — /exit is imminent.` + pendingWarning,
         }],
       };
     }
@@ -1884,192 +1875,7 @@ rm -f "${recycleScript}"
   }
 );
 
-server.registerTool(
-  "heartbeat",
-  {
-    description: "Call at the start of every cycle. Auto-registers your pane in the fleet (so send_message and fleet_status can find you) and stamps your state — no separate register_pane or update_state needed. Pass cycles_completed to increment your counter. Any extra key/value goes into custom state.",
-    inputSchema: {
-      cycles_completed: z.number().optional().describe("Your current cycle count — pass N+1 at end of each cycle"),
-      status: z.string().optional().describe("Worker status (default: 'active')"),
-      extra: z.record(z.union([z.string(), z.number(), z.boolean()])).optional().describe("Any additional custom state to persist (e.g. {pass_rate: 99, current_focus: 'fix-tests'})"),
-    },
-  },
-  async ({ cycles_completed, status, extra }) => {
-    const tmuxPane = process.env.TMUX_PANE;
-
-    // Resolve pane_target + session from tmux
-    let paneTarget = "";
-    let tmuxSession = "";
-    if (tmuxPane) {
-      try {
-        const raw = execSync(
-          `tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index} #{session_name}' | awk -v id="${tmuxPane}" '$1 == id {print $2, $3}'`,
-          { encoding: "utf-8", timeout: 5000 }
-        ).trim();
-        const parts = raw.split(" ");
-        paneTarget = parts[0] || "";
-        tmuxSession = parts[1] || "";
-      } catch {}
-    }
-
-    const now = new Date().toISOString();
-    let registered = false;
-
-    try {
-      withRegistryLocked((registry) => {
-        ensureWorkerInRegistry(registry, WORKER_NAME);
-        const entry = registry[WORKER_NAME] as RegistryWorkerEntry;
-
-        // Auto-register pane
-        if (tmuxPane && isPaneAlive(tmuxPane)) {
-          if (entry.pane_id !== tmuxPane) {
-            entry.pane_id = tmuxPane;
-            entry.pane_target = paneTarget;
-            entry.tmux_session = tmuxSession;
-            registered = true;
-          }
-        }
-
-        // Stamp state
-        entry.status = status || "active";
-        entry.last_cycle_at = now;
-        if (cycles_completed !== undefined) entry.cycles_completed = cycles_completed;
-
-        // Extra custom fields
-        if (extra) {
-          for (const [k, v] of Object.entries(extra)) entry.custom[k] = v;
-        }
-      });
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
-    }
-
-    // Emit bus event (best-effort)
-    try {
-      const payload = JSON.stringify({ worker: WORKER_NAME, key: "heartbeat", value: now, channel: "worker-fleet-mcp" });
-      execSync(
-        `source "${CLAUDE_OPS}/lib/event-bus.sh" && bus_publish "agent.state-changed" '${payload.replace(/'/g, "'\\''")}'`,
-        { cwd: PROJECT_ROOT, timeout: 5000, encoding: "utf-8", shell: "/bin/bash" }
-      );
-    } catch {}
-
-    // ── Heartbeat linter — ALL issues are blocking or auto-fixed ─────
-    // Blocking issues return isError=true so the worker MUST stop and fix before continuing.
-    // Auto-fixable issues are corrected in-place; the fix is reported in the success message.
-    const blocking: string[] = [];
-    const autoFixed: string[] = [];
-
-    // 1. WORKER_NAME is fallback — unrecoverable without re-launch
-    if (WORKER_NAME === "operator") {
-      blocking.push("WORKER_NAME is 'operator' (env var not set at launch). Your registry entry will conflict with other workers. Notify chief-of-staff and ask to be re-launched via launch-flat-worker.sh with the correct worker name.");
-    }
-
-    // 2. TMUX_PANE not set or dead — unrecoverable without re-launch
-    if (!tmuxPane) {
-      blocking.push("TMUX_PANE env var is not set — not running inside tmux. Watchdog cannot monitor you, send_message cannot reach you. You must be launched via launch-flat-worker.sh inside a tmux pane.");
-    } else if (!isPaneAlive(tmuxPane)) {
-      blocking.push(`TMUX_PANE=${tmuxPane} no longer exists in tmux. Your session is detached or the pane was killed. Re-launch via launch-flat-worker.sh.`);
-    }
-
-    // 3. Registry entry / pane_id checks
-    try {
-      const reg = readRegistry();
-      const myEntry = reg[WORKER_NAME] as RegistryWorkerEntry | undefined;
-      if (!myEntry) {
-        blocking.push(`Worker '${WORKER_NAME}' still missing from registry.json after heartbeat write — likely a file permission error on ${REGISTRY_PATH}. Check permissions and re-run heartbeat.`);
-      } else {
-        if (!myEntry.pane_id) {
-          blocking.push(`No pane_id in registry for '${WORKER_NAME}' even after heartbeat. Watchdog and messaging cannot reach you. Check TMUX_PANE env var and registry write permissions.`);
-        }
-
-        // 4. No report_to — auto-fix by setting to mission_authority
-        if (!getReportTo(myEntry, reg._config as RegistryConfig)) {
-          const config = reg._config as RegistryConfig;
-          const auth = config?.mission_authority || "chief-of-staff";
-          try {
-            withRegistryLocked((r) => {
-              const e = r[WORKER_NAME] as RegistryWorkerEntry;
-              if (e && !e.report_to) e.report_to = auth;
-            });
-            autoFixed.push(`report_to auto-set to '${auth}' (mission_authority)`);
-          } catch {
-            blocking.push(`No report_to set for '${WORKER_NAME}' and auto-fix failed. Run update_state("report_to", "${auth}") before continuing.`);
-          }
-        }
-      }
-    } catch {
-      blocking.push(`Could not read registry.json to verify state — check file at ${REGISTRY_PATH}.`);
-    }
-
-    if (blocking.length > 0) {
-      const msg = [
-        `HEARTBEAT FAILED — ${blocking.length} issue(s) must be resolved before continuing:`,
-        ...blocking.map((b, i) => `${i + 1}. ${b}`),
-      ].join("\n");
-      return { content: [{ type: "text" as const, text: msg }], isError: true };
-    }
-
-    const parts = [`Heartbeat OK: ${WORKER_NAME} at ${now}`];
-    if (registered) parts.push(`pane registered: ${tmuxPane} (${paneTarget})`);
-    if (cycles_completed !== undefined) parts.push(`cycles: ${cycles_completed}`);
-    if (autoFixed.length > 0) parts.push(`auto-fixed: ${autoFixed.join(", ")}`);
-    if (extra) parts.push(`custom: ${Object.keys(extra).join(", ")}`);
-
-    // Nudge if no in-progress task
-    try {
-      const tasks = readTasks(WORKER_NAME);
-      const hasInProgress = Object.values(tasks).some(t => t.status === "in_progress");
-      if (!hasInProgress) {
-        const hasPending = Object.values(tasks).some(t => t.status === "pending");
-        if (hasPending) {
-          parts.push("\n⚠️ No task marked in_progress. Use list_tasks() then update_task(status='in_progress') to claim your current work.");
-        } else {
-          parts.push("\n⚠️ Task list is empty. Use create_task() to register your goals from mission.md, then update_task(status='in_progress') to claim work.");
-        }
-      }
-    } catch {}
-
-    return withPendingReminder({ content: [{ type: "text" as const, text: parts.join(" | ") }] });
-  }
-);
-
-server.registerTool(
-  "check_config",
-  { description: "Diagnose why things aren't working. Checks your environment, registry entry, required files, git branch, and worktree. Returns specific issues with fix suggestions. Run when something feels wrong — missing messages, watchdog not picking you up, tools misbehaving." },
-  async () => {
-    const issues = getCachedDiagnostics();
-    if (issues.length === 0) {
-      return { content: [{ type: "text" as const, text: "All checks passed. Configuration looks good." }] };
-    }
-
-    const errors = issues.filter(i => i.severity === "error");
-    const warnings = issues.filter(i => i.severity === "warning");
-
-    let output = `Found ${issues.length} issue(s): ${errors.length} error(s), ${warnings.length} warning(s)\n\n`;
-
-    if (errors.length > 0) {
-      output += "ERRORS (must fix):\n";
-      for (const e of errors) {
-        output += `  ✘ [${e.check}] ${e.message}\n`;
-        if (e.fix) output += `    Fix: ${e.fix}\n`;
-      }
-      output += "\n";
-    }
-
-    if (warnings.length > 0) {
-      output += "WARNINGS:\n";
-      for (const w of warnings) {
-        output += `  ⚠ [${w.check}] ${w.message}\n`;
-        if (w.fix) output += `    Fix: ${w.fix}\n`;
-      }
-    }
-
-    return {
-      content: [{ type: "text" as const, text: output }],
-      isError: errors.length > 0,
-    };
-  }
-);
+// check_config removed — lint runs on every tool call via withLint()
 
 // ═══════════════════════════════════════════════════════════════════
 // WORKER MANAGEMENT (1)
@@ -2183,7 +1989,6 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
   const isPerpetual = perpetual ?? tpl.perpetual ?? false;
   const state: Record<string, any> = {
     status: "idle",
-    cycles_completed: 0,
     perpetual: isPerpetual,
   };
   if (isPerpetual) {
@@ -2306,7 +2111,6 @@ server.registerTool(
         entry.status = state.status || "idle";
         entry.perpetual = state.perpetual || false;
         entry.sleep_duration = state.sleep_duration || 1800;
-        entry.cycles_completed = state.cycles_completed || 0;
         if (permissions.window) {
           entry.window = permissions.window;
         }
@@ -2591,7 +2395,6 @@ server.registerTool(
         const entry = registry[targetName] as RegistryWorkerEntry;
         if (entry) {
           entry.status = "active";
-          entry.last_cycle_at = new Date().toISOString();
         }
       });
 
@@ -2648,7 +2451,6 @@ server.registerTool(
       const entry = registry[targetName] as RegistryWorkerEntry;
       if (entry) {
         entry.status = "standby";
-        entry.last_cycle_at = new Date().toISOString();
       }
     });
 
@@ -2801,82 +2603,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
-  "reload",
-  {
-    description: "Hot-restart: exit and resume the same session to pick up new MCP server config, model changes, or permission updates. Unlike recycle (which starts fresh), reload resumes the exact same conversation. Use after the MCP server bundle has been rebuilt.",
-    inputSchema: {},
-  },
-  async () => {
-    const ownPane = findOwnPane();
-    if (!ownPane) {
-      return { content: [{ type: "text" as const, text: "Error: Could not find own pane in registry. Are you running in tmux?" }], isError: true };
-    }
-
-    const sessionId = getSessionId(ownPane.paneId);
-    if (!sessionId) {
-      return { content: [{ type: "text" as const, text: "Error: Could not detect session ID — cannot resume." }], isError: true };
-    }
-
-    const model = getWorkerModel();
-    const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
-    const worktreeDir = getWorktreeDir();
-    const resumeCmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model} --dangerously-skip-permissions --add-dir ${workerDir} --resume ${sessionId}`;
-
-    const reloadScript = `/tmp/reload-${WORKER_NAME}-${Date.now()}.sh`;
-    writeFileSync(reloadScript, `#!/bin/bash
-# Auto-generated reload script for ${WORKER_NAME}
-set -uo pipefail
-PANE_ID="${ownPane.paneId}"
-
-# Wait for MCP response to propagate
-sleep 3
-
-# Send /exit to Claude
-tmux send-keys -t "$PANE_ID" "/exit"
-tmux send-keys -t "$PANE_ID" -H 0d
-
-# Wait for Claude to exit (max 30s)
-WAIT=0
-while [ "$WAIT" -lt 30 ]; do
-  sleep 2; WAIT=$((WAIT+2))
-  PANE_PID=$(tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null | awk -v id="$PANE_ID" '$1 == id {print $2}')
-  [ -z "$PANE_PID" ] && { echo "FATAL: pane gone"; exit 1; }
-  CLAUDE_RUNNING=false
-  for pid in $(pgrep -P "$PANE_PID" 2>/dev/null); do
-    cmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
-    [[ "$cmd" == *claude* ]] && CLAUDE_RUNNING=true && break
-  done
-  [ "$CLAUDE_RUNNING" = "false" ] && break
-done
-
-sleep 2
-
-# cd to worktree and resume same session
-tmux send-keys -t "$PANE_ID" "cd ${worktreeDir}"
-tmux send-keys -t "$PANE_ID" -H 0d
-sleep 1
-tmux set-buffer -b reload-cmd "echo 'Continue from where you left off.' | ${resumeCmd}"
-tmux paste-buffer -b reload-cmd -t "$PANE_ID"
-tmux send-keys -t "$PANE_ID" -H 0d
-tmux delete-buffer -b reload-cmd 2>/dev/null || true
-rm -f "${reloadScript}"
-`);
-
-    execSync(`nohup bash "${reloadScript}" > /dev/null 2>&1 &`, {
-      shell: "/bin/bash", timeout: 5000,
-    });
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: `Reloading — /exit will be sent in ~3s, then session ${sessionId} will resume.\n` +
-          `Model: ${model}\n` +
-          `Do NOT send any more tool calls — /exit is imminent.`,
-      }],
-    };
-  }
-);
+// reload removed — merged into recycle(resume=true)
 
 // ═══════════════════════════════════════════════════════════════════
 // START SERVER
