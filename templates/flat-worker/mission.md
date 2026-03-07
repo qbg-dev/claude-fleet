@@ -12,8 +12,10 @@
 LOOP FOREVER:
   1. Test each issue above
   2. For PARTIAL/FAIL items: investigate root cause -> fix -> deploy -> verify
-  3. Update state.json + save findings to auto-memory
-  4. Call recycle() — watchdog respawns after sleep_duration seconds
+  3. Update state + save findings to auto-memory
+  4. Register stop checks for anything you changed: add_stop_check("verify X")
+  5. Complete each check after verifying: complete_stop_check("sc-1")
+  6. Call recycle() — blocked until all checks done. Watchdog respawns after sleep_duration.
 ```
 
 **NEVER set status="done".** This worker runs until killed.
