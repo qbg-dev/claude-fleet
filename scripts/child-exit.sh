@@ -89,8 +89,9 @@ if [ -n "$OWN_NAME" ] && [ -f "$REGISTRY" ]; then
 
   TMP=$(mktemp)
   jq --arg child "$OWN_NAME" --arg parent "${PARENT_NAME:-}" '
-    # Remove child from parent children array
+    # Remove child from parent direct_reports array (+ legacy children)
     if $parent != "" then
+      .[$parent].direct_reports = ((.[$parent].direct_reports // []) - [$child]) |
       .[$parent].children = ((.[$parent].children // []) - [$child])
     else . end |
     # Delete child entry

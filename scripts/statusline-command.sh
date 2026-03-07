@@ -73,8 +73,8 @@ if [ -n "$_pane_id" ] && [ -f "$_REGISTRY_FILE" ]; then
 	eval "$(jq -r --arg pid "$_pane_id" '
 		to_entries[] | select(.key != "_config") | select(.value.pane_id == $pid) |
 		@sh "_reg_worker_name=\(.key)",
-		@sh "_reg_parent=\(.value.parent // "")",
-		@sh "_reg_children_count=\(.value.children // [] | length)",
+		@sh "_reg_parent=\(.value.report_to // .value.parent // "")",
+		@sh "_reg_children_count=\(.value.direct_reports // .value.children // [] | length)",
 		@sh "_reg_status=\(.value.status // "")"
 	' "$_REGISTRY_FILE" 2>/dev/null)"
 
