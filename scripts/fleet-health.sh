@@ -260,35 +260,31 @@ check_worker_tasks() {
   [ "$invalid" -gt 0 ] && _issue "$invalid worker(s) have invalid JSON in tasks.json"
 }
 
-# ── 6. Worker state.json consistency ─────────────────────────────
+# ── 6. Worker state (from registry.json) ─────────────────────────
 check_worker_states() {
   echo ""
-  echo "Worker state.json"
+  echo "Worker State (registry.json)"
 
-  if [ ! -d "$WORKERS_DIR" ]; then
+  local registry="$WORKERS_DIR/registry.json"
+  if [ ! -f "$registry" ]; then
+    _warning "No registry.json found — workers not registered"
     return
   fi
 
-  local no_state=0
-  while IFS= read -r wdir; do
-    local wname; wname=$(basename "$wdir")
+  if ! jq empty "$registry" 2>/dev/null; then
+    _issue "registry.json is invalid JSON"
+    return
+  fi
 
-    local sf="$wdir/state.json"
-    if [ ! -f "$sf" ]; then
-      no_state=$(( no_state + 1 ))
-      _warning "$wname: no state.json"
-      continue
-    fi
+  local workers
+  workers=$(jq -r 'keys[] | select(. != "_config")' "$registry" 2>/dev/null)
+  [ -z "$workers" ] && { _info "No workers in registry"; return; }
 
-    if ! jq empty "$sf" 2>/dev/null; then
-      _issue "$wname: state.json is invalid JSON"
-      continue
-    fi
-
+  while IFS= read -r wname; do
     local perpetual sleep_dur status
-    perpetual=$(jq -r '.perpetual // "unset"' "$sf" 2>/dev/null)
-    sleep_dur=$(jq -r '.sleep_duration // "unset"' "$sf" 2>/dev/null)
-    status=$(jq -r '.status // "unknown"' "$sf" 2>/dev/null)
+    perpetual=$(jq -r --arg n "$wname" '.[$n].perpetual // "unset"' "$registry" 2>/dev/null)
+    sleep_dur=$(jq -r --arg n "$wname" '.[$n].sleep_duration // "unset"' "$registry" 2>/dev/null)
+    status=$(jq -r --arg n "$wname" '.[$n].status // "unknown"' "$registry" 2>/dev/null)
 
     # Perpetual:true workers need a sleep_duration
     if [ "$perpetual" = "true" ] && [ "$sleep_dur" = "unset" ]; then
@@ -305,9 +301,7 @@ check_worker_states() {
     fi
 
     _ok "$wname: perpetual=$perpetual, sleep_duration=${sleep_dur}s, status=$status"
-  done < <(find "$WORKERS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
-
-  [ "$no_state" -gt 0 ] && _warning "$no_state worker(s) have no state.json"
+  done <<< "$workers"
 }
 
 # ── 7. Watchdog config sanity ─────────────────────────────────────
