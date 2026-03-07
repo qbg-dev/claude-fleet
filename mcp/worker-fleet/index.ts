@@ -763,7 +763,7 @@ If your inbox has a message from Warren or ${_missionAuth} (mission_authority), 
 | \`list_tasks(filter?)\` | List tasks; \`worker="all"\` for cross-worker view |
 | \`get_worker_state(name?)\` | Read worker state; \`name="all"\` for fleet overview |
 | \`update_state(key, value)\` | Persist state across recycles (saved in registry, included in next seed) |
-| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart (same session); \`final=true\` to exit |
+| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart (reload config). Use \`standby()\` to stop. |
 | \`create_worker(name, mission)\` | Fork into a new worker |
 | \`deregister(name)\` | Remove a worker from the registry |
 | \`standby()\` | Toggle active/standby |
@@ -1621,12 +1621,11 @@ function _replaceMemorySection(existing: string, section: string, content: strin
 
 server.registerTool(
   "recycle",
-  { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (picks up new MCP config, model changes). final=true: exit without restarting (mission complete).", inputSchema: {
+  { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (no seed). Use to reload MCP configuration, pick up model changes, or refresh tool definitions. To stop working, use standby() instead.", inputSchema: {
     message: z.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
-    final: z.boolean().optional().describe("If true, this is the last cycle — exit cleanly without restarting. Use when work is complete."),
-    resume: z.boolean().optional().describe("If true, hot-restart: exit and resume the same session (no seed). Use to pick up new MCP config or model changes."),
+    resume: z.boolean().optional().describe("If true, hot-restart: exit and resume the same session (no seed). Use to reload MCP config, model changes, or tool definitions."),
   } },
-  async ({ message, final, resume }) => {
+  async ({ message, resume }) => {
     // 1. Find own pane
     const ownPane = findOwnPane();
     if (!ownPane) {
@@ -1673,8 +1672,8 @@ server.registerTool(
       const config = registry._config as RegistryConfig;
       // Build cycle report
       const cycleReport = message
-        ? `[${WORKER_NAME}] ${final ? "FINAL cycle" : "Cycle"} complete: ${message}`
-        : `[${WORKER_NAME}] ${final ? "FINAL cycle" : "Cycle"} complete (no summary provided)`;
+        ? `[${WORKER_NAME}] Cycle complete: ${message}`
+        : `[${WORKER_NAME}] Cycle complete (no summary provided)`;
 
       // Notify mission_authority (operator equivalent)
       const operatorName = config?.mission_authority || null;
@@ -1685,45 +1684,7 @@ server.registerTool(
       // Best-effort notification — don't block recycle if it fails
     }
 
-    // 4b. If final cycle, just exit without restarting
-    if (final) {
-      // Update state to reflect completion — write to registry
-      try {
-        withRegistryLocked((registry) => {
-          ensureWorkerInRegistry(registry, WORKER_NAME);
-          const entry = registry[WORKER_NAME] as RegistryWorkerEntry;
-          entry.status = "done";
-          entry.custom.completed_at = new Date().toISOString();
-        });
-      } catch {}
-
-      // Send /exit to Claude (graceful shutdown)
-      try {
-        const exitScript = `/tmp/final-exit-${WORKER_NAME}-${Date.now()}.sh`;
-        writeFileSync(exitScript, `#!/bin/bash
-sleep 5
-tmux send-keys -t "${ownPane.paneId}" "/exit"
-tmux send-keys -t "${ownPane.paneId}" -H 0d
-rm -f "${exitScript}"
-`);
-        execSync(`nohup bash "${exitScript}" > /dev/null 2>&1 &`, {
-          shell: "/bin/bash", timeout: 5000,
-        });
-      } catch {}
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Final cycle. Shutting down.\n` +
-            `Handoff: ${message ? "written to handoff.md" : "none"}\n` +
-            `Parent/operator notified.\n` +
-            `Do NOT send any more tool calls — /exit will be sent shortly.` +
-            pendingWarning,
-        }],
-      };
-    }
-
-    // 4c. Resume mode — hot-restart, same session, no seed
+    // 4b. Resume mode — hot-restart, same session, no seed
     if (resume) {
       const sessionId = getSessionId(ownPane.paneId);
       if (!sessionId) {
@@ -2355,7 +2316,7 @@ server.registerTool(
 server.registerTool(
   "standby",
   {
-    description: "Toggle standby mode. If the worker is active → puts it in standby (pane moved to standby window, watchdog ignores it). If already in standby → wakes it up (relaunches via launch-flat-worker.sh, moved back to its registered window). Auth: self-only unless you're the mission_authority.",
+    description: "Toggle standby mode. If active → standby (pane moved to standby window, watchdog ignores). If standby → wake (relaunch + move back). IMPORTANT: Do NOT go to standby unless the user explicitly asks, or you are clearly done with no possible follow-up questions. The user relies on your pane position to find you — moving to standby makes you hard to locate. Auth: self-only unless you're the mission_authority.",
     inputSchema: {
       name: z.string().optional().describe("Worker to toggle standby (default: yourself). Only mission_authority can standby/wake other workers."),
       reason: z.string().optional().describe("Why it's going to/coming from standby"),
