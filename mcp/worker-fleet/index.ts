@@ -378,17 +378,19 @@ function acquireLock(lockPath: string, maxWaitMs = 10_000): boolean {
       return true;
     } catch {
       if (Date.now() - start > maxWaitMs) {
-        try { execSync(`rm -rf "${lockPath}"`, { timeout: 2000 }); } catch {}
+        try { rmSync(lockPath, { recursive: true, force: true }); } catch {}
         try { mkdirSync(lockPath, { recursive: false }); return true; } catch {}
         return false;
       }
-      execSync("sleep 0.1", { timeout: 1000 });
+      // Synchronous 100ms sleep without spawning a subprocess
+      // (Bun runtime provides sleepSync; globalThis cast avoids tsc error without bun-types)
+      (globalThis as any).Bun.sleepSync(100);
     }
   }
 }
 
 function releaseLock(lockPath: string) {
-  try { execSync(`rm -rf "${lockPath}"`, { timeout: 2000 }); } catch {}
+  try { rmSync(lockPath, { recursive: true, force: true }); } catch {}
 }
 
 // ── Task CRUD Helpers ────────────────────────────────────────────────
@@ -2029,9 +2031,9 @@ function loadTypeTemplate(type: WorkerType): { model?: string; perpetual?: boole
     if (Array.isArray(perms.denyList)) result.disallowedTools = perms.denyList;
   } catch {}
   try {
-    const state = JSON.parse(readFileSync(join(typeDir, "state.json"), "utf-8"));
-    if (typeof state.perpetual === "boolean") result.perpetual = state.perpetual;
-    if (typeof state.sleep_duration === "number") result.sleep_duration = state.sleep_duration;
+    const defaults = JSON.parse(readFileSync(join(typeDir, "defaults.json"), "utf-8"));
+    if (typeof defaults.perpetual === "boolean") result.perpetual = defaults.perpetual;
+    if (typeof defaults.sleep_duration === "number") result.sleep_duration = defaults.sleep_duration;
   } catch {}
   return result;
 }
@@ -2449,11 +2451,11 @@ server.registerTool(
         `- **denyList** (${(perms.denyList || []).length} rules): ${(perms.denyList || []).map((r: string) => `\`${r}\``).join(", ") || "none"}\n`);
     } catch { sections.push("## permissions.json\n_Not found_\n"); }
     try {
-      const state = JSON.parse(readFileSync(join(typeDir, "state.json"), "utf-8"));
-      sections.push("## Defaults (from state.json)\n" +
-        `- **perpetual**: ${state.perpetual}\n` +
-        `- **sleep_duration**: ${state.sleep_duration}s\n`);
-    } catch { sections.push("## state.json\n_Not found_\n"); }
+      const defaults = JSON.parse(readFileSync(join(typeDir, "defaults.json"), "utf-8"));
+      sections.push("## Defaults (from defaults.json)\n" +
+        `- **perpetual**: ${defaults.perpetual}\n` +
+        `- **sleep_duration**: ${defaults.sleep_duration}s\n`);
+    } catch { sections.push("## defaults.json\n_Not found_\n"); }
     sections.push("## Usage\n`create_worker(name=\"...\", type=\"" + type + "\", mission=\"# Your mission here\\n...\")`\nThe `type` sets model/permissions/perpetual/sleep defaults. You always write your own mission. Explicit params override type defaults.");
     return { content: [{ type: "text" as const, text: sections.join("\n") }] };
   }
