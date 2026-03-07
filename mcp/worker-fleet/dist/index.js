@@ -19477,13 +19477,21 @@ import {
 import { join, basename } from "path";
 import { execSync, spawnSync } from "child_process";
 var HOME = process.env.HOME;
-var PROJECT_ROOT = process.env.PROJECT_ROOT || "/Users/wz/Desktop/zPersonalProjects/Wechat";
+var PROJECT_ROOT = process.env.PROJECT_ROOT || process.cwd();
 var CLAUDE_OPS = process.env.CLAUDE_OPS_DIR || join(HOME, ".claude-ops");
 var WORKERS_DIR = join(PROJECT_ROOT, ".claude/workers");
 function _setWorkersDir(dir) {
   WORKERS_DIR = dir;
 }
 var HARNESS_LOCK_DIR = join(CLAUDE_OPS, "state/locks");
+function loadCompactionContext(branch, missionAuthority) {
+  const tmplPath = join(CLAUDE_OPS, "templates/compaction-context.md");
+  try {
+    return readFileSync(tmplPath, "utf-8").replace(/\{\{WORKER_NAME\}\}/g, WORKER_NAME).replace(/\{\{BRANCH\}\}/g, branch).replace(/\{\{MISSION_AUTHORITY\}\}/g, missionAuthority);
+  } catch {
+    return `Use \`mcp__worker-fleet__*\` MCP tools. Call \`read_inbox()\` first. Report to ${missionAuthority}.`;
+  }
+}
 var REGISTRY_PATH = join(PROJECT_ROOT, ".claude/workers/registry.json");
 var WORKER_MESSAGE_SH = join(CLAUDE_OPS, "scripts/worker-message.sh");
 var CHECK_WORKERS_SH = join(CLAUDE_OPS, "scripts/check-flat-workers.sh");
@@ -20031,49 +20039,7 @@ Use Edit/Write to update it directly at that path. Then begin working immediatel
 
 If your inbox has a message from Warren or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}
 
-## MCP Tools (\`mcp__worker-fleet__*\`)
-
-| Tool | What it does |
-|------|-------------|
-| \`send_message(to, content, summary)\` | Message a worker; \`fyi=true\` = no reply needed; \`in_reply_to="msg_id"\` to ack |
-| \`read_inbox()\` | Read your inbox; [NEEDS REPLY] messages require a response |
-| \`create_task(subject)\` | Add a task to your task list |
-| \`update_task(task_id, status)\` | Claim, complete, or delete tasks |
-| \`list_tasks(filter?)\` | List tasks; \`worker="all"\` for cross-worker view |
-| \`get_worker_state(name?)\` | Read worker state; \`name="all"\` for fleet overview |
-| \`update_state(key, value)\` | Persist state across recycles (saved in registry, included in next seed) |
-| \`add_stop_check(description)\` | Register a verification you MUST do before recycling |
-| \`complete_stop_check(id)\` | Mark a check done after verifying (\`id="all"\` to clear) |
-| \`list_stop_checks()\` | See all checks and their status |
-| \`recycle(message?)\` | Restart fresh with handoff; \`resume=true\` for hot-restart. **Blocked if stop checks pending.** |
-| \`create_worker(name, mission)\` | Fork into a new worker |
-| \`deregister(name)\` | Remove a worker from the registry |
-
-Every tool response includes lint warnings if issues are detected \u2014 fix them immediately.
-
-## Stop Checks (End-to-End Verification)
-When you make changes, register what needs verifying:
-\`\`\`
-add_stop_check("verify TypeScript compiles")
-add_stop_check("test deploy to slot \u2014 check UI loads")
-add_stop_check("no console errors on slot URL")
-\`\`\`
-\`recycle()\` will REFUSE until all checks are completed. After verifying each:
-\`\`\`
-complete_stop_check("sc-1", result="PASS \u2014 no TS errors")
-\`\`\`
-
-## Rules
-- **Fix everything.** Never just report issues \u2014 investigate, fix, deploy, document in MEMORY.md.
-- **Git discipline**: Stage only specific files (\`git add src/foo.ts\`). NEVER \`git add -A\`. Commit to branch **${branch}** only. Never checkout main.
-- **Deploy**: TEST only. See your mission.md for project-specific deploy commands.
-- **Report to ${_missionAuth}**: On any bug, error, completed task, or finding \u2014 use \`send_message(to="${_missionAuth}", ...)\`. Never silently move on.
-
-## If You Run Continuously (Perpetual Mode)
-
-- **Save learnings**: Edit your MEMORY.md. Claude picks it up next session automatically.
-- **Scripts first**: Check \`.claude/scripts/${WORKER_NAME}/\` before writing inline bash.
-- **Adapt sleep**: Call \`update_state("sleep_duration", N)\` to tune your cycle interval.`;
+${loadCompactionContext(branch, _missionAuth)}`;
   if (handoff) {
     seed += `
 

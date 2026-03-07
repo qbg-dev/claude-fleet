@@ -156,11 +156,22 @@ if [ -f "$MEMORY_FILE" ] && [ -s "$MEMORY_FILE" ]; then
   echo ""
 fi
 
-# Tools reminder
-echo "### Tools"
-echo "Use \`mcp__worker-fleet__*\` MCP tools for messaging, tasks, inbox, commits, state, and deploy signals."
-echo "Deploy: **merger only** — workers must never run deploy scripts. Commit your work and notify merger."
-echo ""
+# Resolve mission authority for template interpolation
+_CONFIG_AUTH=$(jq -r '._config.mission_authority // "chief-of-staff"' "$REGISTRY_FILE" 2>/dev/null || echo "chief-of-staff")
+
+# Shared compaction context (tool table + stop checks + rules) — single source of truth
+_TMPL="${HOME}/.claude-ops/templates/compaction-context.md"
+if [ -f "$_TMPL" ]; then
+  sed -e "s/{{WORKER_NAME}}/${WORKER_NAME}/g" \
+      -e "s|{{BRANCH}}|worker/${WORKER_NAME}|g" \
+      -e "s/{{MISSION_AUTHORITY}}/${_CONFIG_AUTH}/g" \
+      "$_TMPL"
+  echo ""
+else
+  echo "### Tools"
+  echo "Use \`mcp__worker-fleet__*\` MCP tools. Call \`read_inbox()\` first. Report to ${_CONFIG_AUTH}."
+  echo ""
+fi
 
 # Mission — show CURRENT PRIORITY section if present, else first 60 lines
 MISSION_FILE="$WORKER_DIR/mission.md"
@@ -195,15 +206,11 @@ if [ -f "$TASKS_FILE" ] && [ -s "$TASKS_FILE" ]; then
   fi
 fi
 
-echo "### Key Reminders"
-echo "- Drain inbox first: \`read_inbox(clear=true)\`"
-echo "- Update memory: \`write_memory(mode='replace_section', section='...', content='...')\` or edit \`${MEMORY_FILE}\`"
-echo "- Update state: \`update_state('cycles_completed', N)\` — NOT state.json (deprecated)"
-echo "- NEVER checkout main. Stay on branch \`worker/${WORKER_NAME}\`"
-echo "- Stage only specific files (never \`git add -A\`)"
-echo "- Post-commit hook auto-notifies Warren"
+# Rules and perpetual mode are already in compaction-context.md template above.
+# Only add compaction-specific reminders not in the shared template.
+echo "### Compaction Reminders"
 echo "- Re-read CLAUDE.md and .claude/CLAUDE.md for project instructions and credentials"
-echo "- **WORKERS NEVER DEPLOY** — only the merger deploys. Your job ends at git commit. Never run deploy.sh."
-echo "- **REBASE FIRST every round**: \`git fetch origin && git rebase origin/main\` before starting work and after each commit."
+echo "- Post-commit hook auto-notifies Warren"
+echo "- **REBASE FIRST every round**: \`git fetch origin && git rebase origin/main\`"
 
 exit 0
