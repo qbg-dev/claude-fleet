@@ -2426,6 +2426,7 @@ server.registerTool(
     sleep_duration: z.number().optional().describe("Seconds to sleep between perpetual cycles (only meaningful when perpetual=true). Default: 1800 (30 min). Overrides type default when set"),
     disallowed_tools: z.string().optional().describe("JSON array of tool deny-list patterns. Default includes safe git/rm guards. Example: '[\"Bash(git push*)\",\"Edit\",\"Bash(*deploy*)\"]'"),
     window: z.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers assigned to the same group share a tiled layout within that window"),
+    window_index: z.number().optional().describe("Explicit tmux window index (e.g. 10, 11). Only used when creating a NEW window — ignored if the window group already exists. Avoids 'index N in use' errors when all default indices are taken"),
     report_to: z.string().optional().describe("Worker or role this worker reports to. Default: mission_authority (usually 'chief-of-staff'). Set direct_report=true as a shortcut to report to the calling worker"),
     permission_mode: z.string().optional().describe("Claude permission mode for the worker's session. Default: 'bypassPermissions'. Use 'default' for stricter tool approval"),
     launch: z.boolean().optional().describe("If true, immediately launch the worker in a tmux pane after creation. If false (default), worker is created but not started — launch manually with launch-flat-worker.sh"),
@@ -2434,7 +2435,7 @@ server.registerTool(
     fork_from_session: z.boolean().optional().describe("If true, fork the caller's current Claude session so the new worker inherits full conversation context. Requires launch=true. Use when the new worker needs everything you currently know"),
     direct_report: z.boolean().optional().describe("If true, set report_to to the calling worker's name instead of mission_authority. Convenience shortcut for creating subordinate workers"),
   } },
-  async ({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, proposal_required, fork_from_session, direct_report }) => {
+  async ({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, window_index: windowIndex, report_to, permission_mode, launch, tasks: tasksJson, proposal_required, fork_from_session, direct_report }) => {
     try {
       // Change 4: Enforce unique worker names
       const existingRegistry = readRegistry();
@@ -2545,8 +2546,10 @@ server.registerTool(
         const winCheck = spawnSync("tmux", ["list-windows", "-t", tmuxSession, "-F", "#{window_name}"], { encoding: "utf-8" });
         const windows = (winCheck.stdout || "").split("\n").map(w => w.trim());
         if (!windows.includes(winName)) {
+          // Use explicit window index if provided, otherwise let tmux auto-assign
+          const target = windowIndex != null ? `${tmuxSession}:${windowIndex}` : tmuxSession;
           return execSync(
-            `tmux new-window -t "${tmuxSession}" -n "${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`,
+            `tmux new-window -t "${target}" -n "${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`,
             { encoding: "utf-8", timeout: 5000 }
           ).trim();
         }
@@ -2651,6 +2654,7 @@ server.registerTool(
             const launchArgs = [launchScript, name, "--project", PROJECT_ROOT];
             const winGroup = windowGroup || permissions.window;
             if (winGroup) launchArgs.push("--window", winGroup);
+            if (windowIndex != null) launchArgs.push("--window-index", String(windowIndex));
             const launchResult = spawnSync("bash", launchArgs, {
               encoding: "utf-8", timeout: 120_000,
               env: { ...process.env, PROJECT_ROOT, WORKER_RUNTIME: resolvedRuntime || "claude" },
@@ -3149,7 +3153,7 @@ server.registerTool(
   "deep_review",
   {
     description:
-      "Launch a Bugbot-style multi-pass code review pipeline. Creates a 'bug-bot' tmux window with 8 parallel Opus review workers + 1 Sonnet coordinator. Workers review the diff with randomized chunk ordering; coordinator aggregates via majority voting (>=2/8), validates, dedupes against history, and applies fixes. Default: reviews the current HEAD commit.",
+      "Launch a Bugbot-style multi-pass code review pipeline. Creates a DEDICATED tmux session with 3 windows: coordinator (1 pane), workers-1 (4 tiled), workers-2 (4 tiled). Session name: dr-{worktree}-{commit-words}-{hash}. Default: reviews HEAD commit.",
     inputSchema: {
       commit: z
         .string()
@@ -3171,6 +3175,10 @@ server.registerTool(
         .number()
         .optional()
         .describe("Number of parallel review passes (default: 8)"),
+      session_name: z
+        .string()
+        .optional()
+        .describe("Custom tmux session name (overrides auto-naming from worktree+commit)"),
     },
   },
   async ({
@@ -3179,12 +3187,14 @@ server.registerTool(
     uncommitted,
     pr_number,
     passes,
+    session_name,
   }: {
     commit?: string;
     base_branch?: string;
     uncommitted?: boolean;
     pr_number?: string;
     passes?: number;
+    session_name?: string;
   }) => {
     try {
       const scriptPath = join(CLAUDE_OPS, "scripts", "deep-review.sh");
@@ -3211,22 +3221,14 @@ server.registerTool(
       if (passes) {
         args.push("--passes", String(passes));
       }
-
-      // Detect tmux session
-      const tmuxSession = process.env.TMUX_SESSION || (() => {
-        try {
-          return execSync("tmux display-message -p \'#{session_name}\'", {
-            encoding: "utf-8",
-          }).trim();
-        } catch {
-          return "h";
-        }
-      })();
+      if (session_name) {
+        args.push("--session-name", session_name);
+      }
 
       const launchResult = spawnSync("bash", [scriptPath, ...args], {
         encoding: "utf-8",
         cwd: PROJECT_ROOT,
-        env: { ...process.env, PROJECT_ROOT, TMUX_SESSION: tmuxSession },
+        env: { ...process.env, PROJECT_ROOT },
         timeout: 60_000,
       });
 
@@ -3236,8 +3238,11 @@ server.registerTool(
       }
 
       const stdout = launchResult.stdout || "";
-      const sessionMatch = stdout.match(/Session:\s+(\S+)/);
-      const sessionDir = sessionMatch ? sessionMatch[1] : "unknown";
+      // Parse session name and dir from output
+      const tmuxSessionMatch = stdout.match(/Session:\s+(\S+)/);
+      const sessionDir = tmuxSessionMatch ? tmuxSessionMatch[1] : "unknown";
+      const reviewSessionMatch = stdout.match(/tmux switch-client -t (\S+)/);
+      const reviewSession = reviewSessionMatch ? reviewSessionMatch[1] : session_name || "dr-unknown";
 
       return {
         content: [{
@@ -3245,12 +3250,18 @@ server.registerTool(
           text: [
             `Deep review pipeline launched.`,
             ``,
-            `Window: ${tmuxSession}:bug-bot (9 panes)`,
-            `Session: ${sessionDir}`,
-            `Passes: ${passes || 8} workers (Opus, xhigh effort)`,
-            `Coordinator: pane 0 (Sonnet, medium effort)`,
+            `tmux session: ${reviewSession}`,
+            `  Window 0: coordinator (1 pane, ${process.env.DEEP_REVIEW_COORD_MODEL || "sonnet"})`,
+            `  Window 1: workers-1 (4 panes tiled, ${process.env.DEEP_REVIEW_WORKER_MODEL || "opus"})`,
+            `  Window 2: workers-2 (4 panes tiled, ${process.env.DEEP_REVIEW_WORKER_MODEL || "opus"})`,
             ``,
-            `Pipeline: 8 parallel passes -> bucket -> majority vote (>=2/8) -> validate -> dedup -> autofix -> report`,
+            `Session dir: ${sessionDir}`,
+            `Passes: ${passes || 8} workers`,
+            ``,
+            `Attach: tmux switch-client -t ${reviewSession}`,
+            `        tmux a -t ${reviewSession}`,
+            ``,
+            `Pipeline: ${passes || 8} parallel passes -> bucket -> majority vote (>=2/${passes || 8}) -> validate -> dedup -> autofix -> report`,
             `Report: ${sessionDir}/report.md`,
           ].join("\n"),
         }],

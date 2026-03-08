@@ -28,12 +28,14 @@ CLI_WINDOW=""
 CUSTOM_WORKTREE=""
 BOOTSTRAP_CMD_FILE=""
 BESIDE_PANE=""
+WINDOW_INDEX=""
 
 # Parse optional args
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --session) TARGET_SESSION="$2"; shift 2 ;;
     --window)  CLI_WINDOW="$2"; shift 2 ;;
+    --window-index) WINDOW_INDEX="$2"; shift 2 ;;
     --project) PROJECT_ROOT="$2"; shift 2 ;;
     --worktree) CUSTOM_WORKTREE="$2"; shift 2 ;;
     --bootstrap-cmd-file) BOOTSTRAP_CMD_FILE="$2"; shift 2 ;;
@@ -205,8 +207,10 @@ elif tmux list-windows -t "$TARGET_SESSION" -F '#{window_name}' 2>/dev/null | gr
   WORKER_PANE=$(tmux split-window -t "$TARGET_SESSION:$WINDOW_GROUP" -c "$WORKTREE_DIR" -d -P -F '#{pane_id}')
   tmux select-layout -t "$TARGET_SESSION:$WINDOW_GROUP" tiled
 else
-  # Create new window with this group name
-  WORKER_PANE=$(tmux new-window -t "$TARGET_SESSION" -n "$WINDOW_GROUP" -c "$WORKTREE_DIR" -d -P -F '#{pane_id}')
+  # Create new window with this group name (use explicit index if provided)
+  _WIN_TARGET="$TARGET_SESSION"
+  [ -n "$WINDOW_INDEX" ] && _WIN_TARGET="${TARGET_SESSION}:${WINDOW_INDEX}"
+  WORKER_PANE=$(tmux new-window -t "$_WIN_TARGET" -n "$WINDOW_GROUP" -c "$WORKTREE_DIR" -d -P -F '#{pane_id}')
 fi
 
 tmux select-pane -T "$WORKER" -t "$WORKER_PANE"

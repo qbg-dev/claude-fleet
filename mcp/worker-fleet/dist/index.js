@@ -18644,7 +18644,6 @@ class ExperimentalMcpServerTasks {
     return mcpServerInternal._createRegisteredTool(name, config2.title, config2.description, config2.inputSchema, config2.outputSchema, config2.annotations, execution, config2._meta, handler);
   }
 }
-
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js
 class McpServer {
   constructor(serverInfo, options) {
@@ -19366,7 +19365,7 @@ var EMPTY_COMPLETION_RESULT = {
 };
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
-import process2 from "node:process";
+import process2 from "process";
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 class ReadBuffer {
@@ -19455,13 +19454,14 @@ class StdioServerTransport {
     });
   }
 }
+
 // index.ts
 import {
   readFileSync,
   writeFileSync,
   appendFileSync,
   existsSync,
-  mkdirSync,
+  mkdirSync as mkdirSync2,
   readdirSync,
   openSync,
   fstatSync,
@@ -19470,13 +19470,44 @@ import {
   closeSync,
   truncateSync,
   lstatSync,
-  rmSync,
+  rmSync as rmSync2,
   copyFileSync,
   cpSync
 } from "fs";
 import { join, basename } from "path";
 import { execSync, spawnSync, spawn } from "child_process";
 import { randomUUID } from "crypto";
+
+// ../shared/lock-utils.ts
+import { mkdirSync, rmSync } from "fs";
+function acquireLock(lockPath, maxWaitMs = 1e4) {
+  const start = Date.now();
+  while (true) {
+    try {
+      mkdirSync(lockPath, { recursive: false });
+      return true;
+    } catch {
+      if (Date.now() - start > maxWaitMs) {
+        try {
+          rmSync(lockPath, { recursive: true, force: true });
+        } catch {}
+        try {
+          mkdirSync(lockPath, { recursive: false });
+          return true;
+        } catch {}
+        return false;
+      }
+      globalThis.Bun.sleepSync(100);
+    }
+  }
+}
+function releaseLock(lockPath) {
+  try {
+    rmSync(lockPath, { recursive: true, force: true });
+  } catch {}
+}
+
+// index.ts
 var HOME = process.env.HOME;
 var PROJECT_ROOT = process.env.PROJECT_ROOT || process.cwd();
 var CLAUDE_OPS = process.env.CLAUDE_OPS_DIR || join(HOME, ".claude-ops");
@@ -19522,7 +19553,7 @@ function _persistStopChecks() {
     const checks4 = [...stopChecks.values()];
     if (checks4.length === 0) {
       try {
-        rmSync(STOP_CHECKS_FILE);
+        rmSync2(STOP_CHECKS_FILE);
       } catch {}
       return;
     }
@@ -19720,32 +19751,6 @@ function lintRegistry(registry2) {
   }
   return issues;
 }
-function acquireLock(lockPath, maxWaitMs = 1e4) {
-  const start = Date.now();
-  while (true) {
-    try {
-      mkdirSync(lockPath, { recursive: false });
-      return true;
-    } catch {
-      if (Date.now() - start > maxWaitMs) {
-        try {
-          rmSync(lockPath, { recursive: true, force: true });
-        } catch {}
-        try {
-          mkdirSync(lockPath, { recursive: false });
-          return true;
-        } catch {}
-        return false;
-      }
-      globalThis.Bun.sleepSync(100);
-    }
-  }
-}
-function releaseLock(lockPath) {
-  try {
-    rmSync(lockPath, { recursive: true, force: true });
-  } catch {}
-}
 function getTasksPath(worker) {
   return join(WORKERS_DIR, worker, "tasks.json");
 }
@@ -19921,7 +19926,7 @@ function writeToTriageQueue(content, summary, fromWorker, opts) {
   try {
     const triageDir = join(PROJECT_ROOT, ".claude/triage");
     if (!existsSync(triageDir))
-      mkdirSync(triageDir, { recursive: true });
+      mkdirSync2(triageDir, { recursive: true });
     const triagePath = join(triageDir, "queue.jsonl");
     const id = `tq-${Date.now()}`;
     const entry = {
@@ -20023,7 +20028,7 @@ function tmuxSendMessage(paneId, text) {
   if (!isPaneIdle(paneId)) {
     const tmpDir = join(HOME, ".claude-ops/tmp");
     if (!existsSync(tmpDir))
-      mkdirSync(tmpDir, { recursive: true });
+      mkdirSync2(tmpDir, { recursive: true });
     const msgFile = join(tmpDir, `retry-${randomUUID()}.txt`);
     writeFileSync(msgFile, text);
     const deliverScript = join(CLAUDE_OPS, "mcp/worker-fleet/deliver-tmux-msg.sh");
@@ -20038,13 +20043,13 @@ function tmuxSendMessage(paneId, text) {
   try {
     const tmpDir = join(HOME, ".claude-ops/tmp");
     if (!existsSync(tmpDir))
-      mkdirSync(tmpDir, { recursive: true });
+      mkdirSync2(tmpDir, { recursive: true });
     writeFileSync(tmpFile, text);
     spawnSync("tmux", ["load-buffer", "-b", bufName, tmpFile], { timeout: 5000 });
     spawnSync("tmux", ["paste-buffer", "-b", bufName, "-t", paneId, "-d"], { timeout: 5000 });
   } finally {
     try {
-      rmSync(tmpFile);
+      rmSync2(tmpFile);
     } catch {}
     try {
       spawnSync("tmux", ["delete-buffer", "-b", bufName], { timeout: 2000 });
@@ -20111,6 +20116,7 @@ function generateSeedContent(handoff) {
   const _seedConfig = readRegistry()._config;
   const _missionAuth = _seedConfig?.mission_authority || "chief-of-staff";
   let stateBlock = "";
+  let proposalBlock = "";
   try {
     const reg = readRegistry();
     const entry = reg[WORKER_NAME];
@@ -20122,6 +20128,17 @@ function generateSeedContent(handoff) {
 ${JSON.stringify(entry.custom, null, 2)}
 \`\`\`
 These values were saved by your previous instance via \`update_state()\`. Use them to resume context.`;
+    }
+    if (entry?.custom?.proposal_required) {
+      const instrPath = join(CLAUDE_OPS, "templates/proposal-instructions.md");
+      const tmplPath = join(CLAUDE_OPS, "templates/proposal-template.html");
+      try {
+        let instrContent = readFileSync(instrPath, "utf-8");
+        instrContent = instrContent.replace(/\{\{WORKER_NAME\}\}/g, WORKER_NAME).replace(/\{\{MISSION_AUTHORITY\}\}/g, _missionAuth).replace(/\{\{TEMPLATE_PATH\}\}/g, tmplPath);
+        proposalBlock = `
+
+` + instrContent;
+      } catch {}
     }
   } catch {}
   let seed = `You are worker **${WORKER_NAME}**.
@@ -20136,7 +20153,7 @@ Read these files NOW in this order:
 Your MEMORY.md is auto-loaded by Claude (see "persistent auto memory directory" in your context).
 Use Edit/Write to update it directly at that path. Then begin working immediately.
 
-If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}
+If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}${proposalBlock}
 
 ${loadSeedContext(branch, _missionAuth)}`;
   if (handoff) {
@@ -20334,18 +20351,28 @@ var server = new McpServer({
   name: "worker-fleet",
   version: "2.0.0"
 });
-server.registerTool("send_message", { description: `Primary inter-worker communication. Messages require a reply by default \u2014 the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive \u2014 use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you.
+server.registerTool("send_message", { description: `Send a message to another worker, the human operator, or the entire fleet. Each message is written to the recipient's durable inbox (persists across restarts) and delivered instantly via tmux overlay if their pane is live.
 
-Use to="user" to escalate to the human operator (writes to triage queue + desktop notification). You SHOULD notify the user when: (1) substantial design or architecture decisions need human judgment, (2) security or safety implications arise (auth changes, permission models, data access), (3) business logic changes that affect how the product works for end users, (4) authentication or authorization modifications, (5) adding significant product surface area (new pages, features, user-facing flows), (6) removing or deprecating functionality users depend on, (7) coordination with external stakeholders is needed, (8) you're blocked and need product direction. When in doubt, escalate \u2014 the cost of an unnecessary notification is far lower than the cost of an unauthorized change.`, inputSchema: {
-  to: exports_external.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to the human operator via triage queue + desktop notification), or raw pane ID '%NN'"),
-  content: exports_external.string().describe("Message content"),
-  summary: exports_external.string().describe("Short preview (5-10 words)"),
-  fyi: exports_external.boolean().optional().describe("If true, no reply expected \u2014 informational only (default: false = reply expected)"),
-  in_reply_to: exports_external.string().optional().describe("msg_id of a message you're replying to \u2014 marks it as acknowledged"),
-  reply_type: exports_external.string().optional().describe("What kind of reply is expected: 'ack' (simple acknowledgment), 'e2e_verify' (verify on main test and confirm), 'review' (review and provide feedback). Stored in message and shown in pending replies."),
-  options: exports_external.array(exports_external.string()).optional().describe("Structured choices for the recipient. Shown as numbered list."),
-  context: exports_external.string().optional().describe("Background/context appended after content. Markdown and tables supported."),
-  urgency: exports_external.enum(["low", "normal", "high"]).optional().describe("Message urgency (default: normal).")
+Messages require a reply by default \u2014 the recipient is reminded at recycle/standby until they reply with in_reply_to. Set fyi=true for informational messages that need no response.
+
+Routing:
+- Worker name (e.g. "merger"): direct message to a specific worker.
+- "report": message whoever you report_to.
+- "direct_reports": fan-out to all workers who report_to you.
+- "all": broadcast to every worker in the fleet (expensive \u2014 use sparingly).
+- "user": escalate to the human operator (writes to triage queue + fires desktop notification).
+- Raw pane ID (e.g. "%42"): tmux-only delivery, no inbox persistence.
+
+Escalate to user when: (1) design/architecture decisions need human judgment, (2) security or auth changes arise, (3) business logic changes affect end users, (4) new product surface area is added, (5) functionality is being removed, (6) external coordination is needed, (7) you're blocked and need product direction. When in doubt, escalate \u2014 false alarms are cheap, unauthorized changes are not.`, inputSchema: {
+  to: exports_external.string().describe('Recipient: worker name, "report", "direct_reports", "all" (fleet broadcast), "user" (human escalation), or raw pane ID "%NN"'),
+  content: exports_external.string().describe("Message body text"),
+  summary: exports_external.string().describe("5-10 word preview shown in inbox listings and notifications"),
+  fyi: exports_external.boolean().optional().describe("If true, no reply expected (informational only). Default: false (reply expected \u2014 recipient is reminded until they respond)"),
+  in_reply_to: exports_external.string().optional().describe("msg_id of a message you are replying to. Marks that message as acknowledged and clears it from your pending replies"),
+  reply_type: exports_external.string().optional().describe("Hint for the recipient on what kind of reply you expect: 'ack' (simple acknowledgment), 'e2e_verify' (verify on main test and confirm), 'review' (review and provide feedback)"),
+  options: exports_external.array(exports_external.string()).optional().describe("Structured choices presented as a numbered list. Useful for approval flows (e.g. ['APPROVED', 'REVISE', 'REJECT'])"),
+  context: exports_external.string().optional().describe("Supplementary context appended after the main content. Supports markdown and tables for structured background information"),
+  urgency: exports_external.enum(["low", "normal", "high"]).optional().describe("Message priority level. 'high' triggers immediate attention; 'low' can wait until next cycle. Default: 'normal'")
 } }, async ({ to, content, summary, fyi, in_reply_to, reply_type, options, context, urgency }) => {
   const body = buildMessageBody(content, context, options);
   if (to === "all") {
@@ -20364,11 +20391,19 @@ Use to="user" to escalate to the human operator (writes to triage queue + deskto
     } catch (e) {
       return { content: [{ type: "text", text: `Error listing workers: ${e.message}` }], isError: true };
     }
+    const tmuxDelivered = [];
     try {
-      const args = ["broadcast", body];
-      if (summary)
-        args.push("--summary", summary);
-      runScript(WORKER_MESSAGE_SH, args, { timeout: 1e4 });
+      const registry2 = readRegistry();
+      for (const workerName of successes) {
+        const entry = registry2[workerName];
+        const paneId = entry?.pane_id;
+        if (paneId && isPaneAlive(paneId)) {
+          try {
+            tmuxSendMessage(paneId, `[broadcast from ${WORKER_NAME}] ${body}`);
+            tmuxDelivered.push(workerName);
+          } catch {}
+        }
+      }
     } catch {}
     let msg = `Broadcast to ${successes.length} workers`;
     if (failures.length > 0)
@@ -20506,10 +20541,10 @@ WARNING: Worker '${recipientName}' has no active pane \u2014 message queued in i
   const typeNote = reply_type ? ` (reply_type: ${reply_type})` : "";
   return withLint({ content: [{ type: "text", text: `Message sent to ${recipientName} [${inboxResult.msg_id}]${ackNote}${replyNote}${typeNote}${paneWarning}` }] });
 });
-server.registerTool("read_inbox", { description: "Read messages sent to you by other workers or the user. Call at the start of every cycle to act on pending instructions before checking tasks. Uses a cursor so repeated calls only return new messages \u2014 no data loss on restart. Use clear=true only if you want to explicitly purge old messages.", inputSchema: {
-  limit: exports_external.number().optional().describe("Max messages to return (default: all)"),
-  since: exports_external.string().optional().describe("ISO timestamp \u2014 only messages after this time"),
-  clear: exports_external.boolean().optional().describe("If true, clear inbox after reading (replaces clear_inbox)")
+server.registerTool("read_inbox", { description: "Read messages from your durable inbox. Call at the start of every cycle \u2014 messages may contain instructions, merge notifications, or approval requests that should be acted on before starting new work. Uses a cursor internally so repeated calls return only new messages (no duplicates, no data loss across restarts). Also appends a summary of any pending replies you owe (messages with ack_required that you haven't replied to yet). Use clear=true only to explicitly purge the entire inbox \u2014 this is rarely needed.", inputSchema: {
+  limit: exports_external.number().optional().describe("Maximum number of messages to return. Omit to return all unread messages"),
+  since: exports_external.string().optional().describe("ISO 8601 timestamp \u2014 return only messages received after this time (e.g. '2026-03-07T00:00:00Z')"),
+  clear: exports_external.boolean().optional().describe("If true, permanently delete all messages after reading. Default: false. Use sparingly \u2014 messages are the audit trail")
 } }, async ({ limit, since, clear }) => {
   try {
     const { messages } = readInboxFromCursor(WORKER_NAME, { limit, since, clear });
@@ -20548,14 +20583,14 @@ ${formatted}${pendingSuffix}` }] });
     return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
   }
 });
-server.registerTool("create_task", { description: "Track a unit of work you've identified. Use whenever you discover a bug, feature, or investigation that needs doing \u2014 even mid-cycle. Tasks survive recycles, can block each other, and give the team visibility into your queue. Prefer creating tasks over holding work in context.", inputSchema: {
-  subject: exports_external.string().describe("Task title (imperative form)"),
-  description: exports_external.string().optional().describe("Detailed description"),
-  priority: exports_external.enum(["critical", "high", "medium", "low"]).optional().describe("Priority level (default: medium)"),
-  active_form: exports_external.string().optional().describe("Present continuous label for spinner (e.g. 'Running tests')"),
-  blocks: exports_external.string().optional().describe("Comma-separated task IDs that this task blocks (e.g. 'T003,T004')"),
-  blocked_by: exports_external.string().optional().describe("Comma-separated task IDs that block this (e.g. 'T001,T002')"),
-  recurring: exports_external.boolean().optional().describe("If true, resets to pending when completed")
+server.registerTool("create_task", { description: "Create a durable task to track a unit of work. Tasks persist across recycles, support dependency chains (blocked_by/blocks), and give the fleet visibility into your work queue. Create a task whenever you identify a bug, feature, investigation, or follow-up \u2014 even mid-cycle. Prefer externalizing work into tasks over holding it in conversation context, since context is lost on recycle.", inputSchema: {
+  subject: exports_external.string().describe("Task title in imperative form (e.g. 'Fix TypeScript errors in auth module', 'Add pagination to user list')"),
+  description: exports_external.string().optional().describe("Detailed description of what needs to be done, acceptance criteria, or relevant context"),
+  priority: exports_external.enum(["critical", "high", "medium", "low"]).optional().describe("Execution priority. 'critical' tasks should be addressed before any others. Default: 'medium'"),
+  active_form: exports_external.string().optional().describe("Present-continuous label shown in status displays while this task is in progress (e.g. 'Running tests', 'Deploying to slot')"),
+  blocks: exports_external.string().optional().describe("Comma-separated task IDs that cannot start until this task completes (e.g. 'T003,T004'). Creates forward dependencies"),
+  blocked_by: exports_external.string().optional().describe("Comma-separated task IDs that must complete before this task can start (e.g. 'T001,T002'). Task stays blocked until all are completed"),
+  recurring: exports_external.boolean().optional().describe("If true, task auto-resets to 'pending' after completion instead of staying 'completed'. Use for repeating work like monitoring sweeps or periodic audits")
 } }, async ({ subject, description, priority, active_form, blocks, blocked_by, recurring }) => {
   try {
     const tasks = readTasks(WORKER_NAME);
@@ -20601,16 +20636,16 @@ server.registerTool("create_task", { description: "Track a unit of work you've i
     return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
   }
 });
-server.registerTool("update_task", { description: "Advance a task through its lifecycle or reassign it. Claim work with status='in_progress' before starting (prevents double-work across workers). Mark 'completed' only after fully verified. Use 'deleted' to discard irrelevant tasks. Set add_blocked_by to express dependencies that gate execution.", inputSchema: {
-  task_id: exports_external.string().describe("Task ID (e.g. 'T001')"),
-  status: exports_external.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("New status"),
-  subject: exports_external.string().optional().describe("New subject"),
-  description: exports_external.string().optional().describe("New description"),
-  active_form: exports_external.string().optional().describe("Present continuous label for spinner"),
-  priority: exports_external.enum(["critical", "high", "medium", "low"]).optional().describe("New priority"),
-  owner: exports_external.string().optional().describe("New owner (worker name)"),
-  add_blocked_by: exports_external.string().optional().describe("Comma-separated task IDs to add as blockers"),
-  add_blocks: exports_external.string().optional().describe("Comma-separated task IDs this task should block")
+server.registerTool("update_task", { description: "Advance a task through its lifecycle, update its metadata, or manage dependencies. Lifecycle: pending \u2192 in_progress \u2192 completed (or deleted at any point). Always claim a task with status='in_progress' before starting work \u2014 this sets you as owner and prevents other workers from duplicating the effort. Only mark 'completed' after the work is fully verified. Use 'deleted' to permanently discard tasks that are no longer relevant. Refuses to start a task that has unfinished blockers.", inputSchema: {
+  task_id: exports_external.string().describe("Task identifier (e.g. 'T001'). Use list_tasks to find available IDs"),
+  status: exports_external.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("Target status. 'in_progress' claims the task and sets you as owner. 'completed' marks it done (recurring tasks auto-reset to pending). 'deleted' permanently discards it"),
+  subject: exports_external.string().optional().describe("Updated task title"),
+  description: exports_external.string().optional().describe("Updated task description or notes"),
+  active_form: exports_external.string().optional().describe("Present-continuous label shown in status displays (e.g. 'Running tests')"),
+  priority: exports_external.enum(["critical", "high", "medium", "low"]).optional().describe("Updated priority level"),
+  owner: exports_external.string().optional().describe("Reassign to a different worker by name. Automatically set when claiming with status='in_progress'"),
+  add_blocked_by: exports_external.string().optional().describe("Comma-separated task IDs to add as blockers (e.g. 'T001,T002'). Task cannot start until all blockers are completed"),
+  add_blocks: exports_external.string().optional().describe("Comma-separated task IDs that should be blocked by this task (e.g. 'T005,T006'). Adds this task's ID to their blocked_by lists")
 } }, async ({ task_id, status, subject, description, active_form, priority, owner, add_blocked_by, add_blocks }) => {
   try {
     const tasks = readTasks(WORKER_NAME);
@@ -20703,9 +20738,9 @@ server.registerTool("update_task", { description: "Advance a task through its li
     return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
   }
 });
-server.registerTool("list_tasks", { description: "Survey available work before starting a cycle. Use filter='pending' to find unblocked tasks ready to claim. Use worker='all' to see the full fleet's queue and avoid duplicating work another worker is already doing.", inputSchema: {
-  filter: exports_external.enum(["all", "pending", "in_progress", "blocked"]).optional().describe("Filter by status (default: all non-deleted)"),
-  worker: exports_external.string().optional().describe("Specific worker name, or 'all' for cross-worker view (default: self)")
+server.registerTool("list_tasks", { description: "List tasks from your queue or across the fleet. Use at the start of each cycle to find work to claim. filter='pending' shows only unblocked tasks ready to start \u2014 the most common query. worker='all' provides a cross-fleet view to see what everyone is working on and avoid duplicate effort. Deleted tasks are always excluded from results.", inputSchema: {
+  filter: exports_external.enum(["all", "pending", "in_progress", "blocked"]).optional().describe("Filter tasks by status. 'pending': ready to claim (unblocked only). 'in_progress': actively being worked. 'blocked': waiting on dependencies. 'all': everything except deleted. Default: 'all'"),
+  worker: exports_external.string().optional().describe("Whose tasks to list. Omit for your own queue. Use a worker name for a specific peer, or 'all' for a fleet-wide view grouped by worker")
 } }, async ({ filter, worker }) => {
   try {
     const targetWorkers = [];
@@ -20757,8 +20792,8 @@ ${results.join(`
     return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
   }
 });
-server.registerTool("get_worker_state", { description: "Read worker state from registry. Omit name for your own state. Use name='all' for full fleet overview (all workers, pane health, custom state).", inputSchema: {
-  name: exports_external.string().optional().describe("Worker name (default: self). Use 'all' for fleet-wide overview.")
+server.registerTool("get_worker_state", { description: "Read a worker's state from the central registry. Returns status, perpetual/sleep config, last commit info, issue counts, and any custom state keys. For a single worker, returns raw JSON. For name='all', returns a formatted fleet dashboard with a table of all workers showing runtime, status, pane health (alive/dead), and current in-progress task \u2014 plus a custom state section. The fleet view also auto-discovers workers from the filesystem and prunes dead panes.", inputSchema: {
+  name: exports_external.string().optional().describe("Worker name to query. Omit for your own state. Use 'all' for a fleet-wide dashboard showing every registered worker, pane health, and active tasks")
 } }, async ({ name }) => {
   try {
     if (name === "all") {
@@ -20854,10 +20889,10 @@ ${new Date().toISOString()}
     return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
   }
 });
-server.registerTool("update_state", { description: "Persist state across recycles \u2014 sleep duration, custom metrics. Pass `worker` to update another worker's state (requires authority: you must be their report_to or the mission_authority).", inputSchema: {
-  key: exports_external.string().describe("State key to update (e.g. 'status', 'sleep_duration'). Known keys go top-level; unknown keys go into custom."),
-  value: exports_external.union([exports_external.string(), exports_external.number(), exports_external.boolean()]).describe("New value"),
-  worker: exports_external.string().optional().describe("Target worker name (default: self). Requires authority \u2014 caller must be target's report_to or mission_authority.")
+server.registerTool("update_state", { description: "Write a key-value pair to the worker registry that persists across recycles. Use for sleep_duration, custom metrics, feature flags, or any state that must survive restarts. Known keys (status, perpetual, sleep_duration, last_commit_sha/msg/at, issues_found/fixed, report_to) are stored at the top level; all other keys go into the custom state bag. Cross-worker updates require authority \u2014 you must be the target's report_to or the mission_authority.", inputSchema: {
+  key: exports_external.string().describe("State key name. Known keys (status, perpetual, sleep_duration, report_to, last_commit_sha, last_commit_msg, last_commit_at, issues_found, issues_fixed) go top-level. Any other key goes into the custom state bag"),
+  value: exports_external.union([exports_external.string(), exports_external.number(), exports_external.boolean()]).describe("Value to store. Must be a primitive (string, number, or boolean)"),
+  worker: exports_external.string().optional().describe("Target worker. Omit to update your own state. Cross-worker updates are authorized only if you are the target's report_to or the mission_authority")
 } }, async ({ key, value, worker }) => {
   try {
     const targetName = worker || WORKER_NAME;
@@ -20889,7 +20924,7 @@ server.registerTool("update_state", { description: "Persist state across recycle
     try {
       const cacheDir = join(process.env.HOME || "/tmp", ".claude-ops/state/harness-runtime/worker", targetName);
       if (!existsSync(cacheDir))
-        mkdirSync(cacheDir, { recursive: true });
+        mkdirSync2(cacheDir, { recursive: true });
       writeFileSync(join(cacheDir, "config-cache.json"), stateJson);
     } catch {}
     try {
@@ -20941,9 +20976,9 @@ function _replaceMemorySection(existing, section, content) {
 ` + after : "");
 }
 server.registerTool("add_stop_check", {
-  description: "Register a verification item you MUST complete before recycling. Use this whenever you make a change that needs end-to-end verification (e.g. 'verify TypeScript compiles', 'test deploy to slot', 'check no console errors'). recycle() will refuse until all checks are completed.",
+  description: "Register a verification gate that must be completed before you can recycle. Creates a named check that blocks recycle() until explicitly marked done via complete_stop_check(). Use whenever you make a change that requires end-to-end verification \u2014 e.g. 'verify TypeScript compiles', 'test deploy to slot', 'confirm no console errors on page load'. This prevents accidental recycles before critical verification steps are done.",
   inputSchema: {
-    description: exports_external.string().describe("What needs to be verified before you stop")
+    description: exports_external.string().describe("Human-readable description of what must be verified (e.g. 'TypeScript compiles without errors', 'slot loads correctly in browser', 'all unit tests pass')")
   }
 }, async ({ description }) => {
   const id = `sc-${++_stopCheckCounter}`;
@@ -20963,10 +20998,10 @@ ${stopChecks.size} total check(s), ${[...stopChecks.values()].filter((c) => !c.c
   };
 });
 server.registerTool("complete_stop_check", {
-  description: "Mark a stop check as completed after you've verified it. Pass the check ID (e.g. 'sc-1') or 'all' to mark everything done.",
+  description: "Mark a stop check as verified and completed. Call this after you have actually performed the verification described in the check \u2014 do not mark checks complete without verifying. Once all checks are completed, recycle() is unblocked. Pass 'all' to mark every pending check done at once (use only when you've genuinely verified everything).",
   inputSchema: {
-    id: exports_external.string().describe("Check ID (e.g. 'sc-1') or 'all' to complete everything"),
-    result: exports_external.string().optional().describe("Brief verification result (e.g. 'PASS \u2014 no TS errors', 'PASS \u2014 slot loads correctly')")
+    id: exports_external.string().describe("Check ID to complete (e.g. 'sc-1'). Use 'all' to mark every pending check as completed simultaneously"),
+    result: exports_external.string().optional().describe("Brief verification outcome to record (e.g. 'PASS \u2014 0 TypeScript errors', 'PASS \u2014 slot renders correctly'). Stored alongside the check for audit purposes")
   }
 }, async ({ id, result }) => {
   if (id === "all") {
@@ -21007,7 +21042,7 @@ ${pending.length} check(s) remaining.` + (pending.length === 0 ? " All clear \u2
   };
 });
 server.registerTool("list_stop_checks", {
-  description: "List all registered stop checks and their status.",
+  description: "List all stop checks registered this session with their current status (pending or completed). Shows check IDs, descriptions, and completion timestamps. Use before recycling to see what verification gates remain, or to find check IDs for complete_stop_check(). Returns a ready/not-ready summary at the end.",
   inputSchema: {}
 }, async () => {
   if (stopChecks.size === 0) {
@@ -21025,10 +21060,10 @@ server.registerTool("list_stop_checks", {
   return { content: [{ type: "text", text: lines.join(`
 `) }] };
 });
-server.registerTool("recycle", { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (no seed). Refuses to proceed if you have pending stop checks \u2014 complete them first or pass force=true.", inputSchema: {
-  message: exports_external.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
-  resume: exports_external.boolean().optional().describe("If true, hot-restart: exit and resume the same session (no seed). Use to reload MCP config, model changes, or tool definitions."),
-  force: exports_external.boolean().optional().describe("If true, skip stop check gate (use only when checks are genuinely not applicable)")
+server.registerTool("recycle", { description: "Restart yourself in the same tmux pane to get a fresh context window. Two modes: (1) Default (cold restart): exits current session, generates a new seed file with the handoff message, and launches a brand-new Claude session. Use at the end of each work cycle. (2) resume=true (hot restart): exits and immediately resumes the same session ID \u2014 preserves full conversation history but reloads MCP config, model changes, and tool definitions. Blocked by pending stop checks unless force=true. Also warns about unreplied messages that will carry over.", inputSchema: {
+  message: exports_external.string().optional().describe("Handoff context for the next instance. Include: what was accomplished, what remains, any blockers or decisions needed. Written to handoff.md and injected into the next session's seed"),
+  resume: exports_external.boolean().optional().describe("If true, hot-restart: resume the same session (keeps conversation history, reloads MCP/model config). If false (default), cold-restart with a fresh seed"),
+  force: exports_external.boolean().optional().describe("If true, bypass the stop-check gate. Use only when pending checks are genuinely not applicable to the current cycle")
 } }, async ({ message, resume, force }) => {
   const pendingChecks = [...stopChecks.values()].filter((c) => !c.completed);
   if (pendingChecks.length > 0 && !force) {
@@ -21346,15 +21381,15 @@ function createWorkerFiles(input) {
     return { ok: false, error: `Mission cannot be empty` };
   }
   const tpl = type ? loadTypeTemplate(type) : {};
-  mkdirSync(workerDir, { recursive: true });
+  mkdirSync2(workerDir, { recursive: true });
   const worktreePath = `${PROJECT_ROOT}-w-${name}`;
   const slug = worktreePath.replace(/\//g, "-");
   const autoMemoryDir = join(HOME, ".claude", "projects", slug, "memory");
-  mkdirSync(autoMemoryDir, { recursive: true });
+  mkdirSync2(autoMemoryDir, { recursive: true });
   const autoMemoryPath = join(autoMemoryDir, "MEMORY.md");
   try {
     if (lstatSync(autoMemoryPath).isSymbolicLink()) {
-      rmSync(autoMemoryPath);
+      rmSync2(autoMemoryPath);
     }
   } catch {}
   if (!existsSync(autoMemoryPath)) {
@@ -21419,24 +21454,26 @@ function createWorkerFiles(input) {
 `);
   return { ok: true, workerDir, model: selectedModel, runtime: resolvedRuntime, perpetual: isPerpetual, taskIds, tasks: tasksObj, state, permissions };
 }
-server.registerTool("create_worker", { description: "Spin up a new persistent worker with its own mission, memory, and task list. Use when you've identified a domain of work that warrants a dedicated agent \u2014 ongoing monitoring, specialized repair, continuous optimization. Set launch=true to start it immediately. Set fork_from_session=true to fork your current conversation context (inherits what you know). Set placement to control where the pane appears.", inputSchema: {
-  name: exports_external.string().describe("Worker name in kebab-case (e.g. 'chatbot-fix')"),
-  mission: exports_external.string().describe("Full mission.md content (markdown)"),
-  type: exports_external.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("Worker archetype \u2014 sets model, permissions, perpetual/sleep defaults from template. Caller still writes mission. Use get_worker_template to preview."),
-  runtime: exports_external.enum(["claude", "codex"]).optional().describe("Runtime engine (default: claude). Use codex for well-specified tasks, logical/structured work, verification, and instruction-following. Use claude for open-ended exploration, complex reasoning, and creative problem-solving. Codex uses OpenAI Codex CLI; Claude uses Claude Code CLI."),
-  model: exports_external.string().optional().describe("LLM model (overrides type/runtime default if set). Claude: sonnet, opus, haiku. Codex: gpt-5.4, o3, o4-mini."),
-  reasoning_effort: exports_external.enum(["low", "medium", "high", "extra_high"]).optional().describe("Reasoning effort level (default: high). Both Claude (--effort) and Codex (-c model_reasoning_effort) support this."),
-  perpetual: exports_external.boolean().optional().describe("Run in perpetual loop (overrides type default if set)"),
-  sleep_duration: exports_external.number().optional().describe("Seconds between cycles, only if perpetual (overrides type default if set)"),
-  disallowed_tools: exports_external.string().optional().describe('JSON array of disallowed tool patterns (default: safe git/rm guards). Example: ["Bash(git push*)","Edit","Bash(*deploy*)"]'),
-  window: exports_external.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers in the same group share a tiled layout."),
-  report_to: exports_external.string().optional().describe("Who this worker reports to (default: chief-of-staff / mission_authority). Use direct_report=true to report to calling worker instead."),
-  permission_mode: exports_external.string().optional().describe("Claude permission mode (default: bypassPermissions)"),
-  launch: exports_external.boolean().optional().describe("Auto-launch in tmux after creation (default: false)"),
-  tasks: exports_external.string().optional().describe("JSON array of tasks: [{subject, description?, priority?}]"),
-  fork_from_session: exports_external.boolean().optional().describe("Fork the caller's Claude session so the new worker inherits conversation context (default: false). Requires launch=true."),
-  direct_report: exports_external.boolean().optional().describe("Set report_to to the calling worker instead of mission_authority (default: false)")
-} }, async ({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, fork_from_session, direct_report }) => {
+server.registerTool("create_worker", { description: "Create a new autonomous worker with its own mission, git worktree, task queue, and inbox. Each worker runs as an independent Claude (or Codex) session in a dedicated tmux pane. Use when a domain of work warrants a dedicated agent \u2014 feature implementation, ongoing monitoring, specialized repair, or continuous optimization. The worker gets: a .claude/workers/<name>/ directory (mission.md, tasks.json, inbox.jsonl), a git worktree branched from HEAD, and a registry entry. Set launch=true to start immediately, or launch manually later. Worker names must be unique across the fleet.", inputSchema: {
+  name: exports_external.string().describe("Unique worker name in kebab-case (e.g. 'chatbot-fix', 'deploy-monitor'). Used as directory name, git branch suffix, and tmux identifier"),
+  mission: exports_external.string().describe("Full mission.md content in markdown. Defines the worker's objectives, scope, constraints, and acceptance criteria. This is the worker's primary instruction document"),
+  type: exports_external.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("Worker archetype that sets model, permissions, perpetual/sleep defaults from a template. You still write the mission. Use get_worker_template() to preview what each type provides before choosing"),
+  runtime: exports_external.enum(["claude", "codex"]).optional().describe("Execution engine. 'claude' (default): Claude Code CLI \u2014 best for open-ended exploration, complex reasoning, creative problem-solving. 'codex': OpenAI Codex CLI \u2014 best for well-specified tasks, logical/structured work, verification, strict instruction-following"),
+  model: exports_external.string().optional().describe("LLM model, overriding type/runtime defaults. Claude models: sonnet, opus, haiku. Codex models: gpt-5.4, o3, o4-mini"),
+  reasoning_effort: exports_external.enum(["low", "medium", "high", "extra_high"]).optional().describe("Controls depth of reasoning. Higher = more thorough but slower/costlier. Both Claude (--effort) and Codex (-c model_reasoning_effort) support this. Default: 'high'"),
+  perpetual: exports_external.boolean().optional().describe("If true, worker runs in an infinite recycle loop (work \u2192 sleep \u2192 recycle \u2192 repeat). If false (default), worker runs a single session. Overrides type default when set"),
+  sleep_duration: exports_external.number().optional().describe("Seconds to sleep between perpetual cycles (only meaningful when perpetual=true). Default: 1800 (30 min). Overrides type default when set"),
+  disallowed_tools: exports_external.string().optional().describe(`JSON array of tool deny-list patterns. Default includes safe git/rm guards. Example: '["Bash(git push*)","Edit","Bash(*deploy*)"]'`),
+  window: exports_external.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers assigned to the same group share a tiled layout within that window"),
+  window_index: exports_external.number().optional().describe("Explicit tmux window index (e.g. 10, 11). Only used when creating a NEW window \u2014 ignored if the window group already exists. Avoids 'index N in use' errors when all default indices are taken"),
+  report_to: exports_external.string().optional().describe("Worker or role this worker reports to. Default: mission_authority (usually 'chief-of-staff'). Set direct_report=true as a shortcut to report to the calling worker"),
+  permission_mode: exports_external.string().optional().describe("Claude permission mode for the worker's session. Default: 'bypassPermissions'. Use 'default' for stricter tool approval"),
+  launch: exports_external.boolean().optional().describe("If true, immediately launch the worker in a tmux pane after creation. If false (default), worker is created but not started \u2014 launch manually with launch-flat-worker.sh"),
+  tasks: exports_external.string().optional().describe("JSON array of initial tasks to seed the worker's queue. Each element: {subject: string, description?: string, priority?: 'critical'|'high'|'medium'|'low'}"),
+  proposal_required: exports_external.boolean().optional().describe("If true, worker must produce a self-contained HTML proposal document (architecture diagrams, UI mockups, data flow, file impact, risks) and get mission authority approval before writing any implementation code. Default: false"),
+  fork_from_session: exports_external.boolean().optional().describe("If true, fork the caller's current Claude session so the new worker inherits full conversation context. Requires launch=true. Use when the new worker needs everything you currently know"),
+  direct_report: exports_external.boolean().optional().describe("If true, set report_to to the calling worker's name instead of mission_authority. Convenience shortcut for creating subordinate workers")
+} }, async ({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, window_index: windowIndex, report_to, permission_mode, launch, tasks: tasksJson, proposal_required, fork_from_session, direct_report }) => {
   try {
     let createPane = function(_pl, cwd) {
       const ownPane = findOwnPane();
@@ -21446,7 +21483,8 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
       const windows = (winCheck.stdout || "").split(`
 `).map((w) => w.trim());
       if (!windows.includes(winName)) {
-        return execSync(`tmux new-window -t "${tmuxSession}" -n "${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`, { encoding: "utf-8", timeout: 5000 }).trim();
+        const target = windowIndex != null ? `${tmuxSession}:${windowIndex}` : tmuxSession;
+        return execSync(`tmux new-window -t "${target}" -n "${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`, { encoding: "utf-8", timeout: 5000 }).trim();
       }
       const paneId = execSync(`tmux split-window -t "${tmuxSession}:${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`, { encoding: "utf-8", timeout: 5000 }).trim();
       spawnSync("tmux", ["select-layout", "-t", `${tmuxSession}:${winName}`, "tiled"], { encoding: "utf-8" });
@@ -21501,7 +21539,7 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
     if (fork_from_session && !launch) {
       return { content: [{ type: "text", text: `Error: fork_from_session=true requires launch=true` }], isError: true };
     }
-    const result = createWorkerFiles({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, taskEntries });
+    const result = createWorkerFiles({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, taskEntries, proposal_required });
     if (!result.ok) {
       return { content: [{ type: "text", text: `Error: ${result.error}` }], isError: true };
     }
@@ -21523,6 +21561,9 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
       }
       entry.report_to = reportTo;
       entry.custom = { ...entry.custom, runtime: resolvedRuntime || "claude", reasoning_effort: permissions.reasoning_effort || "high" };
+      if (proposal_required) {
+        entry.custom.proposal_required = true;
+      }
       if (fork_from_session) {
         entry.forked_from = WORKER_NAME;
       }
@@ -21565,7 +21606,7 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
               const newSlug = worktreeDir.replace(/\//g, "-");
               const parentProj = join(HOME, ".claude/projects", parentSlug);
               const newProj = join(HOME, ".claude/projects", newSlug);
-              mkdirSync(newProj, { recursive: true });
+              mkdirSync2(newProj, { recursive: true });
               const jsonlSrc = join(parentProj, `${sessionId}.jsonl`);
               if (existsSync(jsonlSrc))
                 copyFileSync(jsonlSrc, join(newProj, `${sessionId}.jsonl`));
@@ -21613,6 +21654,8 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
           const winGroup = windowGroup || permissions.window;
           if (winGroup)
             launchArgs.push("--window", winGroup);
+          if (windowIndex != null)
+            launchArgs.push("--window-index", String(windowIndex));
           const launchResult = spawnSync("bash", launchArgs, {
             encoding: "utf-8",
             timeout: 120000,
@@ -21640,6 +21683,7 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
       permissions.window ? `  Window: ${permissions.window}` : null,
       `  Reports to: ${reportTo}`,
       fork_from_session ? `  Forked from: ${WORKER_NAME}` : null,
+      proposal_required ? `  Proposal: REQUIRED (worker produces HTML proposal before coding)` : null,
       permissions.disallowedTools.length > 0 ? `  Disallowed: ${permissions.disallowedTools.length} rules` : `  Disallowed: none (full access)`,
       `  Tasks: ${taskSummary}`,
       worktreeReady ? `  Worktree: ${worktreeDir}` : `  Worktree: NOT CREATED (manual setup needed)`,
@@ -21652,9 +21696,9 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
   }
 });
 server.registerTool("get_worker_template", {
-  description: "Preview a worker type template before creating. Returns mission.md (with {{PLACEHOLDERS}} showing expected structure and \u4E09\u7701\u543E\u8EAB variant), permissions defaults, and state config. Use before create_worker(type=...) to understand what to write.",
+  description: "Preview the defaults and mission structure for a worker archetype before creating one. Returns the template mission.md (showing expected sections and {{PLACEHOLDERS}}), permissions defaults (model, permission_mode, deny-list), and state config (perpetual, sleep_duration). Call this before create_worker(type=...) to understand what the archetype provides and what you need to customize in your mission.",
   inputSchema: {
-    type: exports_external.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).describe("Worker archetype to preview")
+    type: exports_external.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).describe("Worker archetype to preview. Each has different defaults for model, permissions, perpetual mode, and sleep duration")
   }
 }, async ({ type }) => {
   const typeDir = join(TEMPLATE_TYPES_DIR, type);
@@ -21720,11 +21764,11 @@ function moveWorkerPane(paneId, tmuxSession, targetWindow) {
   }
 }
 server.registerTool("move_window", {
-  description: "Move a worker's pane to a different tmux window. Worker stays alive. Moving to 'standby' sets status=standby (watchdog ignores). Auth: self or mission_authority.",
+  description: "Move a worker's tmux pane to a different named window without interrupting its session. The worker process stays alive \u2014 only its visual placement changes. Moving to the 'standby' window automatically sets status=standby in the registry (watchdog will stop monitoring it). Moving out of standby restores status=active. Authorization: you can move yourself freely; moving other workers requires being the mission_authority.",
   inputSchema: {
-    name: exports_external.string().optional().describe("Worker to move (default: yourself). Only mission_authority can move other workers."),
-    window: exports_external.string().describe("Target tmux window name (e.g. 'background', 'standby', 'optimizers')"),
-    reason: exports_external.string().optional().describe("Why it's being moved")
+    name: exports_external.string().optional().describe("Worker to move. Omit to move yourself. Only the mission_authority can move other workers"),
+    window: exports_external.string().describe("Target tmux window name. Workers in the same window share a tiled layout. Special: 'standby' sets the worker's status to standby"),
+    reason: exports_external.string().optional().describe("Reason for the move. If moving to standby, this is written to handoff.md for context when the worker is later woken")
   }
 }, async ({ name, window: targetWindow, reason }) => {
   const targetName = name || WORKER_NAME;
@@ -21797,10 +21841,10 @@ Worker is in standby \u2014 registered but not running. Call move_window(name="$
   };
 });
 server.registerTool("standby", {
-  description: "Toggle standby mode. If active \u2192 standby (pane moved to standby window, watchdog ignores). If standby \u2192 wake (relaunch + move back). USER-ONLY: This tool is invoked by the user via /standby \u2014 workers must NEVER call this proactively. Auth: self-only unless you're the mission_authority.",
+  description: "Toggle a worker between active and standby states. If currently active: moves pane to the standby window, sets status=standby (watchdog stops monitoring), and writes a handoff note. If currently in standby: moves pane back to its original window and restores status=active. USER-ONLY \u2014 this tool is invoked by the human operator via the /standby command. Workers must NEVER call this proactively on themselves or others. Authorization: self or mission_authority only.",
   inputSchema: {
-    name: exports_external.string().optional().describe("Worker to toggle standby (default: yourself). Only mission_authority can standby/wake other workers."),
-    reason: exports_external.string().optional().describe("Why it's going to/coming from standby")
+    name: exports_external.string().optional().describe("Worker to toggle. Omit to toggle yourself. Only the mission_authority can standby/wake other workers"),
+    reason: exports_external.string().optional().describe("Why the worker is being put on standby or woken up. Written to handoff.md for context")
   }
 }, async ({ name, reason }) => {
   const targetName = name || WORKER_NAME;
@@ -21908,12 +21952,12 @@ Worker is in standby \u2014 registered but not running. Call standby(name="${tar
   };
 });
 server.registerTool("register", {
-  description: "Self-register in the registry. Auto-detects your pane ID, tmux session, model, and worktree. Call this when lint warns you're not in registry.json. Only registers yourself \u2014 cannot register other workers.",
+  description: "Register yourself in the fleet registry. Auto-detects your tmux pane ID, session, and runtime from the process environment. Call this when the lint system warns that you are not in registry.json \u2014 typically happens for manually launched workers or after registry corruption. Only registers the calling worker; cannot register other workers.",
   inputSchema: {
-    model: exports_external.string().optional().describe("Model override (default: from registry or 'opus')"),
-    perpetual: exports_external.boolean().optional().describe("Run in perpetual loop (default: false)"),
-    sleep_duration: exports_external.number().optional().describe("Seconds between cycles if perpetual (default: 1800)"),
-    report_to: exports_external.string().optional().describe("Who this worker reports to (default: mission_authority)")
+    model: exports_external.string().optional().describe("LLM model to record in registry. Default: existing registry value or 'opus'"),
+    perpetual: exports_external.boolean().optional().describe("Whether to run in perpetual recycle loop. Default: existing value or false"),
+    sleep_duration: exports_external.number().optional().describe("Seconds between perpetual cycles. Default: existing value or 1800"),
+    report_to: exports_external.string().optional().describe("Who this worker reports to. Default: existing value or mission_authority from _config")
   }
 }, async ({ model, perpetual, sleep_duration, report_to }) => {
   try {
@@ -21958,10 +22002,10 @@ server.registerTool("register", {
   }
 });
 server.registerTool("deregister", {
-  description: "Remove a worker from the registry. Preserves files and worktree \u2014 only the registry entry is removed. Auth: self-only unless you're the mission_authority (from _config).",
+  description: "Remove a worker's entry from the fleet registry. The worker's files (.claude/workers/<name>/), git worktree, and branch are preserved \u2014 only the registry entry is deleted. Requires a HANDOFF.md (>50 chars) in the worker's directory before proceeding, to ensure knowledge is captured before the worker is retired. Authorization: self or mission_authority only. The reason is appended to HANDOFF.md with a timestamp for the audit trail.",
   inputSchema: {
-    name: exports_external.string().optional().describe("Worker name to deregister (default: yourself). Only mission_authority can deregister other workers."),
-    reason: exports_external.string().optional().describe("Reason for deregistration \u2014 written to the worker's handoff.md for posterity")
+    name: exports_external.string().optional().describe("Worker to deregister. Omit to deregister yourself. Only the mission_authority can deregister other workers"),
+    reason: exports_external.string().optional().describe("Reason for deregistration. Appended to HANDOFF.md with a timestamp for the audit trail")
   }
 }, async ({ name, reason }) => {
   const targetName = name || WORKER_NAME;
@@ -22050,11 +22094,100 @@ server.registerTool("deregister", {
     }]
   };
 });
+server.registerTool("deep_review", {
+  description: "Launch a Bugbot-style multi-pass code review pipeline. Creates a DEDICATED tmux session with 3 windows: coordinator (1 pane), workers-1 (4 tiled), workers-2 (4 tiled). Session name: dr-{worktree}-{commit-words}-{hash}. Default: reviews HEAD commit.",
+  inputSchema: {
+    commit: exports_external.string().optional().describe("Specific commit SHA to review. Default: HEAD (current commit)"),
+    base_branch: exports_external.string().optional().describe("Review all changes since this branch (e.g. 'main'). Overrides commit."),
+    uncommitted: exports_external.boolean().optional().describe("Review staged + unstaged + untracked changes. Overrides commit and base_branch."),
+    pr_number: exports_external.string().optional().describe("Review a pull request by number (uses gh pr diff). Overrides other modes."),
+    passes: exports_external.number().optional().describe("Number of parallel review passes (default: 8)"),
+    session_name: exports_external.string().optional().describe("Custom tmux session name (overrides auto-naming from worktree+commit)")
+  }
+}, async ({
+  commit,
+  base_branch,
+  uncommitted,
+  pr_number,
+  passes,
+  session_name
+}) => {
+  try {
+    const scriptPath = join(CLAUDE_OPS, "scripts", "deep-review.sh");
+    if (!existsSync(scriptPath)) {
+      throw new Error(`deep-review.sh not found at ${scriptPath}`);
+    }
+    const args = [];
+    if (pr_number) {
+      args.push("--pr", pr_number);
+    } else if (uncommitted) {
+      args.push("--uncommitted");
+    } else if (base_branch) {
+      args.push("--base", base_branch);
+    } else {
+      const headSha = execSync("git rev-parse HEAD", {
+        encoding: "utf-8",
+        cwd: PROJECT_ROOT
+      }).trim();
+      args.push("--commit", headSha);
+    }
+    if (passes) {
+      args.push("--passes", String(passes));
+    }
+    if (session_name) {
+      args.push("--session-name", session_name);
+    }
+    const launchResult = spawnSync("bash", [scriptPath, ...args], {
+      encoding: "utf-8",
+      cwd: PROJECT_ROOT,
+      env: { ...process.env, PROJECT_ROOT },
+      timeout: 60000
+    });
+    if (launchResult.status !== 0) {
+      const stderr = launchResult.stderr?.slice(0, 1000) || "";
+      throw new Error(`deep-review.sh failed (exit ${launchResult.status}): ${stderr}`);
+    }
+    const stdout = launchResult.stdout || "";
+    const tmuxSessionMatch = stdout.match(/Session:\s+(\S+)/);
+    const sessionDir = tmuxSessionMatch ? tmuxSessionMatch[1] : "unknown";
+    const reviewSessionMatch = stdout.match(/tmux switch-client -t (\S+)/);
+    const reviewSession = reviewSessionMatch ? reviewSessionMatch[1] : session_name || "dr-unknown";
+    return {
+      content: [{
+        type: "text",
+        text: [
+          `Deep review pipeline launched.`,
+          ``,
+          `tmux session: ${reviewSession}`,
+          `  Window 0: coordinator (1 pane, ${process.env.DEEP_REVIEW_COORD_MODEL || "sonnet"})`,
+          `  Window 1: workers-1 (4 panes tiled, ${process.env.DEEP_REVIEW_WORKER_MODEL || "opus"})`,
+          `  Window 2: workers-2 (4 panes tiled, ${process.env.DEEP_REVIEW_WORKER_MODEL || "opus"})`,
+          ``,
+          `Session dir: ${sessionDir}`,
+          `Passes: ${passes || 8} workers`,
+          ``,
+          `Attach: tmux switch-client -t ${reviewSession}`,
+          `        tmux a -t ${reviewSession}`,
+          ``,
+          `Pipeline: ${passes || 8} parallel passes -> bucket -> majority vote (>=2/${passes || 8}) -> validate -> dedup -> autofix -> report`,
+          `Report: ${sessionDir}/report.md`
+        ].join(`
+`)
+      }]
+    };
+  } catch (e) {
+    const msg = `Deep review launch failed: ${e.message?.slice(0, 500) || String(e)}`;
+    return {
+      content: [{ type: "text", text: msg }],
+      isError: true
+    };
+  }
+});
 async function main() {
   const transport = new StdioServerTransport;
   await server.connect(transport);
 }
-if (__require.main == __require.module) {
+if (import.meta.main) {
   main().catch((e) => {
     console.error("worker-fleet MCP server fatal:", e);
     process.exit(1);
