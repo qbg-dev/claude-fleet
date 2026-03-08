@@ -300,8 +300,8 @@ _kill_claude_in_pane() {
   fi
 }
 
-# ── Build Claude command from registry config ──────────────────────
-_build_claude_cmd() {
+# ── Build agent command from registry config (Claude or Codex) ─────
+_build_agent_cmd() {
   local worker="$1"
   local session_id="${2:-}"
 
@@ -310,16 +310,42 @@ _build_claude_cmd() {
   local perm_mode; perm_mode=$(jq -r --arg n "$worker" '.[$n].permission_mode // "bypassPermissions"' "$REGISTRY" 2>/dev/null)
   [ "$perm_mode" = "null" ] && perm_mode="bypassPermissions"
   local disallowed; disallowed=$(jq -r --arg n "$worker" '.[$n].disallowed_tools // [] | join(",")' "$REGISTRY" 2>/dev/null)
+  local runtime; runtime=$(jq -r --arg n "$worker" '.[$n].custom.runtime // "claude"' "$REGISTRY" 2>/dev/null)
+  [ "$runtime" = "null" ] && runtime="claude"
+  local effort; effort=$(jq -r --arg n "$worker" '.[$n].custom.reasoning_effort // ""' "$REGISTRY" 2>/dev/null)
+  [ "$effort" = "null" ] && effort=""
 
   local worker_dir="$PROJECT_ROOT/.claude/workers/$worker"
-  local cmd="CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model $model"
-  [ "$perm_mode" = "bypassPermissions" ] && cmd="$cmd --dangerously-skip-permissions"
-  [ -n "$disallowed" ] && cmd="$cmd --disallowed-tools \"$disallowed\""
-  cmd="$cmd --add-dir $worker_dir"
-  [ -n "$session_id" ] && cmd="$cmd --resume $session_id"
+
+  if [ "$runtime" = "codex" ]; then
+    # Codex CLI
+    local cmd="codex -m $model"
+    if [ "$perm_mode" = "bypassPermissions" ]; then
+      cmd="$cmd --dangerously-bypass-approvals-and-sandbox"
+    else
+      cmd="$cmd -s workspace-write -a on-request"
+    fi
+    [ -n "$effort" ] && cmd="$cmd -c model_reasoning_effort=$effort"
+    cmd="$cmd --no-alt-screen"
+    if [ -n "$session_id" ]; then
+      # Codex resume uses a separate subcommand
+      cmd="codex resume $session_id"
+    fi
+  else
+    # Claude Code CLI (default)
+    local cmd="CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model $model"
+    [ "$perm_mode" = "bypassPermissions" ] && cmd="$cmd --dangerously-skip-permissions"
+    [ -n "$effort" ] && cmd="$cmd --effort $effort"
+    [ -n "$disallowed" ] && cmd="$cmd --disallowed-tools \"$disallowed\""
+    cmd="$cmd --add-dir $worker_dir"
+    [ -n "$session_id" ] && cmd="$cmd --resume $session_id"
+  fi
 
   echo "$cmd"
 }
+
+# Backward compat alias
+_build_claude_cmd() { _build_agent_cmd "$@"; }
 
 # ── Record a watchdog relaunch in registry ──
 _record_relaunch() {
@@ -361,16 +387,21 @@ _resume_in_pane() {
   # 4. Record relaunch + touch liveness so next watchdog pass skips
   _record_relaunch "$worker" "$reason"
 
-  # 5. Launch Claude
-  local claude_cmd
-  claude_cmd=$(_build_claude_cmd "$worker" "$prev_session_id")
-  tmux send-keys -t "$pane_id" "$claude_cmd" 2>/dev/null || true
+  # 5. Launch agent (Claude or Codex)
+  local agent_cmd
+  agent_cmd=$(_build_agent_cmd "$worker" "$prev_session_id")
+
+  # Determine runtime for TUI detection
+  local worker_runtime; worker_runtime=$(jq -r --arg n "$worker" '.[$n].custom.runtime // "claude"' "$REGISTRY" 2>/dev/null)
+  [ "$worker_runtime" = "null" ] && worker_runtime="claude"
+
+  tmux send-keys -t "$pane_id" "$agent_cmd" 2>/dev/null || true
   tmux send-keys -t "$pane_id" -H 0d 2>/dev/null || true
 
   if [ -n "$prev_session_id" ]; then
-    _log "RESUME: $worker — resuming session $prev_session_id in pane $pane_id (reason: $reason)"
+    _log "RESUME: $worker ($worker_runtime) — resuming session $prev_session_id in pane $pane_id (reason: $reason)"
   else
-    _log "RESUME: $worker — fresh start in pane $pane_id (reason: $reason)"
+    _log "RESUME: $worker ($worker_runtime) — fresh start in pane $pane_id (reason: $reason)"
   fi
 
   # 5. Wait for TUI + inject seed (background to not block watchdog)
@@ -378,7 +409,11 @@ _resume_in_pane() {
     sleep 8
     local wait=0
     local tui_ready=false
-    until tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; do
+    # TUI ready pattern differs by runtime
+    local tui_pattern="bypass permissions"
+    [ "$worker_runtime" = "codex" ] && tui_pattern="codex"
+
+    until tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5 | grep -qiF "$tui_pattern"; do
       sleep 3; wait=$((wait + 3))
       if [ "$wait" -ge 60 ]; then
         break
@@ -386,7 +421,7 @@ _resume_in_pane() {
     done
 
     # Hard gate: verify TUI is actually ready before pasting seed
-    if tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; then
+    if tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5 | grep -qiF "$tui_pattern"; then
       tui_ready=true
     fi
 
@@ -424,29 +459,36 @@ _registry_update_pane() {
     --arg n "$worker" --arg pid "$pane_id" --arg target "$pane_target"
 }
 
-# ── Re-launch Claude in a NEW pane (dead pane respawn) ────────────
+# ── Re-launch agent in a NEW pane (dead pane respawn) ─────────────
 _relaunch_claude() {
   local worker="$1" pane="$2" wt_dir="$3"
 
-  local claude_cmd
-  claude_cmd=$(_build_claude_cmd "$worker")
+  local agent_cmd
+  agent_cmd=$(_build_agent_cmd "$worker")
+
+  # Determine runtime for TUI detection
+  local worker_runtime; worker_runtime=$(jq -r --arg n "$worker" '.[$n].custom.runtime // "claude"' "$REGISTRY" 2>/dev/null)
+  [ "$worker_runtime" = "null" ] && worker_runtime="claude"
 
   tmux send-keys -t "$pane" "cd $wt_dir"
   tmux send-keys -t "$pane" -H 0d
   sleep 1
-  tmux send-keys -t "$pane" "$claude_cmd"
+  tmux send-keys -t "$pane" "$agent_cmd"
   tmux send-keys -t "$pane" -H 0d
 
-  # Inject seed after Claude TUI starts (background, with TUI gate)
+  # Inject seed after TUI starts (background, with TUI gate)
   (
     sleep 10
     local wait=0
-    until tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; do
+    local tui_pattern="bypass permissions"
+    [ "$worker_runtime" = "codex" ] && tui_pattern="codex"
+
+    until tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5 | grep -qiF "$tui_pattern"; do
       sleep 3; wait=$((wait + 3))
       [ "$wait" -ge 60 ] && break
     done
 
-    if ! tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5 | grep -qF 'bypass permissions'; then
+    if ! tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5 | grep -qiF "$tui_pattern"; then
       _log "RELAUNCH-WARN: $worker — TUI not ready after $((wait + 10))s, skipping seed"
       return
     fi

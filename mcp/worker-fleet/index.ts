@@ -336,6 +336,17 @@ function lintRegistry(registry: ProjectRegistry): DiagnosticIssue[] {
     if (!w.model) {
       issues.push({ severity: "warning", check: "lint.model", message: `Worker '${name}' has no model configured` });
     }
+
+    // Missing required fields
+    if (!w.status) {
+      issues.push({ severity: "warning", check: "lint.missing_status", message: `Worker '${name}' has no status` });
+    }
+    if (!w.branch) {
+      issues.push({ severity: "warning", check: "lint.missing_branch", message: `Worker '${name}' has no branch` });
+    }
+    if (!w.mission_file) {
+      issues.push({ severity: "warning", check: "lint.missing_mission", message: `Worker '${name}' has no mission_file` });
+    }
   }
 
   // Duplicate: two live panes for same worker
@@ -666,8 +677,9 @@ function buildMessageBody(content: string, context?: string, options?: string[])
 
 /** Resolve recipient — worker name, "report", "direct_reports", or raw pane ID */
 function resolveRecipient(to: string): {
-  type: "worker" | "pane" | "multi_pane";
+  type: "worker" | "pane" | "multi_pane" | "multi_worker";
   workerName?: string;
+  workerNames?: string[];
   paneId?: string;
   paneIds?: string[];
   error?: string;
@@ -678,6 +690,7 @@ function resolveRecipient(to: string): {
   }
 
   // "report" — find who this worker reports to (report_to → assigned_by → parent → mission_authority)
+  // Always returns worker type for durable inbox delivery
   if (to === "report") {
     try {
       const registry = readRegistry();
@@ -685,41 +698,39 @@ function resolveRecipient(to: string): {
       const myEntry = registry[WORKER_NAME] as RegistryWorkerEntry | undefined;
       const reportToName = myEntry ? getReportTo(myEntry, config) : config?.mission_authority;
       if (reportToName && reportToName !== WORKER_NAME) {
-        const reportToEntry = registry[reportToName] as RegistryWorkerEntry | undefined;
-        if (reportToEntry?.pane_id && isPaneAlive(reportToEntry.pane_id)) {
-          if (existsSync(join(WORKERS_DIR, reportToName))) {
-            return { type: "worker", workerName: reportToName };
-          }
-          return { type: "pane", paneId: reportToEntry.pane_id };
-        }
-        return { type: "pane", error: `'${reportToName}' (report_to for '${WORKER_NAME}') has no live pane` };
+        return { type: "worker", workerName: reportToName };
       }
-      return { type: "pane", error: `No report_to found for worker '${WORKER_NAME}'` };
+      return { type: "worker", error: `No report_to found for worker '${WORKER_NAME}'` };
     } catch {
-      return { type: "pane", error: "Failed to read registry" };
+      return { type: "worker", error: "Failed to read registry" };
     }
   }
 
   // "direct_reports" — find all workers who report_to this worker
+  // Returns worker names for durable inbox delivery + best-effort tmux
   if (to === "direct_reports") {
     try {
       const registry = readRegistry();
       const config = registry._config as RegistryConfig;
+      const workerNames: string[] = [];
       const paneIds: string[] = [];
       for (const [name, entry] of Object.entries(registry)) {
         if (name === "_config") continue;
         const w = entry as RegistryWorkerEntry;
         const reportTo = getReportTo(w, config);
-        if (reportTo === WORKER_NAME && w.pane_id && isPaneAlive(w.pane_id)) {
-          paneIds.push(w.pane_id);
+        if (reportTo === WORKER_NAME) {
+          workerNames.push(name);
+          if (w.pane_id && isPaneAlive(w.pane_id)) {
+            paneIds.push(w.pane_id);
+          }
         }
       }
-      if (paneIds.length === 0) {
-        return { type: "multi_pane", paneIds: [], error: "No workers reporting to you have live panes" };
+      if (workerNames.length === 0) {
+        return { type: "multi_worker", workerNames: [], paneIds: [], error: "No workers reporting to you" };
       }
-      return { type: "multi_pane", paneIds };
+      return { type: "multi_worker", workerNames, paneIds };
     } catch {
-      return { type: "multi_pane", error: "Failed to read registry" };
+      return { type: "multi_worker", error: "Failed to read registry" };
     }
   }
 
@@ -1183,17 +1194,51 @@ Use to="user" to escalate to the human operator (writes to triage queue + deskto
       return { content: [{ type: "text" as const, text: `Error: ${resolved.error}` }], isError: true };
     }
 
-    // Multi-pane (children) — tmux delivery to each child
+    // Multi-worker (direct_reports) — durable inbox to each child + best-effort tmux
+    if (resolved.type === "multi_worker") {
+      const workerNames = resolved.workerNames || [];
+      const inboxSuccesses: string[] = [];
+      const inboxFailures: string[] = [];
+      const tmuxSuccesses: string[] = [];
+
+      for (const childName of workerNames) {
+        // Durable inbox (critical path)
+        const inboxRes = writeToInbox(childName, {
+          content: body, summary, from_name: WORKER_NAME,
+          ack_required: !fyi, in_reply_to, reply_type, options, urgency,
+        });
+        if (inboxRes.ok) {
+          inboxSuccesses.push(childName);
+        } else {
+          inboxFailures.push(childName);
+        }
+
+        // Best-effort tmux overlay
+        try {
+          const registry = readRegistry();
+          const childEntry = registry[childName] as RegistryWorkerEntry | undefined;
+          if (childEntry?.pane_id && isPaneAlive(childEntry.pane_id)) {
+            tmuxSendMessage(childEntry.pane_id, `[msg from ${WORKER_NAME}] ${body}`);
+            tmuxSuccesses.push(childName);
+          }
+        } catch {}
+      }
+
+      let result = inboxSuccesses.length > 0
+        ? `Inbox delivered to ${inboxSuccesses.length} direct reports: ${inboxSuccesses.join(", ")}`
+        : "No direct reports to deliver to";
+      if (tmuxSuccesses.length > 0) result += `\nTmux overlay: ${tmuxSuccesses.join(", ")}`;
+      if (inboxFailures.length > 0) result += `\nInbox failed: ${inboxFailures.join(", ")}`;
+      return { content: [{ type: "text" as const, text: result }], isError: inboxSuccesses.length === 0 };
+    }
+
+    // Legacy multi-pane (shouldn't hit this anymore, kept for safety)
     if (resolved.type === "multi_pane") {
       const paneIds = resolved.paneIds!;
       const successes: string[] = [];
       const failures: string[] = [];
-      const dead: string[] = [];
       for (const pId of paneIds) {
-        if (!isPaneAlive(pId)) {
-          dead.push(pId);
-          continue;
-        }
+        if (!isPaneAlive(pId)) continue;
         try {
           tmuxSendMessage(pId, `[msg from ${WORKER_NAME}] ${body}`);
           successes.push(pId);
@@ -1202,9 +1247,8 @@ Use to="user" to escalate to the human operator (writes to triage queue + deskto
         }
       }
       let result = successes.length > 0
-        ? `Sent to ${successes.length} direct reports: ${successes.join(", ")}`
-        : "No live direct reports to deliver to";
-      if (dead.length > 0) result += `\nDead panes (skipped): ${dead.join(", ")}`;
+        ? `Sent to ${successes.length} panes: ${successes.join(", ")}`
+        : "No live panes to deliver to";
       if (failures.length > 0) result += `\nFailed: ${failures.join(", ")}`;
       return { content: [{ type: "text" as const, text: result }], isError: successes.length === 0 };
     }
@@ -1942,26 +1986,27 @@ server.registerTool(
       const model = getWorkerModel();
       const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
       const worktreeDir = getWorktreeDir();
-      const resumeCmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model} --dangerously-skip-permissions --add-dir ${workerDir} --resume ${sessionId}`;
+      const rt = getWorkerRuntime();
+      const resumeCmd = rt.buildResumeCmd({ model, permissionMode: "bypassPermissions", workerDir, sessionId });
 
       const reloadScript = `/tmp/reload-${WORKER_NAME}-${Date.now()}.sh`;
       writeFileSync(reloadScript, `#!/bin/bash
 set -uo pipefail
 PANE_ID="${ownPane.paneId}"
 sleep 3
-tmux send-keys -t "$PANE_ID" "/exit"
+tmux send-keys -t "$PANE_ID" "${rt.exitCommand}"
 tmux send-keys -t "$PANE_ID" -H 0d
 WAIT=0
 while [ "$WAIT" -lt 30 ]; do
   sleep 2; WAIT=$((WAIT+2))
   PANE_PID=$(tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null | awk -v id="$PANE_ID" '$1 == id {print $2}')
   [ -z "$PANE_PID" ] && { echo "FATAL: pane gone"; exit 1; }
-  CLAUDE_RUNNING=false
+  AGENT_RUNNING=false
   for pid in $(pgrep -P "$PANE_PID" 2>/dev/null); do
     cmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
-    [[ "$cmd" == *claude* ]] && CLAUDE_RUNNING=true && break
+    [[ "$cmd" == *${rt.binary}* ]] && AGENT_RUNNING=true && break
   done
-  [ "$CLAUDE_RUNNING" = "false" ] && break
+  [ "$AGENT_RUNNING" = "false" ] && break
 done
 sleep 2
 tmux send-keys -t "$PANE_ID" "cd ${worktreeDir}"
@@ -1987,6 +2032,7 @@ rm -f "${reloadScript}"
     // 5. Get config
     const model = getWorkerModel();
     const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
+    const rt = getWorkerRuntime();
 
     // 7. Generate seed file (includes handoff + transcript path)
     const seedHandoff = message || "";
@@ -2000,35 +2046,39 @@ rm -f "${reloadScript}"
     // 8. Create recycle script
     // Key fix: use /exit via tmux instead of kill — keeps pane alive
     const recycleScript = `/tmp/recycle-${WORKER_NAME}-${Date.now()}.sh`;
-    const claudeCmd = `claude --model ${model} --dangerously-skip-permissions --add-dir ${workerDir}`;
+    const entry = getWorkerEntry(WORKER_NAME);
+    const permMode = entry?.permission_mode || "bypassPermissions";
+    const disallowed = Array.isArray(entry?.disallowed_tools) ? entry!.disallowed_tools.join(",") : "";
+    const effort = entry?.custom?.reasoning_effort as ReasoningEffort | undefined;
+    const agentLaunchCmd = rt.buildLaunchCmd({ model, permissionMode: permMode, disallowedTools: disallowed || undefined, workerDir, reasoningEffort: effort });
+    const tuiPatternStr = rt.tuiReadyPattern.source;
 
     writeFileSync(recycleScript, `#!/bin/bash
-# Auto-generated recycle script for ${WORKER_NAME}
+# Auto-generated recycle script for ${WORKER_NAME} (runtime: ${rt.type})
 set -uo pipefail
 PANE_ID="${ownPane.paneId}"
 PANE_TARGET="${ownPane.paneTarget}"
 SEED_FILE="${seedFile}"
 
-# Wait for MCP tool response to propagate to Claude TUI
+# Wait for MCP tool response to propagate to TUI
 sleep 5
 
-# Send /exit to Claude (graceful — keeps pane alive with shell prompt)
-tmux send-keys -t "$PANE_ID" "/exit"
+# Send exit command (graceful — keeps pane alive with shell prompt)
+tmux send-keys -t "$PANE_ID" "${rt.exitCommand}"
 tmux send-keys -t "$PANE_ID" -H 0d
 
-# Wait for Claude to exit and shell prompt to return (max 30s)
+# Wait for agent to exit and shell prompt to return (max 30s)
 WAIT=0
 while [ "$WAIT" -lt 30 ]; do
   sleep 2; WAIT=$((WAIT+2))
-  # Check if Claude is still running in this pane
   PANE_PID=$(tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null | awk -v id="$PANE_ID" '$1 == id {print $2}')
   [ -z "$PANE_PID" ] && { echo "FATAL: pane $PANE_ID gone"; exit 1; }
-  CLAUDE_RUNNING=false
+  AGENT_RUNNING=false
   for pid in $(pgrep -P "$PANE_PID" 2>/dev/null); do
     cmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
-    [[ "$cmd" == *claude* ]] && CLAUDE_RUNNING=true && break
+    [[ "$cmd" == *${rt.binary}* ]] && AGENT_RUNNING=true && break
   done
-  [ "$CLAUDE_RUNNING" = "false" ] && break
+  [ "$AGENT_RUNNING" = "false" ] && break
 done
 
 # Small delay for shell prompt to stabilize
@@ -2039,13 +2089,13 @@ tmux send-keys -t "$PANE_ID" "cd ${worktreeDir}"
 tmux send-keys -t "$PANE_ID" -H 0d
 sleep 1
 
-# Launch Claude
-tmux send-keys -t "$PANE_ID" "${claudeCmd}"
+# Launch agent
+tmux send-keys -t "$PANE_ID" "${agentLaunchCmd}"
 tmux send-keys -t "$PANE_ID" -H 0d
 
 # Wait for TUI ready (poll for statusline, max 90s)
 WAIT=0
-until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -qE "bypass permissions|Context left"; do
+until tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -qE "${tuiPatternStr}"; do
   sleep 3; WAIT=$((WAIT+3))
   [ "$WAIT" -ge 90 ] && break
 done
@@ -2095,6 +2145,112 @@ type WorkerType = "implementer" | "monitor" | "coordinator" | "optimizer" | "ver
 type WorkerRuntime = "claude" | "codex";
 
 type ReasoningEffort = "low" | "medium" | "high" | "extra_high";
+
+// ── Runtime Configuration ─────────────────────────────────────────────
+// Abstract interface for Claude vs Codex CLI differences.
+
+interface RuntimeLaunchOpts {
+  model: string;
+  permissionMode: string;
+  disallowedTools?: string;
+  workerDir: string;
+  reasoningEffort?: ReasoningEffort;
+}
+
+interface RuntimeResumeOpts {
+  model: string;
+  permissionMode: string;
+  workerDir: string;
+  sessionId: string;
+}
+
+interface RuntimeConfig {
+  type: WorkerRuntime;
+  binary: string;
+  defaultModel: string;
+  buildLaunchCmd(opts: RuntimeLaunchOpts): string;
+  buildResumeCmd(opts: RuntimeResumeOpts): string;
+  buildForkCmd(opts: RuntimeResumeOpts): string;
+  exitCommand: string;
+  processPattern: RegExp;
+  tuiReadyPattern: RegExp;
+  buildEnv(): Record<string, string>;
+}
+
+const CLAUDE_RUNTIME: RuntimeConfig = {
+  type: "claude",
+  binary: "claude",
+  defaultModel: "opus",
+  buildLaunchCmd({ model, permissionMode, disallowedTools, workerDir, reasoningEffort }) {
+    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    if (permissionMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
+    if (reasoningEffort) cmd += ` --effort ${reasoningEffort}`;
+    if (disallowedTools) cmd += ` --disallowed-tools "${disallowedTools}"`;
+    cmd += ` --add-dir ${workerDir}`;
+    return cmd;
+  },
+  buildResumeCmd({ model, permissionMode, workerDir, sessionId }) {
+    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    if (permissionMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
+    cmd += ` --add-dir ${workerDir} --resume ${sessionId}`;
+    return cmd;
+  },
+  buildForkCmd({ model, permissionMode, workerDir, sessionId }) {
+    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    if (permissionMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
+    cmd += ` --add-dir ${workerDir} --resume ${sessionId} --fork-session`;
+    return cmd;
+  },
+  exitCommand: "/exit",
+  processPattern: /claude/,
+  tuiReadyPattern: /bypass permissions|Context left/,
+  buildEnv() {
+    return { CLAUDE_CODE_SKIP_PROJECT_LOCK: "1" };
+  },
+};
+
+const CODEX_RUNTIME: RuntimeConfig = {
+  type: "codex",
+  binary: "codex",
+  defaultModel: "gpt-5.4",
+  buildLaunchCmd({ model, permissionMode, reasoningEffort }) {
+    let cmd = `codex -m ${model}`;
+    if (permissionMode === "bypassPermissions") cmd += " --dangerously-bypass-approvals-and-sandbox";
+    else cmd += " -s workspace-write -a on-request";
+    if (reasoningEffort) cmd += ` -c model_reasoning_effort=${reasoningEffort}`;
+    cmd += " --no-alt-screen";
+    return cmd;
+  },
+  buildResumeCmd({ sessionId }) {
+    return `codex resume ${sessionId}`;
+  },
+  buildForkCmd({ sessionId }) {
+    return `codex fork ${sessionId}`;
+  },
+  exitCommand: "/exit",
+  processPattern: /codex/,
+  tuiReadyPattern: /codex|ready/i,
+  buildEnv() {
+    return {};
+  },
+};
+
+const RUNTIMES: Record<WorkerRuntime, RuntimeConfig> = {
+  claude: CLAUDE_RUNTIME,
+  codex: CODEX_RUNTIME,
+};
+
+/** Get the RuntimeConfig for a worker by name. Reads custom.runtime from registry. */
+function getWorkerRuntime(workerName?: string): RuntimeConfig {
+  const name = workerName || WORKER_NAME;
+  try {
+    const entry = getWorkerEntry(name);
+    const rt = (entry?.custom?.runtime as WorkerRuntime) || "claude";
+    return RUNTIMES[rt] || CLAUDE_RUNTIME;
+  } catch {
+    return CLAUDE_RUNTIME;
+  }
+}
 
 interface CreateWorkerInput {
   name: string;
@@ -2553,6 +2709,131 @@ server.registerTool(
   }
 );
 
+// ── Shared pane-move logic ──────────────────────────────────────────────
+/** Move a worker's tmux pane to a target window. Returns a status string. */
+function moveWorkerPane(
+  paneId: string,
+  tmuxSession: string,
+  targetWindow: string,
+): string {
+  try {
+    // Normalize common typos
+    if (targetWindow === "stand-by") targetWindow = "standby";
+    spawnSync("tmux", ["rename-window", "-t", `${tmuxSession}:stand-by`, "standby"], { encoding: "utf-8" });
+
+    // Ensure target window exists
+    const windowCheck = spawnSync("tmux", ["list-windows", "-t", tmuxSession, "-F", "#{window_name}"], { encoding: "utf-8" });
+    const windows = (windowCheck.stdout || "").split("\n").map(w => w.trim());
+    if (!windows.includes(targetWindow)) {
+      spawnSync("tmux", ["new-window", "-t", tmuxSession, "-n", targetWindow, "-d"], { encoding: "utf-8" });
+    }
+
+    // Move the pane
+    const moveRes = spawnSync("tmux", ["move-pane", "-s", paneId, "-t", `${tmuxSession}:${targetWindow}`], { encoding: "utf-8" });
+    if (moveRes.status === 0) {
+      spawnSync("tmux", ["select-layout", "-t", `${tmuxSession}:${targetWindow}`, "tiled"], { encoding: "utf-8" });
+      return `Pane ${paneId}: moved to ${tmuxSession}:${targetWindow}`;
+    } else {
+      return `Pane ${paneId}: move failed — ${(moveRes.stderr || "").trim()}`;
+    }
+  } catch (e: any) {
+    return `Pane move error: ${e.message}`;
+  }
+}
+
+server.registerTool(
+  "move_window",
+  {
+    description: "Move a worker's pane to a different tmux window. Worker stays alive. Moving to 'standby' sets status=standby (watchdog ignores). Auth: self or mission_authority.",
+    inputSchema: {
+      name: z.string().optional().describe("Worker to move (default: yourself). Only mission_authority can move other workers."),
+      window: z.string().describe("Target tmux window name (e.g. 'background', 'standby', 'optimizers')"),
+      reason: z.string().optional().describe("Why it's being moved"),
+    },
+  },
+  async ({ name, window: targetWindow, reason }) => {
+    const targetName = name || WORKER_NAME;
+
+    // Authorization: self or mission_authority
+    const _mwRegistry = readRegistry();
+    const _mwConfig = _mwRegistry._config as RegistryConfig | undefined;
+    const _mwAuth = _mwConfig?.mission_authority || "chief-of-staff";
+    if (targetName !== WORKER_NAME && WORKER_NAME !== _mwAuth) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Only ${_mwAuth} (mission_authority) can move other workers. Contact ${_mwAuth}.`,
+        }],
+        isError: true,
+      };
+    }
+
+    const existing = getWorkerEntry(targetName);
+    if (!existing) {
+      return {
+        content: [{ type: "text" as const, text: `Worker '${targetName}' not found in registry.` }],
+        isError: true,
+      };
+    }
+
+    const paneId = existing.pane_id;
+    const tmuxSession = existing.tmux_session || "w";
+
+    if (!paneId) {
+      return {
+        content: [{ type: "text" as const, text: `Worker '${targetName}' has no pane_id — cannot move.` }],
+        isError: true,
+      };
+    }
+
+    // Move the pane
+    const moveResult = moveWorkerPane(paneId, tmuxSession, targetWindow);
+
+    // Update registry
+    const previousWindow = existing.window;
+    const isMovingToStandby = targetWindow === "standby";
+    const isMovingFromStandby = existing.status === "standby" && targetWindow !== "standby";
+
+    withRegistryLocked((registry) => {
+      const entry = registry[targetName] as RegistryWorkerEntry;
+      if (entry) {
+        entry.window = targetWindow;
+        if (isMovingToStandby) {
+          entry.status = "standby";
+        } else if (isMovingFromStandby) {
+          entry.status = "active";
+        }
+      }
+    });
+
+    // Write handoff if going to standby
+    if (isMovingToStandby && reason) {
+      try {
+        const handoffPath = join(WORKERS_DIR, targetName, "handoff.md");
+        const timestamp = new Date().toISOString();
+        writeFileSync(handoffPath, `# Standby\n\n**At:** ${timestamp}\n**Reason:** ${reason}\n\nWorker is in standby — registered but not running. Call move_window(name="${targetName}", window="${previousWindow || targetName}") to wake.\n`);
+      } catch {}
+    }
+
+    const statusChange = isMovingToStandby
+      ? " status=standby (watchdog will ignore)"
+      : isMovingFromStandby
+        ? " status=active (woken from standby)"
+        : "";
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: [
+          `Worker '${targetName}' moved: ${previousWindow || "?"} → ${targetWindow}.${statusChange}`,
+          `  ${moveResult}`,
+          reason ? `  Reason: ${reason}` : null,
+        ].filter(Boolean).join("\n"),
+      }],
+    };
+  }
+);
+
 server.registerTool(
   "standby",
   {
@@ -2592,32 +2873,13 @@ server.registerTool(
 
     if (isStandby) {
       // ── WAKE UP: standby → active ──
-      // The worker is still alive in its pane (just moved to w:standby).
-      // Move the pane back to its original window — no new launch needed.
+      // Move the pane back to its original window
       const paneId = existing.pane_id;
       const originalWindow = existing.window || targetName;
       let moveResult = "";
 
       if (paneId) {
-        try {
-          // Check if original window still exists; create if not
-          const windowCheck = spawnSync("tmux", ["list-windows", "-t", tmuxSession, "-F", "#{window_name}"], { encoding: "utf-8" });
-          const windows = (windowCheck.stdout || "").split("\n").map(w => w.trim());
-          if (!windows.includes(originalWindow)) {
-            spawnSync("tmux", ["new-window", "-t", tmuxSession, "-n", originalWindow, "-d"], { encoding: "utf-8" });
-          }
-
-          // Move pane back from standby to original window
-          const moveRes = spawnSync("tmux", ["move-pane", "-s", paneId, "-t", `${tmuxSession}:${originalWindow}`], { encoding: "utf-8" });
-          if (moveRes.status === 0) {
-            moveResult = `Pane ${paneId}: moved back to ${tmuxSession}:${originalWindow}`;
-            spawnSync("tmux", ["select-layout", "-t", `${tmuxSession}:${originalWindow}`, "tiled"], { encoding: "utf-8" });
-          } else {
-            moveResult = `Pane ${paneId}: move failed — ${(moveRes.stderr || "").trim()}`;
-          }
-        } catch (e: any) {
-          moveResult = `Pane move error: ${e.message}`;
-        }
+        moveResult = moveWorkerPane(paneId, tmuxSession, originalWindow);
       } else {
         moveResult = "No pane_id in registry — pane may have been killed";
       }
@@ -2626,6 +2888,8 @@ server.registerTool(
         const entry = registry[targetName] as RegistryWorkerEntry;
         if (entry) {
           entry.status = "active";
+          // Restore window to original (move_window set it to "standby")
+          if (originalWindow !== "standby") entry.window = originalWindow;
         }
       });
 
@@ -2664,7 +2928,10 @@ server.registerTool(
         }).join("\n")
       : "";
 
-    // Set status = standby in registry
+    // Set status = standby and move pane
+    const paneId = existing.pane_id;
+    let moveResult = "";
+
     withRegistryLocked((registry) => {
       const entry = registry[targetName] as RegistryWorkerEntry;
       if (entry) {
@@ -2672,33 +2939,8 @@ server.registerTool(
       }
     });
 
-    // Move pane to "standby" window
-    const paneId = existing.pane_id;
-    let moveResult = "";
-
     if (paneId) {
-      try {
-        // Normalize: rename "stand-by" → "standby" if exists
-        spawnSync("tmux", ["rename-window", "-t", `${tmuxSession}:stand-by`, "standby"], { encoding: "utf-8" });
-
-        // Ensure "standby" window exists
-        const windowCheck = spawnSync("tmux", ["list-windows", "-t", tmuxSession, "-F", "#{window_name}"], { encoding: "utf-8" });
-        const windows = (windowCheck.stdout || "").split("\n").map(w => w.trim());
-        if (!windows.includes("standby")) {
-          spawnSync("tmux", ["new-window", "-t", tmuxSession, "-n", "standby", "-d"], { encoding: "utf-8" });
-        }
-
-        // Move the pane into standby window
-        const moveRes = spawnSync("tmux", ["move-pane", "-s", paneId, "-t", `${tmuxSession}:standby`], { encoding: "utf-8" });
-        if (moveRes.status === 0) {
-          moveResult = `Pane ${paneId}: moved to ${tmuxSession}:standby`;
-          spawnSync("tmux", ["select-layout", "-t", `${tmuxSession}:standby`, "tiled"], { encoding: "utf-8" });
-        } else {
-          moveResult = `Pane ${paneId}: move failed — ${(moveRes.stderr || "").trim()}`;
-        }
-      } catch (e: any) {
-        moveResult = `Pane move error: ${e.message}`;
-      }
+      moveResult = moveWorkerPane(paneId, tmuxSession, "standby");
     } else {
       moveResult = "No active pane to move";
     }
@@ -2907,5 +3149,6 @@ export {
   WORKER_NAME, WORKERS_DIR, HARNESS_LOCK_DIR, REGISTRY_PATH,
   type Task, type InboxCursor, type DiagnosticIssue,
   type RegistryConfig, type RegistryWorkerEntry, type ProjectRegistry,
-  type WorkerRuntime, type ReasoningEffort,
+  type WorkerRuntime, type ReasoningEffort, type RuntimeConfig,
+  getWorkerRuntime, RUNTIMES,
 };

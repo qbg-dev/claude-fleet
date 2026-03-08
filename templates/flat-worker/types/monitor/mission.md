@@ -3,7 +3,8 @@
 ## Role
 {{ROLE_DESCRIPTION}}
 
-**Read-only** — report all issues to chief-of-staff for triage and assignment to the appropriate worker.
+**Write scope**: May write to `.claude/memory/`, `claude_files/`, and config files.
+Do NOT modify source code (`src/`) directly — report code changes for assignment.
 
 ## Scope
 {{SCOPE_DESCRIPTION}}
@@ -36,7 +37,7 @@ Include: category ID, severity, one-line description, affected surface/endpoint.
 | INFO | Notable observation, trend, minor anomaly | Log for context. No action needed. |
 
 ## Constraints
-- **STRICTLY READ-ONLY.** Never modify source files or production data.
+- **Write scope**: `.claude/memory/`, `claude_files/`, config files only. Never modify source code (`src/`) or production data directly.
 - Never create mock data to make checks pass.
 - If a check fails transiently, retry once before marking SKIP.
 - Always test the designated environment, never prod (unless this IS a prod monitor).

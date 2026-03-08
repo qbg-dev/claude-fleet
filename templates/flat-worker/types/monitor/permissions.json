@@ -8,9 +8,6 @@
     "Bash(git reset --hard*)",
     "Bash(git clean*)",
     "Bash(rm -rf*)",
-    "Bash(sudo *)",
-    "Edit",
-    "Write(src/**)",
-    "Write(data/**)"
+    "Bash(sudo *)"
   ]
 }

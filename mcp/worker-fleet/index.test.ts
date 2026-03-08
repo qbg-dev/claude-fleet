@@ -1269,11 +1269,11 @@ describe("lintRegistry", () => {
 });
 
 describe("resolveRecipient — direct_reports", () => {
-  test("direct_reports → type multi_pane", () => {
+  test("direct_reports → type multi_worker with durable inbox", () => {
     const result = resolveRecipient("direct_reports");
-    expect(result.type).toBe("multi_pane");
-    // paneIds array always present (may be empty if no direct reports registered)
-    expect(Array.isArray(result.paneIds)).toBe(true);
+    expect(result.type).toBe("multi_worker");
+    // workerNames array always present (may be empty if no direct reports registered)
+    expect(Array.isArray(result.workerNames)).toBe(true);
   });
 });
 
@@ -1818,10 +1818,10 @@ describe("resolveRecipient — comprehensive", () => {
     expect(result.type).toBeDefined();
   });
 
-  test("direct_reports → type multi_pane", () => {
+  test("direct_reports → type multi_worker with durable inbox", () => {
     const result = resolveRecipient("direct_reports");
-    expect(result.type).toBe("multi_pane");
-    expect(Array.isArray(result.paneIds)).toBe(true);
+    expect(result.type).toBe("multi_worker");
+    expect(Array.isArray(result.workerNames)).toBe(true);
   });
 
   test("empty string → treated as worker name", () => {
@@ -1880,7 +1880,7 @@ describe("lintRegistry — comprehensive", () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe("createWorkerFiles — type templates", () => {
-  test("type=monitor sets opus, perpetual=true, read-only denyList", () => {
+  test("type=monitor sets opus, perpetual=true, write-enabled denyList (no Edit/Write restrictions)", () => {
     const result = createWorkerFiles({
       name: "tpl-monitor-test",
       mission: "# Test Monitor",
@@ -1890,7 +1890,11 @@ describe("createWorkerFiles — type templates", () => {
     expect(result.model).toBe("opus");
     expect(result.perpetual).toBe(true);
     expect(result.state?.sleep_duration).toBe(1800);
-    expect(result.permissions?.disallowedTools).toContain("Edit");
+    // Monitor type no longer restricts Edit/Write — only git safety guards
+    expect(result.permissions?.disallowedTools).not.toContain("Edit");
+    expect(result.permissions?.disallowedTools).not.toContain("Write(src/**)");
+    expect(result.permissions?.disallowedTools).not.toContain("Write(data/**)");
+    expect(result.permissions?.disallowedTools).toContain("Bash(git push*)");
   });
 
   test("type=implementer sets opus, perpetual=false", () => {
