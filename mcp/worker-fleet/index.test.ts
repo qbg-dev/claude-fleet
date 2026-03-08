@@ -503,6 +503,49 @@ describe("buildMessageBody", () => {
   test("empty options array is ignored", () => {
     expect(buildMessageBody("hello", undefined, [])).toBe("hello");
   });
+
+  test("empty string context is still rendered", () => {
+    // Empty string is falsy, so context separator should NOT appear
+    expect(buildMessageBody("hello", "")).toBe("hello");
+  });
+
+  test("single option", () => {
+    const result = buildMessageBody("pick", undefined, ["Only choice"]);
+    expect(result).toContain("  1) Only choice");
+    expect(result).not.toContain("  2)");
+  });
+
+  test("options with special characters", () => {
+    const result = buildMessageBody("pick", undefined, [
+      'Deploy with --service static',
+      'Skip deploy (docs only)',
+      'Ask 黄老师 for help',
+    ]);
+    expect(result).toContain("  1) Deploy with --service static");
+    expect(result).toContain("  2) Skip deploy (docs only)");
+    expect(result).toContain("  3) Ask 黄老师 for help");
+  });
+
+  test("context with markdown table", () => {
+    const ctx = "| Col A | Col B |\n|-------|-------|\n| 1     | 2     |";
+    const result = buildMessageBody("review", ctx);
+    expect(result).toContain("---\n| Col A | Col B |");
+  });
+
+  test("multiline content preserved", () => {
+    const result = buildMessageBody("line1\nline2\nline3", "ctx", ["A"]);
+    expect(result).toStartWith("line1\nline2\nline3");
+    expect(result).toContain("---\nctx");
+    expect(result).toContain("  1) A");
+  });
+
+  test("options ordering is stable (10+ options)", () => {
+    const opts = Array.from({ length: 12 }, (_, i) => `Option ${i + 1}`);
+    const result = buildMessageBody("many choices", undefined, opts);
+    expect(result).toContain("  1) Option 1");
+    expect(result).toContain("  10) Option 10");
+    expect(result).toContain("  12) Option 12");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -555,6 +598,62 @@ describe("writeToTriageQueue — extended opts", () => {
     const entry = JSON.parse(lines[lines.length - 1]);
     expect(entry.category).toBe("worker-escalation");
   });
+
+  test("empty options array does NOT set category to worker-question", () => {
+    const result = writeToTriageQueue("msg", "msg", "test-bot", { options: [] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const queuePath = join(process.env.PROJECT_ROOT || process.cwd(), ".claude/triage/queue.jsonl");
+    const lines = readFileSync(queuePath, "utf-8").trim().split("\n");
+    const entry = JSON.parse(lines[lines.length - 1]);
+    expect(entry.category).toBe("worker-escalation"); // empty array = no options
+    expect(entry.options).toBeUndefined(); // empty array not stored
+  });
+
+  test("all opts fields together", () => {
+    const result = writeToTriageQueue("full", "full msg", "test-bot", {
+      options: ["X", "Y", "Z"],
+      category: "coordination",
+      urgency: "high",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const queuePath = join(process.env.PROJECT_ROOT || process.cwd(), ".claude/triage/queue.jsonl");
+    const lines = readFileSync(queuePath, "utf-8").trim().split("\n");
+    const entry = JSON.parse(lines[lines.length - 1]);
+    expect(entry.category).toBe("coordination");
+    expect(entry.urgency).toBe("high");
+    expect(entry.options).toEqual(["X", "Y", "Z"]);
+    expect(entry.from_worker).toBe("test-bot");
+    expect(entry.source).toBe("test-bot");
+  });
+
+  test("urgency without options stays worker-escalation", () => {
+    const result = writeToTriageQueue("urgent", "urgent", "bot", { urgency: "high" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const queuePath = join(process.env.PROJECT_ROOT || process.cwd(), ".claude/triage/queue.jsonl");
+    const lines = readFileSync(queuePath, "utf-8").trim().split("\n");
+    const entry = JSON.parse(lines[lines.length - 1]);
+    expect(entry.category).toBe("worker-escalation");
+    expect(entry.urgency).toBe("high");
+  });
+
+  test("options with Chinese text", () => {
+    const result = writeToTriageQueue("选择", "选择方案", "bot", {
+      options: ["部署到测试", "跳过部署", "联系黄老师"],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const queuePath = join(process.env.PROJECT_ROOT || process.cwd(), ".claude/triage/queue.jsonl");
+    const lines = readFileSync(queuePath, "utf-8").trim().split("\n");
+    const entry = JSON.parse(lines[lines.length - 1]);
+    expect(entry.options).toEqual(["部署到测试", "跳过部署", "联系黄老师"]);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -576,6 +675,69 @@ describe("writeToInbox — options & urgency", () => {
     expect(msg.options).toEqual(["A", "B"]);
     expect(msg.urgency).toBe("high");
     expect(msg.msg_id).toBe(result.msg_id);
+  });
+
+  test("options without urgency — urgency field absent", () => {
+    const result = writeToInbox("test-worker", {
+      content: "pick one", from_name: "sender",
+      options: ["X", "Y"],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const inboxPath = join(WORKERS_DIR, "test-worker", "inbox.jsonl");
+    const lines = readFileSync(inboxPath, "utf-8").trim().split("\n");
+    const msg = JSON.parse(lines[lines.length - 1]);
+    expect(msg.options).toEqual(["X", "Y"]);
+    expect(msg.urgency).toBeUndefined();
+  });
+
+  test("urgency without options — options field absent", () => {
+    const result = writeToInbox("test-worker", {
+      content: "urgent msg", from_name: "sender",
+      urgency: "low",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const inboxPath = join(WORKERS_DIR, "test-worker", "inbox.jsonl");
+    const lines = readFileSync(inboxPath, "utf-8").trim().split("\n");
+    const msg = JSON.parse(lines[lines.length - 1]);
+    expect(msg.urgency).toBe("low");
+    expect(msg.options).toBeUndefined();
+  });
+
+  test("empty options array — options field absent", () => {
+    const result = writeToInbox("test-worker", {
+      content: "no options", from_name: "sender",
+      options: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const inboxPath = join(WORKERS_DIR, "test-worker", "inbox.jsonl");
+    const lines = readFileSync(inboxPath, "utf-8").trim().split("\n");
+    const msg = JSON.parse(lines[lines.length - 1]);
+    expect(msg.options).toBeUndefined();
+  });
+
+  test("all extended fields together with ack and reply_type", () => {
+    const result = writeToInbox("test-worker", {
+      content: "complex msg", summary: "complex", from_name: "sender",
+      ack_required: true, reply_type: "review",
+      options: ["Approve", "Reject", "Defer"], urgency: "high",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const inboxPath = join(WORKERS_DIR, "test-worker", "inbox.jsonl");
+    const lines = readFileSync(inboxPath, "utf-8").trim().split("\n");
+    const msg = JSON.parse(lines[lines.length - 1]);
+    expect(msg.options).toEqual(["Approve", "Reject", "Defer"]);
+    expect(msg.urgency).toBe("high");
+    expect(msg.reply_type).toBe("review");
+    expect(msg.ack_required).toBe(true);
+    expect(msg.summary).toBe("complex");
   });
 });
 
