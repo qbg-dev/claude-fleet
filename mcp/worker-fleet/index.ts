@@ -1964,325 +1964,6 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
   return { ok: true, workerDir, model: selectedModel, runtime: resolvedRuntime, perpetual: isPerpetual, taskIds, tasks: tasksObj, state, permissions };
 }
 
-server.registerTool(
-  "create_worker",
-  { description: "Create a new autonomous worker with its own mission, git worktree, task queue, and inbox. Each worker runs as an independent Claude (or Codex) session in a dedicated tmux pane. Use when a domain of work warrants a dedicated agent — feature implementation, ongoing monitoring, specialized repair, or continuous optimization. The worker gets: a .claude/workers/<name>/ directory (mission.md, tasks.json, inbox.jsonl), a git worktree branched from HEAD, and a registry entry. Set launch=true to start immediately, or launch manually later. Worker names must be unique across the fleet.", inputSchema: {
-    name: z.string().describe("Unique worker name in kebab-case (e.g. 'chatbot-fix', 'deploy-monitor'). Used as directory name, git branch suffix, and tmux identifier"),
-    mission: z.string().describe("Full mission.md content in markdown. Defines the worker's objectives, scope, constraints, and acceptance criteria. This is the worker's primary instruction document"),
-    type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("Worker archetype that sets model, permissions, perpetual/sleep defaults from a template. You still write the mission. Use get_worker_template() to preview what each type provides before choosing"),
-    runtime: z.enum(["claude", "codex"]).optional().describe("Execution engine. 'claude' (default): Claude Code CLI — best for open-ended exploration, complex reasoning, creative problem-solving. 'codex': OpenAI Codex CLI — best for well-specified tasks, logical/structured work, verification, strict instruction-following"),
-    model: z.string().optional().describe("LLM model, overriding type/runtime defaults. Claude models: sonnet, opus, haiku. Codex models: gpt-5.4, o3, o4-mini"),
-    reasoning_effort: z.enum(["low", "medium", "high", "extra_high"]).optional().describe("Controls depth of reasoning. Higher = more thorough but slower/costlier. Both Claude (--effort) and Codex (-c model_reasoning_effort) support this. Default: 'high'"),
-    perpetual: z.boolean().optional().describe("If true, worker runs in an infinite recycle loop (work → sleep → recycle → repeat). If false (default), worker runs a single session. Overrides type default when set"),
-    sleep_duration: z.number().optional().describe("Seconds to sleep between perpetual cycles (only meaningful when perpetual=true). Default: 1800 (30 min). Overrides type default when set"),
-    disallowed_tools: z.string().optional().describe("JSON array of tool deny-list patterns. Default includes safe git/rm guards. Example: '[\"Bash(git push*)\",\"Edit\",\"Bash(*deploy*)\"]'"),
-    window: z.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers assigned to the same group share a tiled layout within that window"),
-    window_index: z.number().optional().describe("Explicit tmux window index (e.g. 10, 11). Only used when creating a NEW window — ignored if the window group already exists. Avoids 'index N in use' errors when all default indices are taken"),
-    report_to: z.string().optional().describe("Worker or role this worker reports to. Default: mission_authority (usually 'chief-of-staff'). Set direct_report=true as a shortcut to report to the calling worker"),
-    permission_mode: z.string().optional().describe("Claude permission mode for the worker's session. Default: 'bypassPermissions'. Use 'default' for stricter tool approval"),
-    launch: z.boolean().optional().describe("If true, immediately launch the worker in a tmux pane after creation. If false (default), worker is created but not started — launch manually with launch-flat-worker.sh"),
-    tasks: z.string().optional().describe("JSON array of initial tasks to seed the worker's queue. Each element: {subject: string, description?: string, priority?: 'critical'|'high'|'medium'|'low'}"),
-    proposal_required: z.boolean().optional().describe("If true, worker must produce a self-contained HTML proposal document (architecture diagrams, UI mockups, data flow, file impact, risks) and get mission authority approval before writing any implementation code. Default: false"),
-    fork_from_session: z.boolean().optional().describe("If true, fork the caller's current Claude session so the new worker inherits full conversation context. Requires launch=true. Use when the new worker needs everything you currently know"),
-    direct_report: z.boolean().optional().describe("If true, set report_to to the calling worker's name instead of mission_authority. Convenience shortcut for creating subordinate workers"),
-  } },
-  async ({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, window_index: windowIndex, report_to, permission_mode, launch, tasks: tasksJson, proposal_required, fork_from_session, direct_report }) => {
-    try {
-      // Change 4: Enforce unique worker names
-      const existingRegistry = readRegistry();
-      if (existingRegistry[name] && name !== "_config") {
-        return { content: [{ type: "text" as const, text: `Error: Worker '${name}' already exists in registry. Choose a unique name.` }], isError: true };
-      }
-
-      // Parse tasks JSON if provided
-      let taskEntries: Array<{ subject: string; description?: string; priority?: string }> = [];
-      if (tasksJson) {
-        try {
-          const parsed = JSON.parse(tasksJson);
-          if (!Array.isArray(parsed)) {
-            return { content: [{ type: "text" as const, text: `Error: tasks must be a JSON array` }], isError: true };
-          }
-          for (const t of parsed) {
-            if (!t.subject || typeof t.subject !== "string") {
-              return { content: [{ type: "text" as const, text: `Error: Each task must have a string 'subject'` }], isError: true };
-            }
-          }
-          taskEntries = parsed;
-        } catch (e: any) {
-          return { content: [{ type: "text" as const, text: `Error parsing tasks JSON: ${e.message}` }], isError: true };
-        }
-      }
-
-      // Parse disallowed_tools JSON if provided
-      let disallowedTools: string[] | undefined;
-      if (disallowedToolsJson) {
-        try {
-          const parsed = JSON.parse(disallowedToolsJson);
-          if (!Array.isArray(parsed) || !parsed.every((t: any) => typeof t === "string")) {
-            return { content: [{ type: "text" as const, text: `Error: disallowed_tools must be a JSON array of strings` }], isError: true };
-          }
-          disallowedTools = parsed;
-        } catch (e: any) {
-          return { content: [{ type: "text" as const, text: `Error parsing disallowed_tools JSON: ${e.message}` }], isError: true };
-        }
-      }
-
-      // Validate fork_from_session requires launch
-      if (fork_from_session && !launch) {
-        return { content: [{ type: "text" as const, text: `Error: fork_from_session=true requires launch=true` }], isError: true };
-      }
-
-      // Create files
-      const result = createWorkerFiles({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, taskEntries, proposal_required });
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: `Error: ${result.error}` }], isError: true };
-      }
-
-      // Determine report_to — default to chief-of-staff (mission_authority) unless explicit
-      const config = readRegistry()._config as RegistryConfig | undefined;
-      const missionAuthority = config?.mission_authority || "chief-of-staff";
-      const reportTo = direct_report
-        ? WORKER_NAME
-        : (report_to || missionAuthority);
-
-      // Register in unified registry
-      const { state, permissions, runtime: resolvedRuntime, taskIds, model: selectedModel, perpetual: isPerpetual } = result as Required<CreateWorkerResult>;
-      withRegistryLocked((registry) => {
-        ensureWorkerInRegistry(registry, name);
-        const entry = registry[name] as RegistryWorkerEntry;
-        entry.model = permissions.model || "opus";
-        entry.permission_mode = permissions.permission_mode || "bypassPermissions";
-        entry.disallowed_tools = permissions.disallowedTools || [];
-        entry.status = state.status || "idle";
-        entry.perpetual = state.perpetual || false;
-        entry.sleep_duration = state.sleep_duration || 1800;
-        if (permissions.window) {
-          entry.window = permissions.window;
-        }
-        entry.report_to = reportTo;
-        entry.custom = { ...entry.custom, runtime: resolvedRuntime || "claude", reasoning_effort: permissions.reasoning_effort || "high" };
-        if (proposal_required) {
-          entry.custom.proposal_required = true;
-        }
-        if (fork_from_session) {
-          entry.forked_from = WORKER_NAME;
-        }
-      });
-
-      // Create worktree for the new worker
-      const projectName = PROJECT_ROOT.split("/").pop()!;
-      const worktreeDir = join(PROJECT_ROOT, "..", `${projectName}-w-${name}`);
-      const workerBranch = `worker/${name}`;
-      let worktreeReady = false;
-      try {
-        if (!existsSync(worktreeDir)) {
-          try { execSync(`git -C "${PROJECT_ROOT}" branch "${workerBranch}" HEAD 2>/dev/null`, { timeout: 5000 }); } catch {}
-          execSync(`git -C "${PROJECT_ROOT}" worktree add "${worktreeDir}" "${workerBranch}"`, { encoding: "utf-8", timeout: 10000 });
-        }
-        worktreeReady = true;
-        // Symlink gitignored essential files (.env, users.json, projects.json) from main repo
-        const setupScript = join(PROJECT_ROOT, ".claude/scripts/worker/setup-worktree.sh");
-        if (existsSync(setupScript)) {
-          try { execSync(`bash "${setupScript}" "${worktreeDir}"`, { timeout: 5000 }); } catch {}
-        }
-      } catch {}
-
-      // ── Launch helpers (shared by all placement modes) ──
-
-      /** Create a tmux pane in the named window group. Returns pane ID or null. */
-      function createPane(_pl: string, cwd: string): string | null {
-        const ownPane = findOwnPane();
-        const tmuxSession = ownPane?.paneTarget?.split(":")[0] || "w";
-        const winName = windowGroup || "workers";
-        const winCheck = spawnSync("tmux", ["list-windows", "-t", tmuxSession, "-F", "#{window_name}"], { encoding: "utf-8" });
-        const windows = (winCheck.stdout || "").split("\n").map(w => w.trim());
-        if (!windows.includes(winName)) {
-          // Use explicit window index if provided, otherwise let tmux auto-assign
-          const target = windowIndex != null ? `${tmuxSession}:${windowIndex}` : tmuxSession;
-          return execSync(
-            `tmux new-window -t "${target}" -n "${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`,
-            { encoding: "utf-8", timeout: 5000 }
-          ).trim();
-        }
-        const paneId = execSync(
-          `tmux split-window -t "${tmuxSession}:${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`,
-          { encoding: "utf-8", timeout: 5000 }
-        ).trim();
-        spawnSync("tmux", ["select-layout", "-t", `${tmuxSession}:${winName}`, "tiled"], { encoding: "utf-8" });
-        return paneId;
-      }
-
-      /** Register a newly created pane in the registry. */
-      function registerPane(paneId: string) {
-        let paneTarget = "";
-        try {
-          paneTarget = execSync(
-            `tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' | awk -v id="${paneId}" '$1 == id {print $2}'`,
-            { encoding: "utf-8", timeout: 5000 }
-          ).trim();
-        } catch {}
-        withRegistryLocked((registry) => {
-          const entry = registry[name] as RegistryWorkerEntry;
-          if (entry) {
-            entry.pane_id = paneId;
-            entry.pane_target = paneTarget;
-            entry.tmux_session = paneTarget?.split(":")[0] || "w";
-          }
-        });
-      }
-
-      // ── Optional launch ──
-      // ALL launches go through launch-flat-worker.sh (reliable: waits for TUI, paste-buffer, retries).
-      // Fork uses fork-worker.sh (inherits conversation context).
-      // Never use spawnInPane + tmux send-keys — it's fragile and breaks on escaping.
-      let launchInfo = "";
-      if (launch) {
-        if (fork_from_session) {
-          // Fork path: inherit caller's conversation context via fork-worker.sh
-          const ownPane = findOwnPane();
-          const sessionId = ownPane ? getSessionId(ownPane.paneId) : null;
-          if (!ownPane) {
-            launchInfo = `\n  Launch: SKIPPED — could not find own pane (not in tmux?). Run manually: bash fork-worker.sh`;
-          } else if (!sessionId) {
-            launchInfo = `\n  Launch: SKIPPED — no session ID for pane ${ownPane.paneId}. Run manually: bash fork-worker.sh`;
-          } else {
-            // Copy session data to new worktree's project dir.
-            // Session JSONLs are stored under ~/.claude/projects/{cwd-slug}/.
-            // The caller's session is under their WORKTREE's slug (process.cwd()), not PROJECT_ROOT.
-            if (worktreeReady) {
-              try {
-                const callerCwd = process.cwd();
-                const parentSlug = callerCwd.replace(/\//g, "-");
-                const newSlug = worktreeDir.replace(/\//g, "-");
-                const parentProj = join(HOME, ".claude/projects", parentSlug);
-                const newProj = join(HOME, ".claude/projects", newSlug);
-                mkdirSync(newProj, { recursive: true });
-                const jsonlSrc = join(parentProj, `${sessionId}.jsonl`);
-                if (existsSync(jsonlSrc)) copyFileSync(jsonlSrc, join(newProj, `${sessionId}.jsonl`));
-                const subdirSrc = join(parentProj, sessionId);
-                if (existsSync(subdirSrc)) cpSync(subdirSrc, join(newProj, sessionId), { recursive: true });
-              } catch {} // non-fatal
-            }
-
-            // Fork needs a TTY (Claude runs interactively), so we must run inside the pane.
-            // Write a self-contained wrapper script and send just "bash /tmp/wrapper.sh" to the pane.
-            // The wrapper cleans up AFTER fork-worker.sh finishes (blocking), avoiding race conditions.
-            try {
-              const childPaneId = createPane("window", worktreeReady ? worktreeDir : PROJECT_ROOT);
-              if (!childPaneId?.startsWith("%")) {
-                launchInfo = `\n  Launch: SKIPPED — pane creation failed. Run manually.`;
-              } else {
-                registerPane(childPaneId);
-                const forkScript = join(CLAUDE_OPS, "scripts/fork-worker.sh");
-                const workerModel = selectedModel || "opus";
-                const workerDir = join(PROJECT_ROOT, ".claude/workers", name);
-                const cwdFlag = worktreeReady ? `--cwd ${worktreeDir}` : "";
-                const wrapperPath = `/tmp/fork-launch-${name}-${Date.now()}.sh`;
-
-                // Write wrapper script — fork-worker.sh blocks until Claude exits, so cleanup is safe
-                const wrapperContent = [
-                  `#!/bin/bash`,
-                  `cd ${worktreeReady ? worktreeDir : PROJECT_ROOT}`,
-                  `bash ${forkScript} ${ownPane.paneId} ${sessionId} --name ${name} --no-worktree ${cwdFlag} --model ${workerModel} --dangerously-skip-permissions --add-dir ${workerDir}`,
-                  `rm -f "${wrapperPath}"`,
-                ].join("\n");
-                writeFileSync(wrapperPath, wrapperContent, { mode: 0o755 });
-
-                // Send short command to pane — no escaping issues
-                execSync(`tmux send-keys -t "${childPaneId}" "bash ${wrapperPath}" && tmux send-keys -t "${childPaneId}" -H 0d`, { timeout: 5000 });
-                launchInfo = `\n  Launched (fork from ${sessionId}): pane ${childPaneId}`;
-              }
-            } catch (e: any) {
-              launchInfo = `\n  Launch: FAILED — ${e.message}`;
-            }
-          }
-        } else {
-          // Non-fork: always delegate to launch-flat-worker.sh (reliable path)
-          const launchScript = join(CLAUDE_OPS, "scripts/launch-flat-worker.sh");
-          if (!existsSync(launchScript)) {
-            launchInfo = `\n  Launch: FAILED — script not found: ${launchScript}`;
-          } else {
-            const launchArgs = [launchScript, name, "--project", PROJECT_ROOT];
-            const winGroup = windowGroup || permissions.window;
-            if (winGroup) launchArgs.push("--window", winGroup);
-            if (windowIndex != null) launchArgs.push("--window-index", String(windowIndex));
-            const launchResult = spawnSync("bash", launchArgs, {
-              encoding: "utf-8", timeout: 120_000,
-              env: { ...process.env, PROJECT_ROOT, WORKER_RUNTIME: resolvedRuntime || "claude" },
-            });
-            if (launchResult.status === 0) {
-              const paneMatch = launchResult.stdout.match(/pane\s+(%\d+)/);
-              launchInfo = `\n  Launched: pane ${paneMatch ? paneMatch[1] : "unknown"}`;
-            } else {
-              launchInfo = `\n  Launch: FAILED (exit ${launchResult.status}) — ${(launchResult.stderr || "").slice(0, 200)}`;
-            }
-          }
-        }
-      } else {
-        launchInfo = `\n  Launch: manual — bash launch-flat-worker.sh ${name}`;
-      }
-
-      // Return summary
-      const taskSummary = taskIds.length > 0
-        ? `${taskIds.length} (${taskIds.join(", ")})`
-        : "none";
-
-      const summary = [
-        `Created worker/${name}:`,
-        `  Dir: .claude/workers/${name}/`,
-        `  Runtime: ${resolvedRuntime} | Model: ${selectedModel} | Perpetual: ${isPerpetual}`,
-        permissions.window ? `  Window: ${permissions.window}` : null,
-        `  Reports to: ${reportTo}`,
-        fork_from_session ? `  Forked from: ${WORKER_NAME}` : null,
-        proposal_required ? `  Proposal: REQUIRED (worker produces HTML proposal before coding)` : null,
-        permissions.disallowedTools.length > 0 ? `  Disallowed: ${permissions.disallowedTools.length} rules` : `  Disallowed: none (full access)`,
-        `  Tasks: ${taskSummary}`,
-        worktreeReady ? `  Worktree: ${worktreeDir}` : `  Worktree: NOT CREATED (manual setup needed)`,
-        launchInfo.trim() ? `  ${launchInfo.trim()}` : null,
-      ].filter(Boolean).join("\n");
-
-      return { content: [{ type: "text" as const, text: summary }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
-
-server.registerTool(
-  "get_worker_template",
-  {
-    description: "Preview the defaults and mission structure for a worker archetype before creating one. Returns the template mission.md (showing expected sections and {{PLACEHOLDERS}}), permissions defaults (model, permission_mode, deny-list), and state config (perpetual, sleep_duration). Call this before create_worker(type=...) to understand what the archetype provides and what you need to customize in your mission.",
-    inputSchema: {
-      type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).describe("Worker archetype to preview. Each has different defaults for model, permissions, perpetual mode, and sleep duration"),
-    },
-  },
-  async ({ type }) => {
-    const typeDir = join(TEMPLATE_TYPES_DIR, type);
-    if (!existsSync(typeDir)) {
-      return { content: [{ type: "text" as const, text: `Error: template type '${type}' not found at ${typeDir}` }], isError: true };
-    }
-    const sections: string[] = [`# Template: ${type}\n`];
-    try {
-      sections.push("## mission.md (structure to follow)\n```markdown\n" + readFileSync(join(typeDir, "mission.md"), "utf-8").trim() + "\n```\n");
-    } catch { sections.push("## mission.md\n_Not found_\n"); }
-    try {
-      const perms = JSON.parse(readFileSync(join(typeDir, "permissions.json"), "utf-8"));
-      sections.push("## Defaults (from permissions.json)\n" +
-        `- **model**: ${perms.model || "opus"}\n` +
-        `- **permission_mode**: ${perms.permission_mode || "bypassPermissions"}\n` +
-        `- **denyList** (${(perms.denyList || []).length} rules): ${(perms.denyList || []).map((r: string) => `\`${r}\``).join(", ") || "none"}\n`);
-    } catch { sections.push("## permissions.json\n_Not found_\n"); }
-    try {
-      const defaults = JSON.parse(readFileSync(join(typeDir, "defaults.json"), "utf-8"));
-      sections.push("## Defaults (from defaults.json)\n" +
-        `- **perpetual**: ${defaults.perpetual}\n` +
-        `- **sleep_duration**: ${defaults.sleep_duration}s\n`);
-    } catch { sections.push("## defaults.json\n_Not found_\n"); }
-    sections.push("## Usage\n`create_worker(name=\"...\", type=\"" + type + "\", mission=\"# Your mission here\\n...\")`\nThe `type` sets model/permissions/perpetual/sleep defaults. You always write your own mission. Explicit params override type defaults.");
-    return { content: [{ type: "text" as const, text: sections.join("\n") }] };
-  }
-);
-
 // ── Shared pane-move logic ──────────────────────────────────────────────
 /** Move a worker's tmux pane to a target window. Returns a status string. */
 function moveWorkerPane(
@@ -2315,390 +1996,748 @@ function moveWorkerPane(
   }
 }
 
-server.registerTool(
-  "move_window",
-  {
-    description: "Move a worker's tmux pane to a different named window without interrupting its session. The worker process stays alive — only its visual placement changes. Moving to the 'standby' window automatically sets status=standby in the registry (watchdog will stop monitoring it). Moving out of standby restores status=active. Authorization: you can move yourself freely; moving other workers requires being the mission_authority.",
-    inputSchema: {
-      name: z.string().optional().describe("Worker to move. Omit to move yourself. Only the mission_authority can move other workers"),
-      window: z.string().describe("Target tmux window name. Workers in the same window share a tiled layout. Special: 'standby' sets the worker's status to standby"),
-      reason: z.string().optional().describe("Reason for the move. If moving to standby, this is written to handoff.md for context when the worker is later woken"),
-    },
-  },
-  async ({ name, window: targetWindow, reason }) => {
-    const targetName = name || WORKER_NAME;
+// ── Fleet handler functions ─────────────────────────────────────────────
 
-    // Authorization: self or mission_authority
-    const _mwRegistry = readRegistry();
-    const _mwConfig = _mwRegistry._config as RegistryConfig | undefined;
-    const _mwAuth = _mwConfig?.mission_authority || "chief-of-staff";
-    if (targetName !== WORKER_NAME && WORKER_NAME !== _mwAuth) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Only ${_mwAuth} (mission_authority) can move other workers. Contact ${_mwAuth}.`,
-        }],
-        isError: true,
-      };
+type McpResult = { content: { type: "text"; text: string }[]; isError?: boolean };
+
+async function handleFleetCreate(params: Record<string, any>): Promise<McpResult> {
+  const { name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, window_index: windowIndex, report_to, permission_mode, launch, tasks: tasksJson, proposal_required, fork_from_session, direct_report } = params;
+
+  if (!name) return { content: [{ type: "text" as const, text: `Error: 'name' is required for create` }], isError: true };
+  if (!mission) return { content: [{ type: "text" as const, text: `Error: 'mission' is required for create` }], isError: true };
+
+  try {
+    // Enforce unique worker names
+    const existingRegistry = readRegistry();
+    if (existingRegistry[name] && name !== "_config") {
+      return { content: [{ type: "text" as const, text: `Error: Worker '${name}' already exists in registry. Choose a unique name.` }], isError: true };
     }
 
-    const existing = getWorkerEntry(targetName);
-    if (!existing) {
-      return {
-        content: [{ type: "text" as const, text: `Worker '${targetName}' not found in registry.` }],
-        isError: true,
-      };
-    }
-
-    const paneId = existing.pane_id;
-    const tmuxSession = existing.tmux_session || "w";
-
-    if (!paneId) {
-      return {
-        content: [{ type: "text" as const, text: `Worker '${targetName}' has no pane_id — cannot move.` }],
-        isError: true,
-      };
-    }
-
-    // Move the pane
-    const moveResult = moveWorkerPane(paneId, tmuxSession, targetWindow);
-
-    // Update registry
-    const previousWindow = existing.window;
-    const isMovingToStandby = targetWindow === "standby";
-    const isMovingFromStandby = existing.status === "standby" && targetWindow !== "standby";
-
-    withRegistryLocked((registry) => {
-      const entry = registry[targetName] as RegistryWorkerEntry;
-      if (entry) {
-        entry.window = targetWindow;
-        if (isMovingToStandby) {
-          entry.status = "standby";
-        } else if (isMovingFromStandby) {
-          entry.status = "active";
+    // Parse tasks JSON if provided
+    let taskEntries: Array<{ subject: string; description?: string; priority?: string }> = [];
+    if (tasksJson) {
+      try {
+        const parsed = JSON.parse(tasksJson);
+        if (!Array.isArray(parsed)) {
+          return { content: [{ type: "text" as const, text: `Error: tasks must be a JSON array` }], isError: true };
         }
+        for (const t of parsed) {
+          if (!t.subject || typeof t.subject !== "string") {
+            return { content: [{ type: "text" as const, text: `Error: Each task must have a string 'subject'` }], isError: true };
+          }
+        }
+        taskEntries = parsed;
+      } catch (e: any) {
+        return { content: [{ type: "text" as const, text: `Error parsing tasks JSON: ${e.message}` }], isError: true };
+      }
+    }
+
+    // Parse disallowed_tools JSON if provided
+    let disallowedTools: string[] | undefined;
+    if (disallowedToolsJson) {
+      try {
+        const parsed = JSON.parse(disallowedToolsJson);
+        if (!Array.isArray(parsed) || !parsed.every((t: any) => typeof t === "string")) {
+          return { content: [{ type: "text" as const, text: `Error: disallowed_tools must be a JSON array of strings` }], isError: true };
+        }
+        disallowedTools = parsed;
+      } catch (e: any) {
+        return { content: [{ type: "text" as const, text: `Error parsing disallowed_tools JSON: ${e.message}` }], isError: true };
+      }
+    }
+
+    // Validate fork_from_session requires launch
+    if (fork_from_session && !launch) {
+      return { content: [{ type: "text" as const, text: `Error: fork_from_session=true requires launch=true` }], isError: true };
+    }
+
+    // Create files
+    const result = createWorkerFiles({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, taskEntries, proposal_required });
+    if (!result.ok) {
+      return { content: [{ type: "text" as const, text: `Error: ${result.error}` }], isError: true };
+    }
+
+    // Determine report_to — default to chief-of-staff (mission_authority) unless explicit
+    const config = readRegistry()._config as RegistryConfig | undefined;
+    const missionAuthority = config?.mission_authority || "chief-of-staff";
+    const reportTo = direct_report
+      ? WORKER_NAME
+      : (report_to || missionAuthority);
+
+    // Register in unified registry
+    const { state, permissions, runtime: resolvedRuntime, taskIds, model: selectedModel, perpetual: isPerpetual } = result as Required<CreateWorkerResult>;
+    withRegistryLocked((registry) => {
+      ensureWorkerInRegistry(registry, name);
+      const entry = registry[name] as RegistryWorkerEntry;
+      entry.model = permissions.model || "opus";
+      entry.permission_mode = permissions.permission_mode || "bypassPermissions";
+      entry.disallowed_tools = permissions.disallowedTools || [];
+      entry.status = state.status || "idle";
+      entry.perpetual = state.perpetual || false;
+      entry.sleep_duration = state.sleep_duration || 1800;
+      if (permissions.window) {
+        entry.window = permissions.window;
+      }
+      entry.report_to = reportTo;
+      entry.custom = { ...entry.custom, runtime: resolvedRuntime || "claude", reasoning_effort: permissions.reasoning_effort || "high" };
+      if (proposal_required) {
+        entry.custom.proposal_required = true;
+      }
+      if (fork_from_session) {
+        entry.forked_from = WORKER_NAME;
       }
     });
 
-    // Write handoff if going to standby
-    if (isMovingToStandby && reason) {
-      try {
-        const handoffPath = join(WORKERS_DIR, targetName, "handoff.md");
-        const timestamp = new Date().toISOString();
-        writeFileSync(handoffPath, `# Standby\n\n**At:** ${timestamp}\n**Reason:** ${reason}\n\nWorker is in standby — registered but not running. Call move_window(name="${targetName}", window="${previousWindow || targetName}") to wake.\n`);
-      } catch {}
-    }
-
-    const statusChange = isMovingToStandby
-      ? " status=standby (watchdog will ignore)"
-      : isMovingFromStandby
-        ? " status=active (woken from standby)"
-        : "";
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: [
-          `Worker '${targetName}' moved: ${previousWindow || "?"} → ${targetWindow}.${statusChange}`,
-          `  ${moveResult}`,
-          reason ? `  Reason: ${reason}` : null,
-        ].filter(Boolean).join("\n"),
-      }],
-    };
-  }
-);
-
-server.registerTool(
-  "standby",
-  {
-    description: "Toggle a worker between active and standby states. If currently active: moves pane to the standby window, sets status=standby (watchdog stops monitoring), and writes a handoff note. If currently in standby: moves pane back to its original window and restores status=active. USER-ONLY — this tool is invoked by the human operator via the /standby command. Workers must NEVER call this proactively on themselves or others. Authorization: self or mission_authority only.",
-    inputSchema: {
-      name: z.string().optional().describe("Worker to toggle. Omit to toggle yourself. Only the mission_authority can standby/wake other workers"),
-      reason: z.string().optional().describe("Why the worker is being put on standby or woken up. Written to handoff.md for context"),
-    },
-  },
-  async ({ name, reason }) => {
-    const targetName = name || WORKER_NAME;
-
-    // Authorization: self-only unless mission_authority
-    const _sbRegistry = readRegistry();
-    const _sbConfig = _sbRegistry._config as RegistryConfig | undefined;
-    const _sbAuth = _sbConfig?.mission_authority || "chief-of-staff";
-    if (targetName !== WORKER_NAME && WORKER_NAME !== _sbAuth) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Only ${_sbAuth} (mission_authority) can toggle standby for other workers. Contact ${_sbAuth}.`,
-        }],
-        isError: true,
-      };
-    }
-
-    const existing = getWorkerEntry(targetName);
-    if (!existing) {
-      return {
-        content: [{ type: "text" as const, text: `Worker '${targetName}' not found in registry.` }],
-        isError: true,
-      };
-    }
-
-    const isStandby = existing.status === "standby";
-    const tmuxSession = existing.tmux_session || "w";
-
-    if (isStandby) {
-      // ── WAKE UP: standby → active ──
-      // Move the pane back to its original window
-      const paneId = existing.pane_id;
-      const originalWindow = existing.window || targetName;
-      let moveResult = "";
-
-      if (paneId) {
-        moveResult = moveWorkerPane(paneId, tmuxSession, originalWindow);
-      } else {
-        moveResult = "No pane_id in registry — pane may have been killed";
-      }
-
-      withRegistryLocked((registry) => {
-        const entry = registry[targetName] as RegistryWorkerEntry;
-        if (entry) {
-          entry.status = "active";
-          // Restore window to original (move_window set it to "standby")
-          if (originalWindow !== "standby") entry.window = originalWindow;
-        }
-      });
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: [
-            `Worker '${targetName}' → active (woken from standby).`,
-            `  Registry: status=active`,
-            reason ? `  Reason: ${reason}` : null,
-            moveResult ? `  ${moveResult}` : null,
-          ].filter(Boolean).join("\n"),
-        }],
-      };
-    }
-
-    // ── STANDBY: active → standby ──
-
-    // Write handoff.md
-    if (reason) {
-      try {
-        const handoffPath = join(WORKERS_DIR, targetName, "handoff.md");
-        const timestamp = new Date().toISOString();
-        writeFileSync(handoffPath, `# Standby\n\n**At:** ${timestamp}\n**Reason:** ${reason}\n\nWorker is in standby — registered but not running. Call standby(name="${targetName}") again to wake.\n`);
-      } catch {}
-    }
-
-    // Check for unread BMS mail (best-effort)
-    let standbyPendingWarning = "";
+    // Create worktree for the new worker
+    const projectName = PROJECT_ROOT.split("/").pop()!;
+    const worktreeDir = join(PROJECT_ROOT, "..", `${projectName}-w-${name}`);
+    const workerBranch = `worker/${name}`;
+    let worktreeReady = false;
     try {
-      const targetEntry = getWorkerEntry(targetName);
-      const bmsToken = (targetEntry as any)?.bms_token;
-      if (bmsToken) {
-        const resp = await fetch(`${BMS_URL}/api/messages?label=UNREAD&maxResults=1`, {
-          headers: { Authorization: `Bearer ${bmsToken}` },
-          signal: AbortSignal.timeout(3000),
-        });
-        if (resp.ok) {
-          const data = await resp.json() as any;
-          const unread = data?._diagnostics?.unread_count || 0;
-          if (unread > 0) {
-            standbyPendingWarning = `\n  WARNING: ${unread} unread mail in ${targetName}'s inbox`;
-          }
-        }
+      if (!existsSync(worktreeDir)) {
+        try { execSync(`git -C "${PROJECT_ROOT}" branch "${workerBranch}" HEAD 2>/dev/null`, { timeout: 5000 }); } catch {}
+        execSync(`git -C "${PROJECT_ROOT}" worktree add "${worktreeDir}" "${workerBranch}"`, { encoding: "utf-8", timeout: 10000 });
+      }
+      worktreeReady = true;
+      // Symlink gitignored essential files (.env, users.json, projects.json) from main repo
+      const setupScript = join(PROJECT_ROOT, ".claude/scripts/worker/setup-worktree.sh");
+      if (existsSync(setupScript)) {
+        try { execSync(`bash "${setupScript}" "${worktreeDir}"`, { timeout: 5000 }); } catch {}
       }
     } catch {}
 
-    // Set status = standby and move pane
+    // ── Launch helpers (shared by all placement modes) ──
+
+    /** Create a tmux pane in the named window group. Returns pane ID or null. */
+    function createPane(_pl: string, cwd: string): string | null {
+      const ownPane = findOwnPane();
+      const tmuxSession = ownPane?.paneTarget?.split(":")[0] || "w";
+      const winName = windowGroup || "workers";
+      const winCheck = spawnSync("tmux", ["list-windows", "-t", tmuxSession, "-F", "#{window_name}"], { encoding: "utf-8" });
+      const windows = (winCheck.stdout || "").split("\n").map(w => w.trim());
+      if (!windows.includes(winName)) {
+        // Use explicit window index if provided, otherwise let tmux auto-assign
+        const target = windowIndex != null ? `${tmuxSession}:${windowIndex}` : tmuxSession;
+        return execSync(
+          `tmux new-window -t "${target}" -n "${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`,
+          { encoding: "utf-8", timeout: 5000 }
+        ).trim();
+      }
+      const paneId = execSync(
+        `tmux split-window -t "${tmuxSession}:${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`,
+        { encoding: "utf-8", timeout: 5000 }
+      ).trim();
+      spawnSync("tmux", ["select-layout", "-t", `${tmuxSession}:${winName}`, "tiled"], { encoding: "utf-8" });
+      return paneId;
+    }
+
+    /** Register a newly created pane in the registry. */
+    function registerPane(paneId: string) {
+      let paneTarget = "";
+      try {
+        paneTarget = execSync(
+          `tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' | awk -v id="${paneId}" '$1 == id {print $2}'`,
+          { encoding: "utf-8", timeout: 5000 }
+        ).trim();
+      } catch {}
+      withRegistryLocked((registry) => {
+        const entry = registry[name] as RegistryWorkerEntry;
+        if (entry) {
+          entry.pane_id = paneId;
+          entry.pane_target = paneTarget;
+          entry.tmux_session = paneTarget?.split(":")[0] || "w";
+        }
+      });
+    }
+
+    // ── Optional launch ──
+    // ALL launches go through launch-flat-worker.sh (reliable: waits for TUI, paste-buffer, retries).
+    // Fork uses fork-worker.sh (inherits conversation context).
+    // Never use spawnInPane + tmux send-keys — it's fragile and breaks on escaping.
+    let launchInfo = "";
+    if (launch) {
+      if (fork_from_session) {
+        // Fork path: inherit caller's conversation context via fork-worker.sh
+        const ownPane = findOwnPane();
+        const sessionId = ownPane ? getSessionId(ownPane.paneId) : null;
+        if (!ownPane) {
+          launchInfo = `\n  Launch: SKIPPED — could not find own pane (not in tmux?). Run manually: bash fork-worker.sh`;
+        } else if (!sessionId) {
+          launchInfo = `\n  Launch: SKIPPED — no session ID for pane ${ownPane.paneId}. Run manually: bash fork-worker.sh`;
+        } else {
+          // Copy session data to new worktree's project dir.
+          // Session JSONLs are stored under ~/.claude/projects/{cwd-slug}/.
+          // The caller's session is under their WORKTREE's slug (process.cwd()), not PROJECT_ROOT.
+          if (worktreeReady) {
+            try {
+              const callerCwd = process.cwd();
+              const parentSlug = callerCwd.replace(/\//g, "-");
+              const newSlug = worktreeDir.replace(/\//g, "-");
+              const parentProj = join(HOME, ".claude/projects", parentSlug);
+              const newProj = join(HOME, ".claude/projects", newSlug);
+              mkdirSync(newProj, { recursive: true });
+              const jsonlSrc = join(parentProj, `${sessionId}.jsonl`);
+              if (existsSync(jsonlSrc)) copyFileSync(jsonlSrc, join(newProj, `${sessionId}.jsonl`));
+              const subdirSrc = join(parentProj, sessionId);
+              if (existsSync(subdirSrc)) cpSync(subdirSrc, join(newProj, sessionId), { recursive: true });
+            } catch {} // non-fatal
+          }
+
+          // Fork needs a TTY (Claude runs interactively), so we must run inside the pane.
+          // Write a self-contained wrapper script and send just "bash /tmp/wrapper.sh" to the pane.
+          // The wrapper cleans up AFTER fork-worker.sh finishes (blocking), avoiding race conditions.
+          try {
+            const childPaneId = createPane("window", worktreeReady ? worktreeDir : PROJECT_ROOT);
+            if (!childPaneId?.startsWith("%")) {
+              launchInfo = `\n  Launch: SKIPPED — pane creation failed. Run manually.`;
+            } else {
+              registerPane(childPaneId);
+              const forkScript = join(CLAUDE_OPS, "scripts/fork-worker.sh");
+              const workerModel = selectedModel || "opus";
+              const workerDir = join(PROJECT_ROOT, ".claude/workers", name);
+              const cwdFlag = worktreeReady ? `--cwd ${worktreeDir}` : "";
+              const wrapperPath = `/tmp/fork-launch-${name}-${Date.now()}.sh`;
+
+              // Write wrapper script — fork-worker.sh blocks until Claude exits, so cleanup is safe
+              const wrapperContent = [
+                `#!/bin/bash`,
+                `cd ${worktreeReady ? worktreeDir : PROJECT_ROOT}`,
+                `bash ${forkScript} ${ownPane.paneId} ${sessionId} --name ${name} --no-worktree ${cwdFlag} --model ${workerModel} --dangerously-skip-permissions --add-dir ${workerDir}`,
+                `rm -f "${wrapperPath}"`,
+              ].join("\n");
+              writeFileSync(wrapperPath, wrapperContent, { mode: 0o755 });
+
+              // Send short command to pane — no escaping issues
+              execSync(`tmux send-keys -t "${childPaneId}" "bash ${wrapperPath}" && tmux send-keys -t "${childPaneId}" -H 0d`, { timeout: 5000 });
+              launchInfo = `\n  Launched (fork from ${sessionId}): pane ${childPaneId}`;
+            }
+          } catch (e: any) {
+            launchInfo = `\n  Launch: FAILED — ${e.message}`;
+          }
+        }
+      } else {
+        // Non-fork: always delegate to launch-flat-worker.sh (reliable path)
+        const launchScript = join(CLAUDE_OPS, "scripts/launch-flat-worker.sh");
+        if (!existsSync(launchScript)) {
+          launchInfo = `\n  Launch: FAILED — script not found: ${launchScript}`;
+        } else {
+          const launchArgs = [launchScript, name, "--project", PROJECT_ROOT];
+          const winGroup = windowGroup || permissions.window;
+          if (winGroup) launchArgs.push("--window", winGroup);
+          if (windowIndex != null) launchArgs.push("--window-index", String(windowIndex));
+          const launchResult = spawnSync("bash", launchArgs, {
+            encoding: "utf-8", timeout: 120_000,
+            env: { ...process.env, PROJECT_ROOT, WORKER_RUNTIME: resolvedRuntime || "claude" },
+          });
+          if (launchResult.status === 0) {
+            const paneMatch = launchResult.stdout.match(/pane\s+(%\d+)/);
+            launchInfo = `\n  Launched: pane ${paneMatch ? paneMatch[1] : "unknown"}`;
+          } else {
+            launchInfo = `\n  Launch: FAILED (exit ${launchResult.status}) — ${(launchResult.stderr || "").slice(0, 200)}`;
+          }
+        }
+      }
+    } else {
+      launchInfo = `\n  Launch: manual — bash launch-flat-worker.sh ${name}`;
+    }
+
+    // Return summary
+    const taskSummary = taskIds.length > 0
+      ? `${taskIds.length} (${taskIds.join(", ")})`
+      : "none";
+
+    const summary = [
+      `Created worker/${name}:`,
+      `  Dir: .claude/workers/${name}/`,
+      `  Runtime: ${resolvedRuntime} | Model: ${selectedModel} | Perpetual: ${isPerpetual}`,
+      permissions.window ? `  Window: ${permissions.window}` : null,
+      `  Reports to: ${reportTo}`,
+      fork_from_session ? `  Forked from: ${WORKER_NAME}` : null,
+      proposal_required ? `  Proposal: REQUIRED (worker produces HTML proposal before coding)` : null,
+      permissions.disallowedTools.length > 0 ? `  Disallowed: ${permissions.disallowedTools.length} rules` : `  Disallowed: none (full access)`,
+      `  Tasks: ${taskSummary}`,
+      worktreeReady ? `  Worktree: ${worktreeDir}` : `  Worktree: NOT CREATED (manual setup needed)`,
+      launchInfo.trim() ? `  ${launchInfo.trim()}` : null,
+    ].filter(Boolean).join("\n");
+
+    return { content: [{ type: "text" as const, text: summary }] };
+  } catch (e: any) {
+    return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+  }
+}
+
+async function handleFleetTemplate(params: Record<string, any>): Promise<McpResult> {
+  const { type } = params;
+  if (!type) return { content: [{ type: "text" as const, text: `Error: 'type' is required for template` }], isError: true };
+
+  const typeDir = join(TEMPLATE_TYPES_DIR, type);
+  if (!existsSync(typeDir)) {
+    return { content: [{ type: "text" as const, text: `Error: template type '${type}' not found at ${typeDir}` }], isError: true };
+  }
+  const sections: string[] = [`# Template: ${type}\n`];
+  try {
+    sections.push("## mission.md (structure to follow)\n```markdown\n" + readFileSync(join(typeDir, "mission.md"), "utf-8").trim() + "\n```\n");
+  } catch { sections.push("## mission.md\n_Not found_\n"); }
+  try {
+    const perms = JSON.parse(readFileSync(join(typeDir, "permissions.json"), "utf-8"));
+    sections.push("## Defaults (from permissions.json)\n" +
+      `- **model**: ${perms.model || "opus"}\n` +
+      `- **permission_mode**: ${perms.permission_mode || "bypassPermissions"}\n` +
+      `- **denyList** (${(perms.denyList || []).length} rules): ${(perms.denyList || []).map((r: string) => `\`${r}\``).join(", ") || "none"}\n`);
+  } catch { sections.push("## permissions.json\n_Not found_\n"); }
+  try {
+    const defaults = JSON.parse(readFileSync(join(typeDir, "defaults.json"), "utf-8"));
+    sections.push("## Defaults (from defaults.json)\n" +
+      `- **perpetual**: ${defaults.perpetual}\n` +
+      `- **sleep_duration**: ${defaults.sleep_duration}s\n`);
+  } catch { sections.push("## defaults.json\n_Not found_\n"); }
+  sections.push("## Usage\n`fleet(action=\"create\", name=\"...\", type=\"" + type + "\", mission=\"# Your mission here\\n...\")`\nThe `type` sets model/permissions/perpetual/sleep defaults. You always write your own mission. Explicit params override type defaults.");
+  return { content: [{ type: "text" as const, text: sections.join("\n") }] };
+}
+
+async function handleFleetMove(params: Record<string, any>): Promise<McpResult> {
+  const { name, window: targetWindow, reason } = params;
+  if (!targetWindow) return { content: [{ type: "text" as const, text: `Error: 'window' is required for move` }], isError: true };
+
+  const targetName = name || WORKER_NAME;
+
+  // Authorization: self or mission_authority
+  const _mwRegistry = readRegistry();
+  const _mwConfig = _mwRegistry._config as RegistryConfig | undefined;
+  const _mwAuth = _mwConfig?.mission_authority || "chief-of-staff";
+  if (targetName !== WORKER_NAME && WORKER_NAME !== _mwAuth) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Only ${_mwAuth} (mission_authority) can move other workers. Contact ${_mwAuth}.`,
+      }],
+      isError: true,
+    };
+  }
+
+  const existing = getWorkerEntry(targetName);
+  if (!existing) {
+    return {
+      content: [{ type: "text" as const, text: `Worker '${targetName}' not found in registry.` }],
+      isError: true,
+    };
+  }
+
+  const paneId = existing.pane_id;
+  const tmuxSession = existing.tmux_session || "w";
+
+  if (!paneId) {
+    return {
+      content: [{ type: "text" as const, text: `Worker '${targetName}' has no pane_id — cannot move.` }],
+      isError: true,
+    };
+  }
+
+  // Move the pane
+  const moveResult = moveWorkerPane(paneId, tmuxSession, targetWindow);
+
+  // Update registry
+  const previousWindow = existing.window;
+  const isMovingToStandby = targetWindow === "standby";
+  const isMovingFromStandby = existing.status === "standby" && targetWindow !== "standby";
+
+  withRegistryLocked((registry) => {
+    const entry = registry[targetName] as RegistryWorkerEntry;
+    if (entry) {
+      entry.window = targetWindow;
+      if (isMovingToStandby) {
+        entry.status = "standby";
+      } else if (isMovingFromStandby) {
+        entry.status = "active";
+      }
+    }
+  });
+
+  // Write handoff if going to standby
+  if (isMovingToStandby && reason) {
+    try {
+      const handoffPath = join(WORKERS_DIR, targetName, "handoff.md");
+      const timestamp = new Date().toISOString();
+      writeFileSync(handoffPath, `# Standby\n\n**At:** ${timestamp}\n**Reason:** ${reason}\n\nWorker is in standby — registered but not running. Call fleet(action="move", name="${targetName}", window="${previousWindow || targetName}") to wake.\n`);
+    } catch {}
+  }
+
+  const statusChange = isMovingToStandby
+    ? " status=standby (watchdog will ignore)"
+    : isMovingFromStandby
+      ? " status=active (woken from standby)"
+      : "";
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: [
+        `Worker '${targetName}' moved: ${previousWindow || "?"} → ${targetWindow}.${statusChange}`,
+        `  ${moveResult}`,
+        reason ? `  Reason: ${reason}` : null,
+      ].filter(Boolean).join("\n"),
+    }],
+  };
+}
+
+async function handleFleetStandby(params: Record<string, any>): Promise<McpResult> {
+  const { name, reason } = params;
+  const targetName = name || WORKER_NAME;
+
+  // Authorization: self-only unless mission_authority
+  const _sbRegistry = readRegistry();
+  const _sbConfig = _sbRegistry._config as RegistryConfig | undefined;
+  const _sbAuth = _sbConfig?.mission_authority || "chief-of-staff";
+  if (targetName !== WORKER_NAME && WORKER_NAME !== _sbAuth) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Only ${_sbAuth} (mission_authority) can toggle standby for other workers. Contact ${_sbAuth}.`,
+      }],
+      isError: true,
+    };
+  }
+
+  const existing = getWorkerEntry(targetName);
+  if (!existing) {
+    return {
+      content: [{ type: "text" as const, text: `Worker '${targetName}' not found in registry.` }],
+      isError: true,
+    };
+  }
+
+  const isStandby = existing.status === "standby";
+  const tmuxSession = existing.tmux_session || "w";
+
+  if (isStandby) {
+    // ── WAKE UP: standby → active ──
+    // Move the pane back to its original window
     const paneId = existing.pane_id;
+    const originalWindow = existing.window || targetName;
     let moveResult = "";
+
+    if (paneId) {
+      moveResult = moveWorkerPane(paneId, tmuxSession, originalWindow);
+    } else {
+      moveResult = "No pane_id in registry — pane may have been killed";
+    }
 
     withRegistryLocked((registry) => {
       const entry = registry[targetName] as RegistryWorkerEntry;
       if (entry) {
-        entry.status = "standby";
+        entry.status = "active";
+        // Restore window to original (move_window set it to "standby")
+        if (originalWindow !== "standby") entry.window = originalWindow;
       }
     });
-
-    if (paneId) {
-      moveResult = moveWorkerPane(paneId, tmuxSession, "standby");
-    } else {
-      moveResult = "No active pane to move";
-    }
 
     return {
       content: [{
         type: "text" as const,
         text: [
-          `Worker '${targetName}' → standby.`,
-          `  Registry: status=standby (watchdog will ignore it)`,
+          `Worker '${targetName}' → active (woken from standby).`,
+          `  Registry: status=active`,
+          reason ? `  Reason: ${reason}` : null,
           moveResult ? `  ${moveResult}` : null,
-          reason ? `  Handoff: written to .claude/workers/${targetName}/handoff.md` : null,
-          ``,
-          standbyPendingWarning || null,
-          ``,
-          `To resume: call standby(name="${targetName}") again, or: bash ~/.claude-ops/scripts/launch-flat-worker.sh ${targetName}`,
         ].filter(Boolean).join("\n"),
       }],
     };
   }
-);
 
-server.registerTool(
-  "register",
-  {
-    description: "Register yourself in the fleet registry. Auto-detects your tmux pane ID, session, and runtime from the process environment. Call this when the lint system warns that you are not in registry.json — typically happens for manually launched workers or after registry corruption. Only registers the calling worker; cannot register other workers.",
-    inputSchema: {
-      model: z.string().optional().describe("LLM model to record in registry. Default: existing registry value or 'opus'"),
-      perpetual: z.boolean().optional().describe("Whether to run in perpetual recycle loop. Default: existing value or false"),
-      sleep_duration: z.number().optional().describe("Seconds between perpetual cycles. Default: existing value or 1800"),
-      report_to: z.string().optional().describe("Who this worker reports to. Default: existing value or mission_authority from _config"),
-    },
-  },
-  async ({ model, perpetual, sleep_duration, report_to }) => {
+  // ── STANDBY: active → standby ──
+
+  // Write handoff.md
+  if (reason) {
     try {
-      const ownPane = findOwnPane();
-      let paneTarget = "";
-      let tmuxSession = "w";
-      if (ownPane) {
-        paneTarget = ownPane.paneTarget || "";
-        tmuxSession = paneTarget.split(":")[0] || "w";
-      }
-
-      const registry = readRegistry();
-      const config = registry._config as RegistryConfig | undefined;
-      const defaultReportTo = config?.mission_authority || "chief-of-staff";
-
-      withRegistryLocked((reg) => {
-        const entry = ensureWorkerInRegistry(reg, WORKER_NAME);
-        entry.status = "active";
-        entry.model = model || entry.model || "opus";
-        if (perpetual !== undefined) entry.perpetual = perpetual;
-        if (sleep_duration !== undefined) entry.sleep_duration = sleep_duration;
-        entry.report_to = report_to || entry.report_to || defaultReportTo;
-        entry.custom = {
-          ...(entry.custom || {}),
-          runtime: entry.custom?.runtime || process.env.WORKER_RUNTIME || "claude",
-        };
-        if (ownPane) {
-          entry.pane_id = ownPane.paneId;
-          entry.pane_target = paneTarget;
-          entry.tmux_session = tmuxSession;
-        }
-      });
-
-      const paneInfo = ownPane ? `pane ${ownPane.paneId} (${paneTarget})` : "no pane detected";
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Registered '${WORKER_NAME}' in registry.json — ${paneInfo}, model: ${model || "opus"}, report_to: ${report_to || defaultReportTo}`,
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Register failed: ${e.message}` }], isError: true };
-    }
+      const handoffPath = join(WORKERS_DIR, targetName, "handoff.md");
+      const timestamp = new Date().toISOString();
+      writeFileSync(handoffPath, `# Standby\n\n**At:** ${timestamp}\n**Reason:** ${reason}\n\nWorker is in standby — registered but not running. Call fleet(action="standby", name="${targetName}") again to wake.\n`);
+    } catch {}
   }
-);
 
-server.registerTool(
-  "deregister",
-  {
-    description: "Remove a worker's entry from the fleet registry. The worker's files (.claude/workers/<name>/), git worktree, and branch are preserved — only the registry entry is deleted. Requires a HANDOFF.md (>50 chars) in the worker's directory before proceeding, to ensure knowledge is captured before the worker is retired. Authorization: self or mission_authority only. The reason is appended to HANDOFF.md with a timestamp for the audit trail.",
-    inputSchema: {
-      name: z.string().optional().describe("Worker to deregister. Omit to deregister yourself. Only the mission_authority can deregister other workers"),
-      reason: z.string().optional().describe("Reason for deregistration. Appended to HANDOFF.md with a timestamp for the audit trail"),
-    },
-  },
-  async ({ name, reason }) => {
-    const targetName = name || WORKER_NAME;
-
-    // Authorization: only self-deregister, OR mission_authority can deregister anyone
-    const _drRegistry = readRegistry();
-    const _drConfig = _drRegistry._config as RegistryConfig | undefined;
-    const _drAuth = _drConfig?.mission_authority || "chief-of-staff";
-    if (targetName !== WORKER_NAME && WORKER_NAME !== _drAuth) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Only ${_drAuth} (mission_authority) can deregister other workers. Contact ${_drAuth} to deregister '${targetName}'.`,
-        }],
-        isError: true,
-      };
-    }
-
-    // Check worker exists
-    const existing = getWorkerEntry(targetName);
-    if (!existing) {
-      return {
-        content: [{ type: "text" as const, text: `Worker '${targetName}' not found in registry.` }],
-        isError: true,
-      };
-    }
-
-    // Require HANDOFF.md before deregistration
-    const handoffPath = join(WORKERS_DIR, targetName, "HANDOFF.md");
-    let hasHandoff = false;
-    try { hasHandoff = existsSync(handoffPath) && readFileSync(handoffPath, "utf-8").trim().length > 50; } catch {}
-    if (!hasHandoff) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: [
-            `⚠️ HANDOFF.md required before deregistering '${targetName}'.`,
-            ``,
-            `Before unregistering, write a HANDOFF.md at:`,
-            `  .claude/workers/${targetName}/HANDOFF.md`,
-            ``,
-            `Include:`,
-            `  - Generalizable learnings (patterns, gotchas, conventions discovered)`,
-            `  - Business process details specific to this domain`,
-            `  - Important repo/architecture details you learned`,
-            `  - Any unfinished work or known issues`,
-            `  - Recommendations for whoever picks this up next`,
-            ``,
-            `Then call deregister again.`,
-          ].join("\n"),
-        }],
-        isError: true,
-      };
-    }
-
-    // Append deregistration metadata to handoff
-    if (reason) {
-      try {
-        const timestamp = new Date().toISOString();
-        const appendix = `\n\n---\n## Deregistered\n\n**By:** ${WORKER_NAME}\n**At:** ${timestamp}\n**Reason:** ${reason}\n`;
-        appendFileSync(handoffPath, appendix);
-      } catch {
-        // Best-effort
+  // Check for unread BMS mail (best-effort)
+  let standbyPendingWarning = "";
+  try {
+    const targetEntry = getWorkerEntry(targetName);
+    const bmsToken = (targetEntry as any)?.bms_token;
+    if (bmsToken) {
+      const resp = await fetch(`${BMS_URL}/api/messages?label=UNREAD&maxResults=1`, {
+        headers: { Authorization: `Bearer ${bmsToken}` },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (resp.ok) {
+        const data = await resp.json() as any;
+        const unread = data?._diagnostics?.unread_count || 0;
+        if (unread > 0) {
+          standbyPendingWarning = `\n  WARNING: ${unread} unread mail in ${targetName}'s inbox`;
+        }
       }
     }
+  } catch {}
 
-    const preservedWorktree = existing.worktree || "(none registered)";
+  // Set status = standby and move pane
+  const paneId = existing.pane_id;
+  let moveResult = "";
 
-    // Remove entry from registry (files and worktree are NOT touched)
-    withRegistryLocked((registry) => {
-      delete registry[targetName];
+  withRegistryLocked((registry) => {
+    const entry = registry[targetName] as RegistryWorkerEntry;
+    if (entry) {
+      entry.status = "standby";
+    }
+  });
+
+  if (paneId) {
+    moveResult = moveWorkerPane(paneId, tmuxSession, "standby");
+  } else {
+    moveResult = "No active pane to move";
+  }
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: [
+        `Worker '${targetName}' → standby.`,
+        `  Registry: status=standby (watchdog will ignore it)`,
+        moveResult ? `  ${moveResult}` : null,
+        reason ? `  Handoff: written to .claude/workers/${targetName}/handoff.md` : null,
+        ``,
+        standbyPendingWarning || null,
+        ``,
+        `To resume: call fleet(action="standby", name="${targetName}") again, or: bash ~/.claude-ops/scripts/launch-flat-worker.sh ${targetName}`,
+      ].filter(Boolean).join("\n"),
+    }],
+  };
+}
+
+async function handleFleetRegister(params: Record<string, any>): Promise<McpResult> {
+  const { model, perpetual, sleep_duration, report_to } = params;
+
+  try {
+    const ownPane = findOwnPane();
+    let paneTarget = "";
+    let tmuxSession = "w";
+    if (ownPane) {
+      paneTarget = ownPane.paneTarget || "";
+      tmuxSession = paneTarget.split(":")[0] || "w";
+    }
+
+    const registry = readRegistry();
+    const config = registry._config as RegistryConfig | undefined;
+    const defaultReportTo = config?.mission_authority || "chief-of-staff";
+
+    withRegistryLocked((reg) => {
+      const entry = ensureWorkerInRegistry(reg, WORKER_NAME);
+      entry.status = "active";
+      entry.model = model || entry.model || "opus";
+      if (perpetual !== undefined) entry.perpetual = perpetual;
+      if (sleep_duration !== undefined) entry.sleep_duration = sleep_duration;
+      entry.report_to = report_to || entry.report_to || defaultReportTo;
+      entry.custom = {
+        ...(entry.custom || {}),
+        runtime: entry.custom?.runtime || process.env.WORKER_RUNTIME || "claude",
+      };
+      if (ownPane) {
+        entry.pane_id = ownPane.paneId;
+        entry.pane_target = paneTarget;
+        entry.tmux_session = tmuxSession;
+      }
     });
 
+    const paneInfo = ownPane ? `pane ${ownPane.paneId} (${paneTarget})` : "no pane detected";
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Registered '${WORKER_NAME}' in registry.json — ${paneInfo}, model: ${model || "opus"}, report_to: ${report_to || defaultReportTo}`,
+      }],
+    };
+  } catch (e: any) {
+    return { content: [{ type: "text" as const, text: `Register failed: ${e.message}` }], isError: true };
+  }
+}
+
+async function handleFleetDeregister(params: Record<string, any>): Promise<McpResult> {
+  const { name, reason } = params;
+  const targetName = name || WORKER_NAME;
+
+  // Authorization: only self-deregister, OR mission_authority can deregister anyone
+  const _drRegistry = readRegistry();
+  const _drConfig = _drRegistry._config as RegistryConfig | undefined;
+  const _drAuth = _drConfig?.mission_authority || "chief-of-staff";
+  if (targetName !== WORKER_NAME && WORKER_NAME !== _drAuth) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Only ${_drAuth} (mission_authority) can deregister other workers. Contact ${_drAuth} to deregister '${targetName}'.`,
+      }],
+      isError: true,
+    };
+  }
+
+  // Check worker exists
+  const existing = getWorkerEntry(targetName);
+  if (!existing) {
+    return {
+      content: [{ type: "text" as const, text: `Worker '${targetName}' not found in registry.` }],
+      isError: true,
+    };
+  }
+
+  // Require HANDOFF.md before deregistration
+  const handoffPath = join(WORKERS_DIR, targetName, "HANDOFF.md");
+  let hasHandoff = false;
+  try { hasHandoff = existsSync(handoffPath) && readFileSync(handoffPath, "utf-8").trim().length > 50; } catch {}
+  if (!hasHandoff) {
     return {
       content: [{
         type: "text" as const,
         text: [
-          `Deregistered '${targetName}' from registry.`,
+          `HANDOFF.md required before deregistering '${targetName}'.`,
           ``,
-          `Preserved (not deleted):`,
-          `  Worker files: .claude/workers/${targetName}/`,
-          `  Git worktree: ${preservedWorktree}`,
+          `Before unregistering, write a HANDOFF.md at:`,
+          `  .claude/workers/${targetName}/HANDOFF.md`,
           ``,
-          `To fully clean up when ready:`,
-          `  git worktree remove ${preservedWorktree}`,
-          `  rm -rf .claude/workers/${targetName}/`,
+          `Include:`,
+          `  - Generalizable learnings (patterns, gotchas, conventions discovered)`,
+          `  - Business process details specific to this domain`,
+          `  - Important repo/architecture details you learned`,
+          `  - Any unfinished work or known issues`,
+          `  - Recommendations for whoever picks this up next`,
+          ``,
+          `Then call fleet(action="deregister") again.`,
         ].join("\n"),
       }],
+      isError: true,
     };
+  }
+
+  // Append deregistration metadata to handoff
+  if (reason) {
+    try {
+      const timestamp = new Date().toISOString();
+      const appendix = `\n\n---\n## Deregistered\n\n**By:** ${WORKER_NAME}\n**At:** ${timestamp}\n**Reason:** ${reason}\n`;
+      appendFileSync(handoffPath, appendix);
+    } catch {
+      // Best-effort
+    }
+  }
+
+  const preservedWorktree = existing.worktree || "(none registered)";
+
+  // Remove entry from registry (files and worktree are NOT touched)
+  withRegistryLocked((registry) => {
+    delete registry[targetName];
+  });
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: [
+        `Deregistered '${targetName}' from registry.`,
+        ``,
+        `Preserved (not deleted):`,
+        `  Worker files: .claude/workers/${targetName}/`,
+        `  Git worktree: ${preservedWorktree}`,
+        ``,
+        `To fully clean up when ready:`,
+        `  git worktree remove ${preservedWorktree}`,
+        `  rm -rf .claude/workers/${targetName}/`,
+      ].join("\n"),
+    }],
+  };
+}
+
+function handleFleetHelp(): McpResult {
+  return {
+    content: [{
+      type: "text" as const,
+      text: [
+        `# fleet — Fleet Management Tool`,
+        ``,
+        `## Actions`,
+        ``,
+        `### create — Create a new autonomous worker`,
+        `Required: name (string), mission (string)`,
+        `Optional: type (implementer|monitor|coordinator|optimizer|verifier), runtime (claude|codex),`,
+        `  model (string), reasoning_effort (low|medium|high|extra_high), perpetual (bool),`,
+        `  sleep_duration (number), disallowed_tools (JSON string array), window (string),`,
+        `  window_index (number), report_to (string), permission_mode (string), launch (bool),`,
+        `  tasks (JSON array string), proposal_required (bool), fork_from_session (bool),`,
+        `  direct_report (bool)`,
+        ``,
+        `### register — Register yourself in the fleet registry`,
+        `Optional: model (string), perpetual (bool), sleep_duration (number), report_to (string)`,
+        `Auto-detects tmux pane, session, runtime. Call when lint warns you're not in registry.`,
+        ``,
+        `### deregister — Remove a worker from the registry`,
+        `Optional: name (string, default=self), reason (string)`,
+        `Requires HANDOFF.md (>50 chars) in worker directory. Files/worktree preserved.`,
+        `Authorization: self or mission_authority.`,
+        ``,
+        `### move — Move a worker's tmux pane to a different window`,
+        `Required: window (string)`,
+        `Optional: name (string, default=self), reason (string)`,
+        `Moving to 'standby' sets status=standby. Moving out restores active.`,
+        `Authorization: self or mission_authority.`,
+        ``,
+        `### standby — Toggle worker between active and standby`,
+        `Optional: name (string, default=self), reason (string)`,
+        `If active → standby (moves pane, stops watchdog). If standby → active (restores).`,
+        `USER-ONLY — workers must never call this proactively.`,
+        `Authorization: self or mission_authority.`,
+        ``,
+        `### template — Preview worker archetype defaults`,
+        `Required: type (implementer|monitor|coordinator|optimizer|verifier)`,
+        `Returns template mission.md, permissions, and state config.`,
+        ``,
+        `### help — Show this help text`,
+      ].join("\n"),
+    }],
+  };
+}
+
+// @ts-ignore — MCP SDK deep type instantiation with Zod
+server.registerTool(
+  "fleet",
+  {
+    description: "Fleet management operations. Call fleet(action='help') for full parameter docs.\n\nActions: create, register, deregister, move, standby, template, help",
+    inputSchema: {
+      action: z.enum(["create", "register", "deregister", "move", "standby", "template", "help"]).describe("Which fleet operation to perform"),
+      // Common params (used by multiple actions)
+      name: z.string().optional().describe("Worker name (required for create; optional for deregister/move/standby — defaults to self)"),
+      reason: z.string().optional().describe("[deregister/move/standby] Reason for the operation"),
+      window: z.string().optional().describe("[move/create] Target tmux window name"),
+      // create-specific params
+      mission: z.string().optional().describe("[create] Mission markdown (required for create)"),
+      type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("[create/template] Worker archetype"),
+      runtime: z.enum(["claude", "codex"]).optional().describe("[create] Execution engine (default: claude)"),
+      model: z.string().optional().describe("[create/register] LLM model override"),
+      reasoning_effort: z.enum(["low", "medium", "high", "extra_high"]).optional().describe("[create] Depth of reasoning (default: high)"),
+      perpetual: z.boolean().optional().describe("[create/register] Run in infinite recycle loop"),
+      sleep_duration: z.number().optional().describe("[create/register] Seconds between perpetual cycles (default: 1800)"),
+      disallowed_tools: z.string().optional().describe("[create] JSON array of tool deny-list patterns"),
+      window_index: z.number().optional().describe("[create] Explicit tmux window index for new windows"),
+      report_to: z.string().optional().describe("[create/register] Who this worker reports to"),
+      permission_mode: z.string().optional().describe("[create] Claude permission mode (default: bypassPermissions)"),
+      launch: z.boolean().optional().describe("[create] Launch immediately after creation"),
+      tasks: z.string().optional().describe("[create] JSON array of initial tasks"),
+      proposal_required: z.boolean().optional().describe("[create] Require HTML proposal before coding"),
+      fork_from_session: z.boolean().optional().describe("[create] Fork caller's session (requires launch=true)"),
+      direct_report: z.boolean().optional().describe("[create] Set report_to to calling worker"),
+    },
+  },
+  // @ts-ignore — MCP SDK deep type instantiation with Zod
+  async (params: Record<string, any>) => {
+    const { action } = params;
+    switch (action) {
+      case "create": return handleFleetCreate(params);
+      case "template": return handleFleetTemplate(params);
+      case "move": return handleFleetMove(params);
+      case "standby": return handleFleetStandby(params);
+      case "register": return handleFleetRegister(params);
+      case "deregister": return handleFleetDeregister(params);
+      case "help": return handleFleetHelp();
+      default: return { content: [{ type: "text" as const, text: `Unknown action '${action}'. Use fleet(action='help') for available actions.` }], isError: true };
+    }
   }
 );
 
