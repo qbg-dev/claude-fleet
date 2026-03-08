@@ -39,7 +39,7 @@ let WORKERS_DIR = join(PROJECT_ROOT, ".claude/workers");
 function _setWorkersDir(dir: string) { WORKERS_DIR = dir; }
 const HARNESS_LOCK_DIR = join(CLAUDE_OPS, "state/locks");
 
-/** Load shared compaction context template, interpolate placeholders */
+/** Load shared seed context template, interpolate placeholders */
 function loadSeedContext(branch: string, missionAuthority: string): string {
   const tmplPath = join(CLAUDE_OPS, "templates/seed-context.md");
   try {

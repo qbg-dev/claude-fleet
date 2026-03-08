@@ -710,6 +710,76 @@ describe("generateSeedContent", () => {
     const seed = generateSeedContent();
     expect(seed).toContain(".claude/scripts/");
   });
+
+  // Seed context invariant sections (moved from mission.md)
+  test("includes perpetual loop protocol", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("Perpetual Loop Protocol");
+    expect(seed).toContain("recycle()");
+    expect(seed).toContain("NEVER set status=\"done\"");
+  });
+
+  test("includes respawn configuration", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("Respawn Configuration");
+    expect(seed).toContain("sleep_duration");
+    expect(seed).toContain("perpetual");
+  });
+
+  test("includes deploy protocol with slot-based deploy", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("Deploy Protocol");
+    expect(seed).toContain("deploy-to-slot.sh");
+    expect(seed).toContain("pre-validate.sh");
+  });
+
+  test("includes 三省吾身 self-examination", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("三省吾身");
+    expect(seed).toContain("为人谋而不忠乎");
+    expect(seed).toContain("与朋友交而不信乎");
+    expect(seed).toContain("传不习乎");
+  });
+
+  test("includes escalation rules", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("Escalation Rules");
+    expect(seed).toContain("send_message(to=\"user\"");
+  });
+
+  test("includes available scripts section", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("Available Scripts");
+    expect(seed).toContain("request-merge.sh");
+    expect(seed).toContain("worker-status.sh");
+  });
+
+  test("includes stop checks documentation", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("Stop Checks");
+    expect(seed).toContain("add_stop_check");
+    expect(seed).toContain("complete_stop_check");
+  });
+
+  test("includes structured message fields in tool table", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("options=");
+    expect(seed).toContain("context=");
+    expect(seed).toContain("urgency=");
+  });
+
+  test("no unresolved template placeholders", () => {
+    const seed = generateSeedContent();
+    expect(seed).not.toMatch(/\{\{[A-Z_]+\}\}/);
+  });
+
+  test("does not contain project-specific content", () => {
+    const seed = generateSeedContent();
+    expect(seed).not.toContain("baoyuansmartlife");
+    expect(seed).not.toContain("wx.baoyuan");
+    expect(seed).not.toContain("8.129.82.75");
+    expect(seed).not.toContain("120.77.216.196");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

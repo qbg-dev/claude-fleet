@@ -159,8 +159,8 @@ fi
 # Resolve mission authority for template interpolation
 _CONFIG_AUTH=$(jq -r '._config.mission_authority // "chief-of-staff"' "$REGISTRY_FILE" 2>/dev/null || echo "chief-of-staff")
 
-# Shared compaction context (tool table + stop checks + rules) — single source of truth
-_TMPL="${HOME}/.claude-ops/templates/compaction-context.md"
+# Shared seed context (tool table + stop checks + rules) — single source of truth
+_TMPL="${HOME}/.claude-ops/templates/seed-context.md"
 if [ -f "$_TMPL" ]; then
   sed -e "s/{{WORKER_NAME}}/${WORKER_NAME}/g" \
       -e "s|{{BRANCH}}|worker/${WORKER_NAME}|g" \
@@ -206,7 +206,7 @@ if [ -f "$TASKS_FILE" ] && [ -s "$TASKS_FILE" ]; then
   fi
 fi
 
-# Rules and perpetual mode are already in compaction-context.md template above.
+# Rules and perpetual mode are already in seed-context.md template above.
 # Only add compaction-specific reminders not in the shared template.
 echo "### Compaction Reminders"
 echo "- Re-read CLAUDE.md and .claude/CLAUDE.md for project instructions and credentials"
