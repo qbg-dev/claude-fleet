@@ -1,0 +1,373 @@
+#!/usr/bin/env bun
+/**
+ * harness — Interactive CLI for the harness operator.
+ * Claude Code style: REPL prompt, pretty output, vim-friendly.
+ *
+ * Usage:
+ *   harness              # interactive mode
+ *   harness inbox        # one-shot: show inbox
+ *   harness fleet        # one-shot: show fleet
+ *   harness read <n>     # one-shot: read message #n
+ */
+
+import { readFileSync } from "fs";
+import { createInterface } from "readline";
+
+const BMS_URL = process.env.BMS_URL || "http://127.0.0.1:8025";
+
+// Resolve project root: env > well-known Wechat path > git > cwd
+const PROJECT_ROOT = process.env.PROJECT_ROOT ||
+  (() => {
+    const wellKnown = `${process.env.HOME}/Desktop/zPersonalProjects/Wechat`;
+    try { if (Bun.file(`${wellKnown}/.claude/workers/registry.json`).size) return wellKnown; } catch {}
+    try { return Bun.spawnSync(["git", "rev-parse", "--show-toplevel"]).stdout.toString().trim(); } catch { return process.cwd(); }
+  })();
+const REGISTRY_PATH = `${PROJECT_ROOT}/.claude/workers/registry.json`;
+
+// Resolve or auto-provision BMS user token
+let TOKEN = process.env.BMS_TOKEN || "";
+if (!TOKEN) {
+  try { TOKEN = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8")).user?.bms_token || ""; } catch {}
+}
+if (!TOKEN) {
+  // Auto-register user account in BMS
+  try {
+    const resp = await fetch(`${BMS_URL}/api/accounts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "user", display_name: process.env.USER || "operator", bio: "Human operator" }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (resp.ok) {
+      const acct = await resp.json() as any;
+      TOKEN = acct.bearerToken;
+      // Persist to registry
+      try {
+        const reg = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8"));
+        reg.user = reg.user || {};
+        reg.user.bms_token = TOKEN;
+        reg.user.bms_id = acct.id;
+        reg.user.status = "active";
+        const { writeFileSync } = await import("fs");
+        writeFileSync(REGISTRY_PATH, JSON.stringify(reg, null, 2) + "\n");
+      } catch {}
+      console.log(`  ${c.green}✓ BMS user account created and token saved to registry${c.reset}`);
+    } else if (resp.status === 409) {
+      console.error("BMS user account exists but token not in registry. Reset via:");
+      console.error(`  curl -X POST ${BMS_URL}/api/accounts/me/reset-token -H 'Authorization: Bearer <old_token>'`);
+      process.exit(1);
+    } else {
+      console.error(`BMS registration failed: ${resp.status}`);
+      process.exit(1);
+    }
+  } catch (e: any) {
+    console.error(`Cannot reach BMS at ${BMS_URL}: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+// ── Colors ──
+const c = {
+  reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m", italic: "\x1b[3m",
+  blue: "\x1b[38;5;75m", cyan: "\x1b[38;5;117m", green: "\x1b[38;5;114m",
+  yellow: "\x1b[38;5;222m", red: "\x1b[38;5;203m", gray: "\x1b[38;5;245m",
+  white: "\x1b[38;5;255m", magenta: "\x1b[38;5;177m",
+};
+const B = (s: string) => `${c.bold}${s}${c.reset}`;
+const D = (s: string) => `${c.dim}${s}${c.reset}`;
+const Blue = (s: string) => `${c.blue}${s}${c.reset}`;
+const Cyan = (s: string) => `${c.cyan}${s}${c.reset}`;
+const Green = (s: string) => `${c.green}${s}${c.reset}`;
+const Yellow = (s: string) => `${c.yellow}${s}${c.reset}`;
+const Red = (s: string) => `${c.red}${s}${c.reset}`;
+
+// ── BMS ──
+async function bms(method: string, path: string, body?: any): Promise<any> {
+  const r = await fetch(`${BMS_URL}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!r.ok) throw new Error(`BMS ${r.status}: ${(await r.text().catch(() => "")).slice(0, 80)}`);
+  return r.json();
+}
+
+// ── Cached messages (for # references) ──
+let cachedMessages: any[] = [];
+
+// ── Commands ──
+
+async function cmdInbox() {
+  const data = await bms("GET", "/api/messages?label=INBOX&maxResults=50");
+  const msgs = data.messages || [];
+  cachedMessages = msgs;
+
+  if (!msgs.length) { console.log(D("  No messages.")); return; }
+
+  console.log("");
+  console.log(B(Blue("  Inbox")) + D(` (${msgs.length} messages)`));
+  console.log(D("  ─────────────────────────────────────────────────────────────"));
+
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    const unread = m.labelIds?.includes("UNREAD");
+    const esc = m.labelIds?.includes("ESCALATION");
+    const num = D(`${(i + 1).toString().padStart(3)}.`);
+    const badge = esc ? Yellow("!") : unread ? Blue("●") : " ";
+    const from = (m.from?.displayName || m.from?.name || "?").padEnd(16).slice(0, 16);
+    const subj = (m.subject || "(no subject)").slice(0, 60);
+    const date = fmtDate(m.createdAt);
+    const style = unread ? c.white + c.bold : c.gray;
+    console.log(`  ${num} ${badge} ${style}${from}${c.reset}  ${style}${subj}${c.reset}  ${D(date)}`);
+  }
+  console.log("");
+  console.log(D("  read <n> to open, reply <n> to respond, archive <n> to dismiss"));
+  console.log("");
+}
+
+async function cmdRead(n: number) {
+  // Auto-fetch inbox if cache is empty
+  if (!cachedMessages.length) {
+    const data = await bms("GET", "/api/messages?label=INBOX&maxResults=50");
+    cachedMessages = data.messages || [];
+  }
+  let msg: any;
+  if (cachedMessages[n - 1]) {
+    msg = await bms("GET", `/api/messages/${cachedMessages[n - 1].id}`);
+  } else {
+    console.log(Red(`  No message #${n}. Inbox has ${cachedMessages.length} message(s).`)); return;
+  }
+  if (!msg) { console.log(Red("  Message not found.")); return; }
+
+  console.log("");
+  console.log(D("  ─────────────────────────────────────────────────────────────"));
+  console.log(`  ${Blue(B("From:"))}     ${msg.from?.displayName || msg.from?.name || "?"} ${D("<" + (msg.from?.name || "") + ">")}`);
+  console.log(`  ${Blue(B("Subject:"))}  ${B(msg.subject || "(none)")}`);
+  console.log(`  ${Blue(B("Date:"))}     ${D(msg.createdAt || "")}`);
+  const labels = (msg.labelIds || []).filter((l: string) => !["INBOX", "SENT", "UNREAD"].includes(l));
+  if (labels.length) console.log(`  ${Blue(B("Labels:"))}   ${labels.map(Yellow).join(" ")}`);
+  console.log(D("  ─────────────────────────────────────────────────────────────"));
+  console.log("");
+
+  for (const line of (msg.body || "").split("\n")) {
+    // Render markdown-lite: ## headers, **bold**, `code`
+    let out = line
+      .replace(/^## (.+)/, `  ${c.blue}${c.bold}$1${c.reset}`)
+      .replace(/^### (.+)/, `  ${c.cyan}$1${c.reset}`)
+      .replace(/\*\*(.+?)\*\*/g, `${c.bold}$1${c.reset}`)
+      .replace(/`(.+?)`/g, `${c.cyan}$1${c.reset}`)
+      .replace(/^- /, `  ${c.dim}•${c.reset} `);
+    console.log(`  ${out}`);
+  }
+  console.log("");
+}
+
+async function cmdReply(n: number, body: string) {
+  if (!cachedMessages.length) {
+    const data = await bms("GET", "/api/messages?label=INBOX&maxResults=50");
+    cachedMessages = data.messages || [];
+  }
+  if (!cachedMessages[n - 1]) { console.log(Red(`  No message #${n}. Inbox has ${cachedMessages.length} message(s).`)); return; }
+  const msg = cachedMessages[n - 1];
+  await bms("POST", "/api/messages/send", {
+    to: [msg.from?.id], subject: `Re: ${msg.subject || ""}`,
+    body, cc: [], thread_id: msg.threadId || null,
+    in_reply_to: msg.id, reply_by: null, labels: [], attachments: [],
+  });
+  console.log(Green("  ✓ Replied to " + (msg.from?.name || "?")));
+}
+
+async function cmdArchive(n: number) {
+  if (!cachedMessages.length) {
+    const data = await bms("GET", "/api/messages?label=INBOX&maxResults=50");
+    cachedMessages = data.messages || [];
+  }
+  if (!cachedMessages[n - 1]) { console.log(Red(`  No message #${n}. Inbox has ${cachedMessages.length} message(s).`)); return; }
+  const msg = cachedMessages[n - 1];
+  await bms("POST", `/api/messages/${msg.id}/modify`, { addLabelIds: ["ARCHIVED"], removeLabelIds: ["INBOX", "UNREAD"] });
+  console.log(Green("  ✓ Archived: " + (msg.subject || "(no subject)")));
+  cachedMessages.splice(n - 1, 1);
+}
+
+async function cmdSend(to: string, subject: string, body: string) {
+  const toIds = await bms("GET", `/api/directory`).then((accs: any[]) => {
+    const found = accs.find((a: any) => a.name === to);
+    return found ? [found.id] : [to];
+  }).catch(() => [to]);
+  await bms("POST", "/api/messages/send", {
+    to: toIds, subject, body, cc: [], thread_id: null,
+    in_reply_to: null, reply_by: null, labels: [], attachments: [],
+  });
+  console.log(Green(`  ✓ Sent to ${to}: ${subject}`));
+}
+
+async function cmdFleet() {
+  let reg: any;
+  try { reg = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8")); }
+  catch { console.log(Red("  Cannot read registry.")); return; }
+
+  const workers = Object.entries(reg)
+    .filter(([k]) => k !== "_config")
+    .map(([name, w]: [string, any]) => ({
+      name, status: w.status || "?", perpetual: !!w.perpetual,
+      pane: w.pane_id || "", runtime: w.custom?.runtime || "claude",
+      sleep_until: w.custom?.sleep_until,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  console.log("");
+  console.log(B(Blue("  Fleet")) + D(` (${workers.length} workers)`));
+  console.log(D("  ─────────────────────────────────────────────────────────────"));
+  console.log(`  ${D("Worker".padEnd(24))} ${D("Runtime".padEnd(9))} ${D("Status".padEnd(12))} ${D("Pane".padEnd(8))} ${D("Info")}`);
+
+  for (const w of workers) {
+    const sc = w.status === "active" ? c.green : w.status === "sleeping" ? c.yellow : w.status === "standby" ? c.dim : c.gray;
+    const perp = w.perpetual ? D("♻") : " ";
+    let info = perp;
+    if (w.status === "sleeping" && w.sleep_until) {
+      const d = new Date(w.sleep_until);
+      info += ` ${Yellow("wake " + d.getHours().toString().padStart(2, "0") + ":" + d.getMinutes().toString().padStart(2, "0"))}`;
+    }
+    const pane = w.pane ? w.pane : D("—");
+    console.log(`  ${c.white}${w.name.padEnd(24)}${c.reset} ${D(w.runtime.padEnd(9))} ${sc}${w.status.padEnd(12)}${c.reset} ${pane.padEnd(8)} ${info}`);
+  }
+  console.log("");
+}
+
+async function cmdSearch(query: string) {
+  const data = await bms("GET", `/api/search?q=${encodeURIComponent(query)}&maxResults=20`);
+  const msgs = data.messages || [];
+  cachedMessages = msgs;
+  if (!msgs.length) { console.log(D("  No results for: " + query)); return; }
+
+  console.log("");
+  console.log(B(Blue("  Search")) + D(` "${query}" — ${msgs.length} results`));
+  console.log(D("  ─────────────────────────────────────────────────────────────"));
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    const num = D(`${(i + 1).toString().padStart(3)}.`);
+    const from = (m.from?.displayName || m.from?.name || "?").padEnd(16).slice(0, 16);
+    const subj = (m.subject || "(no subject)").slice(0, 50);
+    console.log(`  ${num}  ${c.gray}${from}${c.reset}  ${subj}  ${D(fmtDate(m.createdAt))}`);
+  }
+  console.log("");
+}
+
+function cmdHelp() {
+  console.log("");
+  console.log(B(Blue("  harness")) + D(" — worker fleet CLI"));
+  console.log(D("  ─────────────────────────────────────────────────────────────"));
+  console.log(`  ${B("inbox")}              Show inbox`);
+  console.log(`  ${B("read")} ${D("<n>")}           Read message #n`);
+  console.log(`  ${B("reply")} ${D("<n> <msg>")}    Reply to message #n`);
+  console.log(`  ${B("archive")} ${D("<n>")}        Archive message #n`);
+  console.log(`  ${B("fleet")}              Show worker fleet status`);
+  console.log(`  ${B("search")} ${D("<query>")}     Search messages (Gmail syntax)`);
+  console.log(`  ${B("send")} ${D("<to> <subj>")}   Send a message (body on next line)`);
+  console.log(`  ${B("help")}               This help`);
+  console.log(`  ${B("quit")} / ${D("Ctrl+C")}      Exit`);
+  console.log("");
+}
+
+// ── Helpers ──
+function fmtDate(iso: string): string {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60e3) return "now";
+  if (ms < 3600e3) return `${ms / 60e3 | 0}m ago`;
+  if (ms < 86400e3) return `${ms / 3600e3 | 0}h ago`;
+  const d = new Date(iso);
+  return `${(d.getMonth() + 1).toString().padStart(2, "0")}/${d.getDate().toString().padStart(2, "0")}`;
+}
+
+// ── Dispatch ──
+async function dispatch(input: string): Promise<boolean> {
+  const parts = input.trim().split(/\s+/);
+  const cmd = parts[0]?.toLowerCase();
+  if (!cmd) return true;
+
+  try {
+    switch (cmd) {
+      case "inbox": case "i": await cmdInbox(); break;
+      case "read": case "r": {
+        const n = parseInt(parts[1]);
+        if (!n) { console.log(Red("  Usage: read <n>")); break; }
+        await cmdRead(n); break;
+      }
+      case "reply": case "re": {
+        const n = parseInt(parts[1]);
+        const body = parts.slice(2).join(" ");
+        if (!n || !body) { console.log(Red("  Usage: reply <n> <message>")); break; }
+        await cmdReply(n, body); break;
+      }
+      case "archive": case "a": {
+        const n = parseInt(parts[1]);
+        if (!n) { console.log(Red("  Usage: archive <n>")); break; }
+        await cmdArchive(n); break;
+      }
+      case "fleet": case "f": await cmdFleet(); break;
+      case "search": case "s": {
+        const q = parts.slice(1).join(" ");
+        if (!q) { console.log(Red("  Usage: search <query>")); break; }
+        await cmdSearch(q); break;
+      }
+      case "send": {
+        const to = parts[1];
+        const subj = parts.slice(2).join(" ");
+        if (!to || !subj) { console.log(Red("  Usage: send <worker> <subject>")); break; }
+        console.log(D("  Body (one line):"));
+        // Read body from next line
+        const rl2 = createInterface({ input: process.stdin, output: process.stdout });
+        const body = await new Promise<string>(res => { rl2.question("  ", (ans) => { rl2.close(); res(ans); }); });
+        if (body.trim()) await cmdSend(to, subj, body.trim());
+        break;
+      }
+      case "help": case "h": case "?": cmdHelp(); break;
+      case "quit": case "q": case "exit": return false;
+      default:
+        console.log(D(`  Unknown command: ${cmd}. Type 'help' for commands.`));
+    }
+  } catch (e: any) {
+    console.log(Red(`  Error: ${e.message}`));
+  }
+  return true;
+}
+
+// ── Main ──
+async function main() {
+  const args = process.argv.slice(2);
+
+  // One-shot mode
+  if (args.length > 0) {
+    await dispatch(args.join(" "));
+    process.exit(0);
+  }
+
+  // Interactive REPL
+  console.log("");
+  console.log(`  ${c.blue}${c.bold}⬡ harness${c.reset}  ${D("worker fleet CLI")}`);
+  console.log(D("  Type 'help' for commands, 'quit' to exit."));
+
+  // Show inbox on start
+  await cmdInbox();
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: `${c.blue}❯${c.reset} `,
+    historySize: 100,
+  });
+
+  rl.prompt();
+
+  rl.on("line", async (line) => {
+    const cont = await dispatch(line);
+    if (!cont) { rl.close(); return; }
+    rl.prompt();
+  });
+
+  rl.on("close", () => { console.log(""); process.exit(0); });
+}
+
+main().catch(e => { console.error(e); process.exit(1); });

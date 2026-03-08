@@ -926,239 +926,156 @@ const server = new McpServer({
 // ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
-// TASK TOOLS (3) — native TS, no shell subprocess
+// TASK TOOL (consolidated: create + update + list)
 // ═══════════════════════════════════════════════════════════════════
 
 server.registerTool(
-  "create_task",
-  { description: "Create a durable task to track a unit of work. Tasks persist across recycles, support dependency chains (blocked_by/blocks), and give the fleet visibility into your work queue. Create a task whenever you identify a bug, feature, investigation, or follow-up — even mid-cycle. Prefer externalizing work into tasks over holding it in conversation context, since context is lost on recycle.", inputSchema: {
-    subject: z.string().describe("Task title in imperative form (e.g. 'Fix TypeScript errors in auth module', 'Add pagination to user list')"),
-    description: z.string().optional().describe("Detailed description of what needs to be done, acceptance criteria, or relevant context"),
-    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Execution priority. 'critical' tasks should be addressed before any others. Default: 'medium'"),
-    active_form: z.string().optional().describe("Present-continuous label shown in status displays while this task is in progress (e.g. 'Running tests', 'Deploying to slot')"),
-    blocks: z.string().optional().describe("Comma-separated task IDs that cannot start until this task completes (e.g. 'T003,T004'). Creates forward dependencies"),
-    blocked_by: z.string().optional().describe("Comma-separated task IDs that must complete before this task can start (e.g. 'T001,T002'). Task stays blocked until all are completed"),
-    recurring: z.boolean().optional().describe("If true, task auto-resets to 'pending' after completion instead of staying 'completed'. Use for repeating work like monitoring sweeps or periodic audits"),
+  "task",
+  { description: "Manage your task queue. Actions:\n- create: Add a new task (requires subject)\n- update: Change task status/fields (requires task_id)\n- list: View tasks (optional filter/worker)", inputSchema: {
+    action: z.enum(["create", "update", "list"]).describe("Operation to perform"),
+    // create params
+    subject: z.string().optional().describe("[create] Task title in imperative form"),
+    description: z.string().optional().describe("[create/update] Task description or notes"),
+    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("[create/update] Execution priority (default: medium)"),
+    active_form: z.string().optional().describe("[create/update] Present-continuous label for status displays"),
+    blocks: z.string().optional().describe("[create] Comma-separated task IDs that cannot start until this completes"),
+    blocked_by: z.string().optional().describe("[create] Comma-separated task IDs that must complete first"),
+    recurring: z.boolean().optional().describe("[create] If true, auto-resets to pending after completion"),
+    // update params
+    task_id: z.string().optional().describe("[update] Task identifier (e.g. 'T001')"),
+    status: z.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("[update] Target status"),
+    owner: z.string().optional().describe("[update] Reassign to a different worker"),
+    add_blocked_by: z.string().optional().describe("[update] Comma-separated task IDs to add as blockers"),
+    add_blocks: z.string().optional().describe("[update] Comma-separated task IDs to block with this task"),
+    // list params
+    filter: z.enum(["all", "pending", "in_progress", "blocked"]).optional().describe("[list] Filter by status (default: all)"),
+    worker: z.string().optional().describe("[list] Whose tasks (omit=self, 'all'=fleet-wide)"),
   } },
-  async ({ subject, description, priority, active_form, blocks, blocked_by, recurring }) => {
+  async ({ action, subject, description, priority, active_form, blocks, blocked_by, recurring, task_id, status, owner, add_blocked_by, add_blocks, filter, worker }) => {
     try {
-      const tasks = readTasks(WORKER_NAME);
-      const taskId = nextTaskId(tasks);
-      const now = new Date().toISOString();
-
-      const blockedByList = blocked_by
-        ? blocked_by.split(",").map(s => s.trim()).filter(Boolean)
-        : [];
-
-      const task: Task = {
-        subject,
-        description: description || "",
-        activeForm: active_form || `Working on: ${subject}`,
-        status: "pending",
-        priority: (priority as Task["priority"]) || "medium",
-        recurring: recurring || false,
-        blocked_by: blockedByList,
-        metadata: {},
-        cycles_completed: 0,
-        owner: null,
-        created_at: now,
-        completed_at: null,
-      };
-
-      tasks[taskId] = task;
-
-      // Forward-blocking: add taskId to blocked_by of specified tasks
-      if (blocks) {
-        const blocksList = blocks.split(",").map(s => s.trim()).filter(Boolean);
-        for (const targetId of blocksList) {
-          if (tasks[targetId]) {
-            const existing = tasks[targetId].blocked_by || [];
-            if (!existing.includes(taskId)) {
-              tasks[targetId].blocked_by = [...existing, taskId];
+      // ── CREATE ──
+      if (action === "create") {
+        if (!subject) return { content: [{ type: "text" as const, text: "Error: 'subject' required for create" }], isError: true };
+        const tasks = readTasks(WORKER_NAME);
+        const id = nextTaskId(tasks);
+        const now = new Date().toISOString();
+        const blockedByList = blocked_by ? blocked_by.split(",").map(s => s.trim()).filter(Boolean) : [];
+        const task: Task = {
+          subject, description: description || "", activeForm: active_form || `Working on: ${subject}`,
+          status: "pending", priority: (priority as Task["priority"]) || "medium",
+          recurring: recurring || false, blocked_by: blockedByList, metadata: {},
+          cycles_completed: 0, owner: null, created_at: now, completed_at: null,
+        };
+        tasks[id] = task;
+        if (blocks) {
+          for (const targetId of blocks.split(",").map(s => s.trim()).filter(Boolean)) {
+            if (tasks[targetId]) {
+              const existing = tasks[targetId].blocked_by || [];
+              if (!existing.includes(id)) tasks[targetId].blocked_by = [...existing, id];
             }
           }
         }
+        writeTasks(WORKER_NAME, tasks);
+        let suffix = ` [${task.priority}]`;
+        if (recurring) suffix += " (recurring)";
+        if (blockedByList.length > 0) suffix += ` (after: ${blockedByList.join(",")})`;
+        if (blocks) suffix += ` (blocks: ${blocks})`;
+        return withLint({ content: [{ type: "text" as const, text: `Added ${id}: ${subject}${suffix}` }] });
       }
 
-      writeTasks(WORKER_NAME, tasks);
-
-      let suffix = ` [${task.priority}]`;
-      if (recurring) suffix += " (recurring)";
-      if (blockedByList.length > 0) suffix += ` (after: ${blockedByList.join(",")})`;
-      if (blocks) suffix += ` (blocks: ${blocks})`;
-
-      return withLint({ content: [{ type: "text" as const, text: `Added ${taskId}: ${subject}${suffix}` }] });
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
-
-server.registerTool(
-  "update_task",
-  { description: "Advance a task through its lifecycle, update its metadata, or manage dependencies. Lifecycle: pending → in_progress → completed (or deleted at any point). Always claim a task with status='in_progress' before starting work — this sets you as owner and prevents other workers from duplicating the effort. Only mark 'completed' after the work is fully verified. Use 'deleted' to permanently discard tasks that are no longer relevant. Refuses to start a task that has unfinished blockers.", inputSchema: {
-    task_id: z.string().describe("Task identifier (e.g. 'T001'). Use list_tasks to find available IDs"),
-    status: z.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("Target status. 'in_progress' claims the task and sets you as owner. 'completed' marks it done (recurring tasks auto-reset to pending). 'deleted' permanently discards it"),
-    subject: z.string().optional().describe("Updated task title"),
-    description: z.string().optional().describe("Updated task description or notes"),
-    active_form: z.string().optional().describe("Present-continuous label shown in status displays (e.g. 'Running tests')"),
-    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Updated priority level"),
-    owner: z.string().optional().describe("Reassign to a different worker by name. Automatically set when claiming with status='in_progress'"),
-    add_blocked_by: z.string().optional().describe("Comma-separated task IDs to add as blockers (e.g. 'T001,T002'). Task cannot start until all blockers are completed"),
-    add_blocks: z.string().optional().describe("Comma-separated task IDs that should be blocked by this task (e.g. 'T005,T006'). Adds this task's ID to their blocked_by lists"),
-  } },
-  async ({ task_id, status, subject, description, active_form, priority, owner, add_blocked_by, add_blocks }) => {
-    try {
-      const tasks = readTasks(WORKER_NAME);
-      const task = tasks[task_id];
-
-      if (!task) {
-        return { content: [{ type: "text" as const, text: `Error: Task ${task_id} not found` }], isError: true };
-      }
-
-      const changes: string[] = [];
-      const now = new Date().toISOString();
-
-      // Status transitions
-      if (status) {
-        if (status === "in_progress") {
-          if (task.status === "completed") {
-            return { content: [{ type: "text" as const, text: `Error: Task ${task_id} already completed` }], isError: true };
-          }
-          if (task.status === "deleted") {
-            return { content: [{ type: "text" as const, text: `Error: Task ${task_id} has been deleted` }], isError: true };
-          }
-          if (isTaskBlocked(tasks, task_id)) {
-            const blockers = (task.blocked_by || []).filter(d => tasks[d]?.status !== "completed");
-            return { content: [{ type: "text" as const, text: `Error: Task ${task_id} blocked by: ${blockers.join(", ")}` }], isError: true };
-          }
-          task.status = "in_progress";
-          task.owner = owner || WORKER_NAME;
-          changes.push("claimed");
-        } else if (status === "completed") {
-          if (task.recurring) {
-            task.status = "pending";
-            task.owner = null;
-            task.completed_at = null;
-            task.last_completed_at = now;
-            task.cycles_completed = (task.cycles_completed || 0) + 1;
-            changes.push(`completed (recurring — reset to pending, cycle #${task.cycles_completed})`);
-          } else {
-            task.status = "completed";
-            task.completed_at = now;
-            changes.push("completed");
-          }
-        } else if (status === "deleted") {
-          task.status = "deleted";
-          task.deleted_at = now;
-          changes.push("deleted");
-        } else if (status === "pending") {
-          task.status = "pending";
-          changes.push("set to pending");
-        }
-      }
-
-      // Field updates
-      if (subject) { task.subject = subject; changes.push("subject updated"); }
-      if (description !== undefined) { task.description = description; changes.push("description updated"); }
-      if (active_form) { task.activeForm = active_form; changes.push("activeForm updated"); }
-      if (priority) { task.priority = priority; changes.push(`priority → ${priority}`); }
-      if (owner && !status) { task.owner = owner; changes.push(`owner → ${owner}`); }
-
-      // Dependency updates
-      if (add_blocked_by) {
-        const ids = add_blocked_by.split(",").map(s => s.trim()).filter(Boolean);
-        task.blocked_by = [...new Set([...(task.blocked_by || []), ...ids])];
-        changes.push(`blocked by: ${ids.join(",")}`);
-      }
-      if (add_blocks) {
-        const ids = add_blocks.split(",").map(s => s.trim()).filter(Boolean);
-        for (const targetId of ids) {
-          if (tasks[targetId]) {
-            const existing = tasks[targetId].blocked_by || [];
-            if (!existing.includes(task_id)) {
-              tasks[targetId].blocked_by = [...existing, task_id];
+      // ── UPDATE ──
+      if (action === "update") {
+        if (!task_id) return { content: [{ type: "text" as const, text: "Error: 'task_id' required for update" }], isError: true };
+        const tasks = readTasks(WORKER_NAME);
+        const task = tasks[task_id];
+        if (!task) return { content: [{ type: "text" as const, text: `Error: Task ${task_id} not found` }], isError: true };
+        const changes: string[] = [];
+        const now = new Date().toISOString();
+        if (status) {
+          if (status === "in_progress") {
+            if (task.status === "completed") return { content: [{ type: "text" as const, text: `Error: Task ${task_id} already completed` }], isError: true };
+            if (task.status === "deleted") return { content: [{ type: "text" as const, text: `Error: Task ${task_id} has been deleted` }], isError: true };
+            if (isTaskBlocked(tasks, task_id)) {
+              const blockers = (task.blocked_by || []).filter(d => tasks[d]?.status !== "completed");
+              return { content: [{ type: "text" as const, text: `Error: Task ${task_id} blocked by: ${blockers.join(", ")}` }], isError: true };
             }
+            task.status = "in_progress"; task.owner = owner || WORKER_NAME; changes.push("claimed");
+          } else if (status === "completed") {
+            if (task.recurring) {
+              task.status = "pending"; task.owner = null; task.completed_at = null;
+              task.last_completed_at = now; task.cycles_completed = (task.cycles_completed || 0) + 1;
+              changes.push(`completed (recurring — reset to pending, cycle #${task.cycles_completed})`);
+            } else { task.status = "completed"; task.completed_at = now; changes.push("completed"); }
+          } else if (status === "deleted") { task.status = "deleted"; task.deleted_at = now; changes.push("deleted"); }
+          else if (status === "pending") { task.status = "pending"; changes.push("set to pending"); }
+        }
+        if (subject) { task.subject = subject; changes.push("subject updated"); }
+        if (description !== undefined) { task.description = description; changes.push("description updated"); }
+        if (active_form) { task.activeForm = active_form; changes.push("activeForm updated"); }
+        if (priority) { task.priority = priority; changes.push(`priority → ${priority}`); }
+        if (owner && !status) { task.owner = owner; changes.push(`owner → ${owner}`); }
+        if (add_blocked_by) {
+          const ids = add_blocked_by.split(",").map(s => s.trim()).filter(Boolean);
+          task.blocked_by = [...new Set([...(task.blocked_by || []), ...ids])]; changes.push(`blocked by: ${ids.join(",")}`);
+        }
+        if (add_blocks) {
+          const ids = add_blocks.split(",").map(s => s.trim()).filter(Boolean);
+          for (const targetId of ids) {
+            if (tasks[targetId]) { const existing = tasks[targetId].blocked_by || []; if (!existing.includes(task_id)) tasks[targetId].blocked_by = [...existing, task_id]; }
+          }
+          changes.push(`blocks: ${ids.join(",")}`);
+        }
+        if (changes.length === 0) return { content: [{ type: "text" as const, text: `No changes specified for ${task_id}` }] };
+        writeTasks(WORKER_NAME, tasks);
+        return withLint({ content: [{ type: "text" as const, text: `Updated ${task_id}: ${changes.join(", ")}` }] });
+      }
+
+      // ── LIST ──
+      if (action === "list") {
+        const targetWorkers: string[] = [];
+        const wn = worker || WORKER_NAME;
+        if (wn === "all") {
+          targetWorkers.push(...readdirSync(WORKERS_DIR, { withFileTypes: true })
+            .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+            .map(d => d.name));
+        } else {
+          targetWorkers.push(wn);
+        }
+        const results: string[] = [];
+        let total = 0;
+        for (const w of targetWorkers) {
+          const tasks = readTasks(w);
+          if (Object.keys(tasks).length === 0) continue;
+          const entries = Object.entries(tasks) as [string, Task][];
+          const filtered = entries.filter(([tid, t]) => {
+            if (t.status === "deleted") return false;
+            const blocked = isTaskBlocked(tasks, tid);
+            if (filter === "pending") return t.status === "pending" && !blocked;
+            if (filter === "in_progress") return t.status === "in_progress";
+            if (filter === "blocked") return blocked && t.status !== "completed";
+            return true;
+          });
+          if (filtered.length === 0) continue;
+          results.push(`## ${w}`);
+          for (const [id, t] of filtered) {
+            const blocked = isTaskBlocked(tasks, id);
+            const st = blocked ? "blocked" : t.status;
+            const deps = (t.blocked_by || []).length > 0 ? ` [after:${t.blocked_by.join(",")}]` : "";
+            const rec = t.recurring ? " (recurring)" : "";
+            results.push(`  ${id} [${t.priority || "medium"}] ${st}: ${t.subject}${deps}${rec}`);
+            total++;
           }
         }
-        changes.push(`blocks: ${ids.join(",")}`);
+        if (!results.length) return { content: [{ type: "text" as const, text: "No tasks found" }] };
+        return withLint({ content: [{ type: "text" as const, text: `${total} tasks:\n${results.join("\n")}` }] });
       }
 
-      if (changes.length === 0) {
-        return { content: [{ type: "text" as const, text: `No changes specified for ${task_id}` }] };
-      }
-
-      writeTasks(WORKER_NAME, tasks);
-      return withLint({ content: [{ type: "text" as const, text: `Updated ${task_id}: ${changes.join(", ")}` }] });
+      return { content: [{ type: "text" as const, text: `Unknown action: ${action}` }], isError: true };
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
   }
 );
-
-server.registerTool(
-  "list_tasks",
-  { description: "List tasks from your queue or across the fleet. Use at the start of each cycle to find work to claim. filter='pending' shows only unblocked tasks ready to start — the most common query. worker='all' provides a cross-fleet view to see what everyone is working on and avoid duplicate effort. Deleted tasks are always excluded from results.", inputSchema: {
-    filter: z.enum(["all", "pending", "in_progress", "blocked"]).optional()
-      .describe("Filter tasks by status. 'pending': ready to claim (unblocked only). 'in_progress': actively being worked. 'blocked': waiting on dependencies. 'all': everything except deleted. Default: 'all'"),
-    worker: z.string().optional()
-      .describe("Whose tasks to list. Omit for your own queue. Use a worker name for a specific peer, or 'all' for a fleet-wide view grouped by worker"),
-  } },
-  async ({ filter, worker }) => {
-    try {
-      const targetWorkers: string[] = [];
-      const workerName = worker || WORKER_NAME;
-
-      if (workerName === "all") {
-        const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
-          .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
-          .map(d => d.name);
-        targetWorkers.push(...dirs);
-      } else {
-        targetWorkers.push(workerName);
-      }
-
-      const results: string[] = [];
-      let totalCount = 0;
-
-      for (const w of targetWorkers) {
-        const tasks = readTasks(w);
-        if (Object.keys(tasks).length === 0) continue;
-
-        const entries = Object.entries(tasks) as [string, Task][];
-        const filtered = entries.filter(([taskId, t]) => {
-          if (t.status === "deleted") return false;
-          const blocked = isTaskBlocked(tasks, taskId);
-          if (filter === "pending") return t.status === "pending" && !blocked;
-          if (filter === "in_progress") return t.status === "in_progress";
-          if (filter === "blocked") return blocked && t.status !== "completed";
-          return true;
-        });
-
-        if (filtered.length === 0) continue;
-
-        results.push(`## ${w}`);
-        for (const [id, t] of filtered) {
-          const blocked = isTaskBlocked(tasks, id);
-          const status = blocked ? "blocked" : t.status;
-          const deps = (t.blocked_by || []).length > 0 ? ` [after:${t.blocked_by.join(",")}]` : "";
-          const rec = t.recurring ? " (recurring)" : "";
-          results.push(`  ${id} [${t.priority || "medium"}] ${status}: ${t.subject}${deps}${rec}`);
-          totalCount++;
-        }
-      }
-
-      if (results.length === 0) {
-        return { content: [{ type: "text" as const, text: "No tasks found" }] };
-      }
-
-      return withLint({ content: [{ type: "text" as const, text: `${totalCount} tasks:\n${results.join("\n")}` }] });
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-);
-
 // ═══════════════════════════════════════════════════════════════════
 // STATE & FLEET TOOLS (3)
 // ═══════════════════════════════════════════════════════════════════
@@ -1424,28 +1341,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
-  "list_stop_checks",
-  {
-    description: "List all stop checks registered this session with their current status (pending or completed). Shows check IDs, descriptions, and completion timestamps. Use before recycling to see what verification gates remain, or to find check IDs for complete_stop_check(). Returns a ready/not-ready summary at the end.",
-    inputSchema: {},
-  },
-  async () => {
-    if (stopChecks.size === 0) {
-      return { content: [{ type: "text" as const, text: "No stop checks registered this session." }] };
-    }
-    const lines: string[] = [];
-    for (const check of stopChecks.values()) {
-      const status = check.completed ? "✓ DONE" : "○ PENDING";
-      const time = check.completed_at ? ` (completed ${check.completed_at})` : "";
-      lines.push(`  [${check.id}] ${status} — ${check.description}${time}`);
-    }
-    const pending = [...stopChecks.values()].filter(c => !c.completed).length;
-    lines.push("");
-    lines.push(pending === 0 ? "All checks completed — ready to recycle." : `${pending} pending check(s) — complete before recycling.`);
-    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
-  }
-);
+// list_stop_checks — REMOVED (absorbed into recycle() blocked response + add_stop_check/complete_stop_check output)
 
 // ═══════════════════════════════════════════════════════════════════
 // LIFECYCLE TOOLS (4) — recycle, heartbeat, check_config, reload
@@ -3102,8 +2998,41 @@ async function resolveBmsAccountId(name: string): Promise<string> {
   }
 
   const id = _bmsDirectoryCache?.[name];
-  if (!id) throw new Error(`BMS account '${name}' not found in directory`);
-  return id;
+  if (id) return id;
+
+  // Auto-provision "user" account if it doesn't exist
+  if (name === "user") {
+    try {
+      const provResp = await fetch(`${BMS_URL}/api/accounts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "user", display_name: "operator", bio: "Human operator" }),
+      });
+      if (provResp.ok) {
+        const acct = await provResp.json() as any;
+        // Save token to registry
+        try {
+          withRegistryLocked((reg) => {
+            if (!reg.user) (reg as any).user = {};
+            (reg.user as any).bms_token = acct.bearerToken;
+            (reg.user as any).bms_id = acct.id;
+            (reg.user as any).status = "active";
+          });
+        } catch {}
+        if (!_bmsDirectoryCache) _bmsDirectoryCache = {};
+        _bmsDirectoryCache["user"] = acct.id;
+        return acct.id;
+      }
+      // 409 = already exists but not in cache — refresh
+      if (provResp.status === 409) {
+        _bmsDirectoryCache = null;
+        _bmsDirectoryCacheTime = 0;
+        return resolveBmsAccountId(name);
+      }
+    } catch {}
+  }
+
+  throw new Error(`BMS account '${name}' not found in directory`);
 }
 
 async function resolveBmsRecipients(names: string[]): Promise<string[]> {
@@ -3314,48 +3243,7 @@ server.registerTool(
   }
 );
 
-// ── mail_search — full-text search ──────────────────────────────────
-
-// @ts-ignore — MCP SDK deep type instantiation with Zod
-server.registerTool(
-  "mail_search",
-  {
-    description: "Full-text search emails with Gmail query syntax. Supports from:, to:, subject:, has:attachment, label:, date ranges.",
-    inputSchema: {
-      q: z.string().describe("Search query using Gmail syntax"),
-      maxResults: z.number().optional().describe("Max results (default: 20)"),
-    },
-  },
-  async ({ q, maxResults }: { q: string; maxResults?: number }) => {
-    try {
-      const result = await bmsRequest("GET", `/api/search?q=${encodeURIComponent(q)}&maxResults=${maxResults || 20}`);
-      return bmsTextResult(result);
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: e.message }], isError: true };
-    }
-  }
-);
-
-// ── mail_thread — get full thread ───────────────────────────────────
-
-// @ts-ignore — MCP SDK deep type instantiation with Zod
-server.registerTool(
-  "mail_thread",
-  {
-    description: "Get a full email thread with all its messages.",
-    inputSchema: {
-      id: z.string().describe("Thread ID"),
-    },
-  },
-  async ({ id }: { id: string }) => {
-    try {
-      const result = await bmsRequest("GET", `/api/threads/${encodeURIComponent(id)}`);
-      return bmsTextResult(result);
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: e.message }], isError: true };
-    }
-  }
-);
+// mail_search + mail_thread — REMOVED (documented in mail_help with curl examples)
 
 // ── Management reference (1) — on-demand CLI docs ───────────────────
 
@@ -3363,7 +3251,7 @@ server.registerTool(
 server.registerTool(
   "mail_help",
   {
-    description: "Get boring-mail-server CLI documentation for management operations: token reset, label management, trash, threads, directory, profile, mailing lists, and raw curl examples. Call this when you need to do something beyond send/read/search.",
+    description: "Get BMS CLI docs for search, threads, labels, trash, directory, mailing lists, and raw curl. Call this for any mail operation beyond send/inbox/read.",
     inputSchema: {},
   },
   async () => {
@@ -3373,6 +3261,22 @@ server.registerTool(
 Server: ${BMS_URL}
 Your account: ${WORKER_NAME}
 Your token: ${token}
+
+## Search (replaces mail_search tool)
+
+  # Gmail-style query syntax: from:, to:, subject:, has:attachment, label:, date ranges
+  curl -sf "${BMS_URL}/api/search?q=from:merger&maxResults=20" \\
+    -H "Authorization: Bearer $TOKEN"
+
+## Threads (replaces mail_thread tool)
+
+  # Get full conversation thread
+  curl -sf "${BMS_URL}/api/threads/<thread-id>" \\
+    -H "Authorization: Bearer $TOKEN"
+
+  # List threads by label
+  curl -sf "${BMS_URL}/api/threads?label=INBOX&maxResults=20" \\
+    -H "Authorization: Bearer $TOKEN"
 
 ## Token Management
 
