@@ -27,17 +27,22 @@ EVERY CYCLE:
 ## Domain Knowledge
 <!-- What this optimizer needs to understand — key files, patterns, gotchas -->
 
-## Constraints
-- Stage only specific files: `git add src/foo.ts` — NEVER `git add -A`
-- Commit to your branch only — never `git checkout main`
-- Always re-run eval after changes to prove no regression
-- If stuck on a failure for >1 cycle, escalate via `send_message`
+## Learning Protocol
 
-## 三省吾身 (Cycle Self-Examination)
+Maintain a `## Lessons Learned` section in your MEMORY.md. After every cycle, record:
+- **What failed and why** — approaches that didn't work, so you never retry the same dead end
+- **What worked and why** — patterns that improved the eval, so you can apply them to similar problems
+- **Diminishing returns signals** — when an eval case resists improvement after 2+ attempts, mark it as "needs product decision" and escalate instead of burning more cycles
+- **Cost per cycle** — note the session cost from the statusline (`$X.XX`). If cost exceeds $5 per cycle, investigate why and optimize
 
-> 曾子曰："吾日三省吾身：为人谋而不忠乎？与朋友交而不信乎？传不习乎？"
+This section is your institutional memory. Read it at the start of every cycle before running the eval.
 
-After every cycle, before stopping, save 3 lines to auto-memory:
-1. **为人谋而不忠乎** (Was I faithful to my mission?): What did I improve? What did the eval show?
-2. **与朋友交而不信乎** (Was I trustworthy to my collaborators?): Did my fixes break other areas? Did I communicate what changed?
-3. **传不习乎** (Did I practice what I learned?): What pattern or gotcha did I discover that should go into `doc_updates`?
+## Cost Constraints
+
+- **Target**: Keep each cycle under **$5**. Typical healthy cycle: $2-4.
+- **NEVER run full eval sweeps.** Always run only the hardest/most brutal cases — the ones most likely to fail. Full sweeps waste money when most cases pass consistently.
+- **Only run full suite** if you changed something that could regress easy cases (e.g. prompt rewrite, model switch).
+- **Batch your changes** — fix 1-3 issues, then run eval once, not after each micro-change.
+- **Skip passing cases** — if a case has passed 3+ consecutive times, skip it unless you changed related code.
+- **Recycle promptly** — don't let context grow indefinitely. When a cycle's work is done, recycle immediately. Large context = expensive tokens on every tool call.
+- **Report cost concerns** if you notice your cycles consistently exceeding budget.

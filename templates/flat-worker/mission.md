@@ -70,6 +70,10 @@ After every cycle, before stopping, save 3 lines to auto-memory:
 
 When a reflection reveals a convention, gotcha, or pattern worth sharing, include a `doc_updates` section in your merge request.
 
+## Reporting Broken Infrastructure
+
+If you encounter broken tooling, failed respawns, MCP errors, stuck panes, or any systemic issue — **report to chief-of-staff immediately** via `send_message(to="chief-of-staff", ...)`. Don't work around it silently. Chief-of-staff triages and fixes fleet-wide issues.
+
 ## Deploy Protocol
 
 Workers deploy to isolated test slots only. Direct `deploy.sh` and `deploy-prod.sh` are blocked.
