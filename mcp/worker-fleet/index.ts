@@ -2,14 +2,14 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * Tools in 6 categories:
- *   Messaging (0):  (replaced by mail_send / mail_inbox)
- *   Tasks (3):      create_task, update_task, list_tasks
- *   State (2):      get_worker_state (name="all" for fleet overview), update_state
- *   Stop Checks (3): add_stop_check, complete_stop_check, list_stop_checks
- *   Lifecycle (1):  recycle (resume=true for hot-restart, gated on stop checks)
- *   Management (5): create_worker, get_worker_template, register, deregister, standby
- *   Mail (6):       mail_send, mail_inbox, mail_read, mail_search, mail_thread, mail_help
+ * 12 tools (consolidated from 22):
+ *   Tasks (1):      task (action: create/update/list)
+ *   State (2):      get_worker_state, update_state
+ *   Verification (2): add_stop_check, complete_stop_check
+ *   Lifecycle (1):  recycle (gated on stop checks, watchdog-deferred for perpetual workers)
+ *   Fleet (1):      fleet (action: create/register/deregister/move/standby/template/help)
+ *   Review (1):     deep_review
+ *   Mail (4):       mail_send, mail_inbox, mail_read, mail_help
  *
  * Task CRUD and inbox are native TS (no shell subprocess).
  * Messaging writes inbox first (durable), then fires bus (best-effort).

@@ -1,24 +1,21 @@
 ## MCP Tools (`mcp__worker-fleet__*`)
 
+12 tools. High-frequency tools are standalone; low-frequency operations are consolidated into `task` and `fleet`.
+
 | Tool | What it does |
 |------|-------------|
-| `mail_send(to, subject, body)` | Message a worker, "report", "direct_reports", "all", or "user". `cc=["name"]` for CC; `in_reply_to="msg_id"` to ack; `thread_id` to continue a thread; `labels=["URGENT"]` for priority. |
+| `mail_send(to, subject, body)` | Message a worker, "report", "direct_reports", "all", or "user". `cc`, `in_reply_to`, `thread_id`, `labels` supported. |
 | `mail_inbox(label?)` | Read your inbox. Default label=UNREAD. Use label="INBOX" for all. |
 | `mail_read(id)` | Read full message body by ID (auto-marks as read). |
-| `mail_search(q)` | Search mail with Gmail-style queries: `from:merger`, `subject:deploy`, `has:attachment`, `to:me`. |
-| `mail_thread(thread_id)` | Read full conversation thread. |
-| `mail_help()` | BMS CLI docs — token reset, labels, mailing lists, raw curl examples. |
-| `create_task(subject)` | Add a task to your task list |
-| `update_task(task_id, status)` | Claim, complete, or delete tasks |
-| `list_tasks(filter?)` | List tasks; `worker="all"` for cross-worker view |
+| `mail_help()` | BMS CLI docs — search, threads, labels, mailing lists, curl examples. |
+| `task(action, ...)` | Manage tasks. `action`: create (subject required), update (task_id required), list (optional filter/worker). |
 | `get_worker_state(name?)` | Read worker state; `name="all"` for fleet overview |
 | `update_state(key, value)` | Persist state across recycles (saved in registry, included in next seed) |
 | `add_stop_check(description)` | Register a verification you MUST do before recycling |
 | `complete_stop_check(id)` | Mark a check done after verifying (`id="all"` to clear) |
-| `list_stop_checks()` | See all checks and their status |
-| `recycle(message?)` | Restart fresh with handoff; `resume=true` for hot-restart; `sleep_seconds=N` overrides sleep timer; `cancel=true` aborts a pending sleep. **Blocked if stop checks pending.** Perpetual workers sleep before respawn (watchdog owns the timer). |
-| `create_worker(name, mission)` | Fork into a new worker |
-| `deregister(name)` | Remove a worker from the registry |
+| `recycle(message?)` | Restart fresh; `resume=true` for hot-restart; `sleep_seconds=N` overrides timer; `cancel=true` aborts sleep. **Blocked if stop checks pending** (shows pending list). |
+| `fleet(action, ...)` | Fleet admin. `action`: create, register, deregister, move, standby, template, help. Call `fleet(action="help")` for full parameter docs. |
+| `deep_review(scope, spec?)` | Spawn adversarial reviewer for complex changes |
 
 Every tool response includes lint warnings if issues are detected — fix them immediately.
 
@@ -45,7 +42,7 @@ complete_stop_check("sc-1", result="PASS — no TS errors")
 | **Subagent** | Code review, multi-file analysis | Spawn an `Agent` tool to verify in parallel while you continue |
 | **Browser** | UI changes, visual regressions | Chrome MCP to visually verify on your slot URL |
 | **API E2E** | Backend changes, data flows | Hit the actual API with real credentials (`autologin.sh`) and verify responses |
-| **Deep review** | Complex refactors, cross-cutting changes | `/claude-ops:complex-verification` — spawns a dedicated reviewer |
+| **Deep review** | Complex refactors, cross-cutting changes | `deep_review(scope="diff")` — spawns a dedicated reviewer |
 
 Pick the method that matches your change's risk level. A one-line CSS fix needs a quick browser check. A new API endpoint needs API E2E with real auth. A refactor touching 10 files needs deep review.
 
