@@ -46,40 +46,101 @@ complete_stop_check("sc-1", result="PASS — no TS errors")
 
 Pick the method that matches your change's risk level. A one-line CSS fix needs a quick browser check. A new API endpoint needs API E2E with real auth. A refactor touching 10 files needs deep review.
 
-## Feature Workers (Parallel Feature Development)
+## Parallel Work (Subagents + Feature Workers)
 
-When you have multiple independent tasks, spawn **ephemeral feature workers** to work in parallel:
+### Lightweight: Agent Tool (default for parallel tasks)
+
+For small-to-medium parallel work, use the **built-in Agent tool** with `isolation: "worktree"`:
+
+```
+# Spawn parallel tasks — each gets its own isolated worktree + branch
+Agent(prompt="Fix the SSO timeout bug in auth-sso.ts...", isolation="worktree", run_in_background=true)
+Agent(prompt="Add pie charts to finance dashboard...", isolation="worktree", run_in_background=true)
+Agent(prompt="Verify auth changes on test server...", isolation="worktree", run_in_background=true)
+```
+
+**Why this works:**
+- Zero infrastructure — no registry, no BMS, no watchdog overhead
+- Auto-creates worktree, auto-cleans if no changes made
+- Direct result return — you get the outcome inline
+- Inherits all your MCP tools (Chrome, worker-fleet, qwen-analyst)
+- `run_in_background: true` for true parallelism
+
+**After subagent finishes:**
+1. Read the result (returned automatically)
+2. If it made changes: merge the branch into your worktree
+3. Save evidence (screenshots, test output) to `claude_files/evidence/`
+
+### Heavyweight: Fleet Feature Workers (complex/long-running)
+
+For work that needs persistent identity, BMS mail, monitoring, or survives compaction:
 
 ```
 fleet(action="spawn_feature", feature="auth-fix", mission="Fix SSO login timeout bug...")
-fleet(action="spawn_feature", feature="dashboard-charts", mission="Add pie charts to finance dashboard...")
 ```
 
 Each feature worker:
 - Gets its own worktree branched from YOUR branch (not main)
 - Is named `{you}--{feature}` (e.g. `optimizer--auth-fix`)
-- Is one-shot (not perpetual) — completes the task and stops
-- Mails you when done; stop hook also auto-notifies you
+- Is one-shot — completes the task and stops
+- Stop hook auto-notifies you via BMS when it finishes
 - Reports only to you (its parent)
 
-**After feature worker finishes — you must review:**
+**Review workflow (YOU must review — this is your responsibility):**
 
 | Method | When | How |
 |--------|------|-----|
 | **Self-review** | Small changes | `git log worker/{you}..worker/{you}--{feature}` |
 | **Deep review** | Complex changes | `deep_review(base_branch="worker/{you}")` |
-| **Verifier worker** | Critical changes | `fleet(action="spawn_feature", feature="verify-{name}", mission="Review and verify...")` |
+| **Verifier subagent** | Quick verify | `Agent(prompt="Review changes on branch...", isolation="worktree")` |
+| **Verifier worker** | Critical, long | `fleet(action="spawn_feature", feature="verify-{name}", mission="Review...")` |
 
 **Merge & cleanup:**
 ```bash
-# From your worktree:
-git merge worker/{you}--{feature}
-
-# Then cleanup (auto-removes worktree + branch + worker dir):
-fleet(action="deregister", name="{you}--{feature}")
+git merge worker/{you}--{feature}                              # from your worktree
+fleet(action="deregister", name="{you}--{feature}")           # auto-cleans worktree + branch + dir
 ```
 
 Verifier workers are also ephemeral — same lifecycle, same auto-cleanup.
+
+### When to use which
+
+| Criteria | Agent tool | Fleet spawn_feature |
+|----------|-----------|-------------------|
+| Task size | < 200k context | Any size |
+| Duration | Minutes | Hours |
+| Needs mail/monitoring | No | Yes |
+| Survives compaction | No | Yes |
+| Needs stop checks | No | Yes |
+| Infrastructure cost | Zero | Registry + BMS + watchdog |
+| **Default choice** | **Yes** | Escalate when needed |
+
+## Evidence Storage
+
+**All verification must produce evidence.** Screenshots, test output, API responses — save everything.
+
+```
+claude_files/evidence/{date}-{description}/
+  ├── screenshot-login-page.png
+  ├── screenshot-after-fix.png
+  ├── api-response.json
+  └── test-output.txt
+```
+
+**How to capture evidence:**
+- **Screenshots**: Chrome MCP `html2canvas` injection → save to `claude_files/evidence/`
+- **API responses**: `curl` output → pipe to file
+- **Test results**: `bun test` output → pipe to file
+- **Browser console**: `read_console_messages` → save relevant output
+
+**Link evidence to stop checks:**
+```
+add_stop_check("verify login page renders correctly")
+# ... take screenshot, save to claude_files/evidence/2026-03-08-login-fix/
+complete_stop_check("sc-1", result="PASS — screenshot at claude_files/evidence/2026-03-08-login-fix/screenshot.png")
+```
+
+Evidence persists across recycles and can be referenced later by you or reviewers.
 
 ## Perpetual Loop Protocol
 
