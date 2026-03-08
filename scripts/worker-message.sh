@@ -12,7 +12,7 @@
 # Pane resolution checks registry.json (flat workers) FIRST, then pane-registry.json (legacy).
 #
 # Delivery is two-layer:
-#   1. Instant  — tmux send-keys (best-effort, fires even if bus unavailable)
+#   1. Instant  — tmux paste-buffer (best-effort, handles multi-line content correctly)
 #   2. Durable  — bus_publish "cell-message" → notify_assignee side-effect
 set -uo pipefail
 
@@ -150,6 +150,22 @@ _pane_target() {
     | awk -v id="$pane_id" '$1 == id {print $2; exit}'
 }
 
+# ── Paste content into pane via paste-buffer (handles multi-line correctly) ──
+# send-keys interprets newlines as Enter keypresses, fragmenting multi-line messages.
+# paste-buffer pastes the entire text as-is, then we explicitly send Enter.
+_paste_to_pane() {
+  local target="$1" content="$2"
+  local buf_name="msg-$$-$(date +%s%N)"
+  local tmp_file="/tmp/tmux-paste-${buf_name}.txt"
+  printf '%s' "$content" > "$tmp_file"
+  tmux load-buffer -b "$buf_name" "$tmp_file" 2>/dev/null || { rm -f "$tmp_file"; return 1; }
+  tmux paste-buffer -b "$buf_name" -t "$target" -d 2>/dev/null || true
+  rm -f "$tmp_file"
+  tmux delete-buffer -b "$buf_name" 2>/dev/null || true
+  sleep 0.5
+  tmux send-keys -t "$target" -H 0d 2>/dev/null || true
+}
+
 CMD="${1:-help}"
 shift 2>/dev/null || true
 
@@ -179,9 +195,8 @@ case "$CMD" in
       exit 1
     }
 
-    # Always do tmux instant delivery
-    tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT" 2>/dev/null || true
-    tmux send-keys -t "$TARGET" -H 0d 2>/dev/null || true
+    # Always do tmux instant delivery (paste-buffer for multi-line safety)
+    _paste_to_pane "$TARGET" "$_FALLBACK_SIG $CONTENT" 2>/dev/null || true
     # Also emit to bus for durable side-effects (best-effort)
     _bus_emit "worker/$RECIPIENT" "$CONTENT" "$SUMMARY" || true
     echo "Sent to $RECIPIENT ($TARGET)${SUMMARY:+ — $SUMMARY}"
@@ -240,9 +255,8 @@ case "$CMD" in
       else
         bus_to="worker/$local_name"
       fi
-      # Always do tmux instant delivery
-      tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT" 2>/dev/null || true
-      tmux send-keys -t "$TARGET" -H 0d 2>/dev/null || true
+      # Always do tmux instant delivery (paste-buffer for multi-line safety)
+      _paste_to_pane "$TARGET" "$_FALLBACK_SIG $CONTENT" 2>/dev/null || true
       # Also emit to bus for durable side-effects (best-effort)
       _bus_emit "$bus_to" "$CONTENT" "$SUMMARY" "broadcast" || true
       echo "  → $name ($TARGET)"
@@ -259,8 +273,7 @@ case "$CMD" in
           echo "  ⚠ $worker_name ($pane_id): no active pane (skipped)"
           continue
         fi
-        tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $CONTENT" 2>/dev/null || true
-        tmux send-keys -t "$TARGET" -H 0d 2>/dev/null || true
+        _paste_to_pane "$TARGET" "$_FALLBACK_SIG $CONTENT" 2>/dev/null || true
         _bus_emit "worker/$worker_name" "$CONTENT" "$SUMMARY" "broadcast" || true
         echo "  → $worker_name ($TARGET)"
         SENT=$((SENT + 1))
@@ -288,9 +301,8 @@ case "$CMD" in
     }
 
     MSG="SHUTDOWN REQUEST: Please wrap up your current task and stop. Reason: $REASON"
-    # Always do tmux instant delivery
-    tmux send-keys -t "$TARGET" "$_FALLBACK_SIG $MSG" 2>/dev/null || true
-    tmux send-keys -t "$TARGET" -H 0d 2>/dev/null || true
+    # Always do tmux instant delivery (paste-buffer for multi-line safety)
+    _paste_to_pane "$TARGET" "$_FALLBACK_SIG $MSG" 2>/dev/null || true
     # Also emit to bus for durable side-effects (best-effort)
     _bus_emit "worker/$RECIPIENT" "$MSG" "shutdown" "shutdown" || true
     echo "Shutdown request sent to $RECIPIENT ($TARGET)"

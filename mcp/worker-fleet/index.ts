@@ -1164,11 +1164,21 @@ Escalate to user when: (1) design/architecture decisions need human judgment, (2
       } catch (e: any) {
         return { content: [{ type: "text" as const, text: `Error listing workers: ${e.message}` }], isError: true };
       }
-      // Fire bus for tmux delivery (best-effort)
+      // Tmux instant delivery (best-effort) — use paste-buffer per worker, not send-keys
+      // send-keys interprets newlines as Enter, fragmenting multi-line messages
+      const tmuxDelivered: string[] = [];
       try {
-        const args = ["broadcast", body];
-        if (summary) args.push("--summary", summary);
-        runScript(WORKER_MESSAGE_SH, args, { timeout: 10_000 });
+        const registry = readRegistry();
+        for (const workerName of successes) {
+          const entry = registry[workerName] as RegistryWorkerEntry | undefined;
+          const paneId = entry?.pane_id;
+          if (paneId && isPaneAlive(paneId)) {
+            try {
+              tmuxSendMessage(paneId, `[broadcast from ${WORKER_NAME}] ${body}`);
+              tmuxDelivered.push(workerName);
+            } catch {}
+          }
+        }
       } catch {}
       let msg = `Broadcast to ${successes.length} workers`;
       if (failures.length > 0) msg += `\nFailed: ${failures.join(", ")}`;

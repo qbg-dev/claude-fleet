@@ -20391,11 +20391,19 @@ Escalate to user when: (1) design/architecture decisions need human judgment, (2
     } catch (e) {
       return { content: [{ type: "text", text: `Error listing workers: ${e.message}` }], isError: true };
     }
+    const tmuxDelivered = [];
     try {
-      const args = ["broadcast", body];
-      if (summary)
-        args.push("--summary", summary);
-      runScript(WORKER_MESSAGE_SH, args, { timeout: 1e4 });
+      const registry2 = readRegistry();
+      for (const workerName of successes) {
+        const entry = registry2[workerName];
+        const paneId = entry?.pane_id;
+        if (paneId && isPaneAlive(paneId)) {
+          try {
+            tmuxSendMessage(paneId, `[broadcast from ${WORKER_NAME}] ${body}`);
+            tmuxDelivered.push(workerName);
+          } catch {}
+        }
+      }
     } catch {}
     let msg = `Broadcast to ${successes.length} workers`;
     if (failures.length > 0)
