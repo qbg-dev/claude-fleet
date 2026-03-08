@@ -2559,6 +2559,20 @@ async function handleFleetDeregister(params: Record<string, any>): Promise<McpRe
   const { name, reason } = params;
   const targetName = name || WORKER_NAME;
 
+  // Authorization: only self-deregister, OR mission_authority can deregister anyone
+  const _drRegistry = readRegistry();
+  const _drConfig = _drRegistry._config as RegistryConfig | undefined;
+  const _drAuth = _drConfig?.mission_authority || "chief-of-staff";
+  if (targetName !== WORKER_NAME && WORKER_NAME !== _drAuth) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Only ${_drAuth} (mission_authority) can deregister other workers. Contact ${_drAuth} to deregister '${targetName}'.`,
+      }],
+      isError: true,
+    };
+  }
+
   // Check worker exists
   const existing = getWorkerEntry(targetName);
   if (!existing) {
@@ -2567,91 +2581,6 @@ async function handleFleetDeregister(params: Record<string, any>): Promise<McpRe
       isError: true,
     };
   }
-
-  const isEphemeral = existing.custom?.ephemeral === true;
-  const parentWorker = existing.custom?.parent_worker as string | undefined;
-
-  // Authorization: self, mission_authority, OR parent of ephemeral worker
-  const _drRegistry = readRegistry();
-  const _drConfig = _drRegistry._config as RegistryConfig | undefined;
-  const _drAuth = _drConfig?.mission_authority || "chief-of-staff";
-  const isParent = isEphemeral && parentWorker === WORKER_NAME;
-  if (targetName !== WORKER_NAME && WORKER_NAME !== _drAuth && !isParent) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `Only self, ${_drAuth} (mission_authority), or parent worker can deregister '${targetName}'.`,
-      }],
-      isError: true,
-    };
-  }
-
-  // Ephemeral workers: skip HANDOFF.md, auto-cleanup everything
-  if (isEphemeral) {
-    const worktreePath = existing.worktree;
-    const workerDir = join(WORKERS_DIR, targetName);
-    const featureBranch = existing.branch || `worker/${targetName}`;
-    const cleanupResults: string[] = [];
-
-    // Remove from registry FIRST
-    withRegistryLocked((registry) => {
-      delete registry[targetName];
-    });
-    cleanupResults.push("Registry: removed");
-
-    // Kill tmux pane if alive
-    if (existing.pane_id) {
-      try {
-        spawnSync("tmux", ["kill-pane", "-t", existing.pane_id], { encoding: "utf-8", timeout: 5000 });
-        cleanupResults.push(`Pane ${existing.pane_id}: killed`);
-      } catch {
-        cleanupResults.push(`Pane ${existing.pane_id}: already dead`);
-      }
-    }
-
-    // Remove worktree
-    if (worktreePath) {
-      try {
-        execSync(`git -C "${PROJECT_ROOT}" worktree remove "${worktreePath}" --force 2>/dev/null`, { timeout: 10000 });
-        cleanupResults.push(`Worktree: removed (${worktreePath})`);
-      } catch {
-        // Try manual removal if git worktree remove fails
-        try { rmSync(worktreePath, { recursive: true, force: true }); cleanupResults.push(`Worktree: force-removed`); } catch { cleanupResults.push(`Worktree: removal failed`); }
-      }
-    }
-
-    // Remove git branch
-    try {
-      execSync(`git -C "${PROJECT_ROOT}" branch -D "${featureBranch}" 2>/dev/null`, { timeout: 5000 });
-      cleanupResults.push(`Branch ${featureBranch}: deleted`);
-    } catch {
-      cleanupResults.push(`Branch ${featureBranch}: already gone or in use`);
-    }
-
-    // Remove worker directory
-    try {
-      rmSync(workerDir, { recursive: true, force: true });
-      cleanupResults.push(`Worker dir: removed`);
-    } catch {
-      cleanupResults.push(`Worker dir: removal failed`);
-    }
-
-    // Clean up stop checks file
-    try { rmSync(`/tmp/claude-stop-checks-${targetName}.json`); } catch {}
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: [
-          `Deregistered ephemeral worker '${targetName}' — full cleanup:`,
-          ...cleanupResults.map(r => `  ${r}`),
-          reason ? `  Reason: ${reason}` : null,
-        ].filter(Boolean).join("\n"),
-      }],
-    };
-  }
-
-  // ── Regular (non-ephemeral) worker deregistration ──
 
   // Require HANDOFF.md before deregistration
   const handoffPath = join(WORKERS_DIR, targetName, "HANDOFF.md");
@@ -2743,9 +2672,8 @@ function handleFleetHelp(): McpResult {
         ``,
         `### deregister — Remove a worker from the registry`,
         `Optional: name (string, default=self), reason (string)`,
-        `Regular workers: requires HANDOFF.md (>50 chars). Files/worktree preserved.`,
-        `Ephemeral workers: auto-cleans worktree + branch + worker dir (full teardown).`,
-        `Authorization: self, parent (for ephemeral children), or mission_authority.`,
+        `Requires HANDOFF.md (>50 chars) in worker directory. Files/worktree preserved.`,
+        `Authorization: self or mission_authority.`,
         ``,
         `### move — Move a worker's tmux pane to a different window`,
         `Required: window (string)`,
