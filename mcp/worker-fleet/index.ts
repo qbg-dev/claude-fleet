@@ -2686,9 +2686,9 @@ server.registerTool(
 server.registerTool(
   "get_worker_template",
   {
-    description: "Preview a worker type template before creating. Returns mission.md (with {{PLACEHOLDERS}} showing expected structure and 三省吾身 variant), permissions defaults, and state config. Use before create_worker(type=...) to understand what to write.",
+    description: "Preview the defaults and mission structure for a worker archetype before creating one. Returns the template mission.md (showing expected sections and {{PLACEHOLDERS}}), permissions defaults (model, permission_mode, deny-list), and state config (perpetual, sleep_duration). Call this before create_worker(type=...) to understand what the archetype provides and what you need to customize in your mission.",
     inputSchema: {
-      type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).describe("Worker archetype to preview"),
+      type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).describe("Worker archetype to preview. Each has different defaults for model, permissions, perpetual mode, and sleep duration"),
     },
   },
   async ({ type }) => {
@@ -2753,11 +2753,11 @@ function moveWorkerPane(
 server.registerTool(
   "move_window",
   {
-    description: "Move a worker's pane to a different tmux window. Worker stays alive. Moving to 'standby' sets status=standby (watchdog ignores). Auth: self or mission_authority.",
+    description: "Move a worker's tmux pane to a different named window without interrupting its session. The worker process stays alive — only its visual placement changes. Moving to the 'standby' window automatically sets status=standby in the registry (watchdog will stop monitoring it). Moving out of standby restores status=active. Authorization: you can move yourself freely; moving other workers requires being the mission_authority.",
     inputSchema: {
-      name: z.string().optional().describe("Worker to move (default: yourself). Only mission_authority can move other workers."),
-      window: z.string().describe("Target tmux window name (e.g. 'background', 'standby', 'optimizers')"),
-      reason: z.string().optional().describe("Why it's being moved"),
+      name: z.string().optional().describe("Worker to move. Omit to move yourself. Only the mission_authority can move other workers"),
+      window: z.string().describe("Target tmux window name. Workers in the same window share a tiled layout. Special: 'standby' sets the worker's status to standby"),
+      reason: z.string().optional().describe("Reason for the move. If moving to standby, this is written to handoff.md for context when the worker is later woken"),
     },
   },
   async ({ name, window: targetWindow, reason }) => {
@@ -2846,10 +2846,10 @@ server.registerTool(
 server.registerTool(
   "standby",
   {
-    description: "Toggle standby mode. If active → standby (pane moved to standby window, watchdog ignores). If standby → wake (relaunch + move back). USER-ONLY: This tool is invoked by the user via /standby — workers must NEVER call this proactively. Auth: self-only unless you're the mission_authority.",
+    description: "Toggle a worker between active and standby states. If currently active: moves pane to the standby window, sets status=standby (watchdog stops monitoring), and writes a handoff note. If currently in standby: moves pane back to its original window and restores status=active. USER-ONLY — this tool is invoked by the human operator via the /standby command. Workers must NEVER call this proactively on themselves or others. Authorization: self or mission_authority only.",
     inputSchema: {
-      name: z.string().optional().describe("Worker to toggle standby (default: yourself). Only mission_authority can standby/wake other workers."),
-      reason: z.string().optional().describe("Why it's going to/coming from standby"),
+      name: z.string().optional().describe("Worker to toggle. Omit to toggle yourself. Only the mission_authority can standby/wake other workers"),
+      reason: z.string().optional().describe("Why the worker is being put on standby or woken up. Written to handoff.md for context"),
     },
   },
   async ({ name, reason }) => {
@@ -2975,12 +2975,12 @@ server.registerTool(
 server.registerTool(
   "register",
   {
-    description: "Self-register in the registry. Auto-detects your pane ID, tmux session, model, and worktree. Call this when lint warns you're not in registry.json. Only registers yourself — cannot register other workers.",
+    description: "Register yourself in the fleet registry. Auto-detects your tmux pane ID, session, and runtime from the process environment. Call this when the lint system warns that you are not in registry.json — typically happens for manually launched workers or after registry corruption. Only registers the calling worker; cannot register other workers.",
     inputSchema: {
-      model: z.string().optional().describe("Model override (default: from registry or 'opus')"),
-      perpetual: z.boolean().optional().describe("Run in perpetual loop (default: false)"),
-      sleep_duration: z.number().optional().describe("Seconds between cycles if perpetual (default: 1800)"),
-      report_to: z.string().optional().describe("Who this worker reports to (default: mission_authority)"),
+      model: z.string().optional().describe("LLM model to record in registry. Default: existing registry value or 'opus'"),
+      perpetual: z.boolean().optional().describe("Whether to run in perpetual recycle loop. Default: existing value or false"),
+      sleep_duration: z.number().optional().describe("Seconds between perpetual cycles. Default: existing value or 1800"),
+      report_to: z.string().optional().describe("Who this worker reports to. Default: existing value or mission_authority from _config"),
     },
   },
   async ({ model, perpetual, sleep_duration, report_to }) => {
@@ -3031,10 +3031,10 @@ server.registerTool(
 server.registerTool(
   "deregister",
   {
-    description: "Remove a worker from the registry. Preserves files and worktree — only the registry entry is removed. Auth: self-only unless you're the mission_authority (from _config).",
+    description: "Remove a worker's entry from the fleet registry. The worker's files (.claude/workers/<name>/), git worktree, and branch are preserved — only the registry entry is deleted. Requires a HANDOFF.md (>50 chars) in the worker's directory before proceeding, to ensure knowledge is captured before the worker is retired. Authorization: self or mission_authority only. The reason is appended to HANDOFF.md with a timestamp for the audit trail.",
     inputSchema: {
-      name: z.string().optional().describe("Worker name to deregister (default: yourself). Only mission_authority can deregister other workers."),
-      reason: z.string().optional().describe("Reason for deregistration — written to the worker's handoff.md for posterity"),
+      name: z.string().optional().describe("Worker to deregister. Omit to deregister yourself. Only the mission_authority can deregister other workers"),
+      reason: z.string().optional().describe("Reason for deregistration. Appended to HANDOFF.md with a timestamp for the audit trail"),
     },
   },
   async ({ name, reason }) => {

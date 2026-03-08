@@ -21446,24 +21446,24 @@ function createWorkerFiles(input) {
 `);
   return { ok: true, workerDir, model: selectedModel, runtime: resolvedRuntime, perpetual: isPerpetual, taskIds, tasks: tasksObj, state, permissions };
 }
-server.registerTool("create_worker", { description: "Spin up a new persistent worker with its own mission, memory, and task list. Use when you've identified a domain of work that warrants a dedicated agent \u2014 ongoing monitoring, specialized repair, continuous optimization. Set launch=true to start it immediately. Set fork_from_session=true to fork your current conversation context (inherits what you know). Set placement to control where the pane appears.", inputSchema: {
-  name: exports_external.string().describe("Worker name in kebab-case (e.g. 'chatbot-fix')"),
-  mission: exports_external.string().describe("Full mission.md content (markdown)"),
-  type: exports_external.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("Worker archetype \u2014 sets model, permissions, perpetual/sleep defaults from template. Caller still writes mission. Use get_worker_template to preview."),
-  runtime: exports_external.enum(["claude", "codex"]).optional().describe("Runtime engine (default: claude). Use codex for well-specified tasks, logical/structured work, verification, and instruction-following. Use claude for open-ended exploration, complex reasoning, and creative problem-solving. Codex uses OpenAI Codex CLI; Claude uses Claude Code CLI."),
-  model: exports_external.string().optional().describe("LLM model (overrides type/runtime default if set). Claude: sonnet, opus, haiku. Codex: gpt-5.4, o3, o4-mini."),
-  reasoning_effort: exports_external.enum(["low", "medium", "high", "extra_high"]).optional().describe("Reasoning effort level (default: high). Both Claude (--effort) and Codex (-c model_reasoning_effort) support this."),
-  perpetual: exports_external.boolean().optional().describe("Run in perpetual loop (overrides type default if set)"),
-  sleep_duration: exports_external.number().optional().describe("Seconds between cycles, only if perpetual (overrides type default if set)"),
-  disallowed_tools: exports_external.string().optional().describe('JSON array of disallowed tool patterns (default: safe git/rm guards). Example: ["Bash(git push*)","Edit","Bash(*deploy*)"]'),
-  window: exports_external.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers in the same group share a tiled layout."),
-  report_to: exports_external.string().optional().describe("Who this worker reports to (default: chief-of-staff / mission_authority). Use direct_report=true to report to calling worker instead."),
-  permission_mode: exports_external.string().optional().describe("Claude permission mode (default: bypassPermissions)"),
-  launch: exports_external.boolean().optional().describe("Auto-launch in tmux after creation (default: false)"),
-  tasks: exports_external.string().optional().describe("JSON array of tasks: [{subject, description?, priority?}]"),
-  proposal_required: exports_external.boolean().optional().describe("Require the worker to produce an HTML proposal document before coding. Includes architecture diagrams, UI mockups (frontend), data flow (backend), file impact, task breakdown, and risks. Mission authority must approve before implementation begins. (default: false)"),
-  fork_from_session: exports_external.boolean().optional().describe("Fork the caller's Claude session so the new worker inherits conversation context (default: false). Requires launch=true."),
-  direct_report: exports_external.boolean().optional().describe("Set report_to to the calling worker instead of mission_authority (default: false)")
+server.registerTool("create_worker", { description: "Create a new autonomous worker with its own mission, git worktree, task queue, and inbox. Each worker runs as an independent Claude (or Codex) session in a dedicated tmux pane. Use when a domain of work warrants a dedicated agent \u2014 feature implementation, ongoing monitoring, specialized repair, or continuous optimization. The worker gets: a .claude/workers/<name>/ directory (mission.md, tasks.json, inbox.jsonl), a git worktree branched from HEAD, and a registry entry. Set launch=true to start immediately, or launch manually later. Worker names must be unique across the fleet.", inputSchema: {
+  name: exports_external.string().describe("Unique worker name in kebab-case (e.g. 'chatbot-fix', 'deploy-monitor'). Used as directory name, git branch suffix, and tmux identifier"),
+  mission: exports_external.string().describe("Full mission.md content in markdown. Defines the worker's objectives, scope, constraints, and acceptance criteria. This is the worker's primary instruction document"),
+  type: exports_external.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("Worker archetype that sets model, permissions, perpetual/sleep defaults from a template. You still write the mission. Use get_worker_template() to preview what each type provides before choosing"),
+  runtime: exports_external.enum(["claude", "codex"]).optional().describe("Execution engine. 'claude' (default): Claude Code CLI \u2014 best for open-ended exploration, complex reasoning, creative problem-solving. 'codex': OpenAI Codex CLI \u2014 best for well-specified tasks, logical/structured work, verification, strict instruction-following"),
+  model: exports_external.string().optional().describe("LLM model, overriding type/runtime defaults. Claude models: sonnet, opus, haiku. Codex models: gpt-5.4, o3, o4-mini"),
+  reasoning_effort: exports_external.enum(["low", "medium", "high", "extra_high"]).optional().describe("Controls depth of reasoning. Higher = more thorough but slower/costlier. Both Claude (--effort) and Codex (-c model_reasoning_effort) support this. Default: 'high'"),
+  perpetual: exports_external.boolean().optional().describe("If true, worker runs in an infinite recycle loop (work \u2192 sleep \u2192 recycle \u2192 repeat). If false (default), worker runs a single session. Overrides type default when set"),
+  sleep_duration: exports_external.number().optional().describe("Seconds to sleep between perpetual cycles (only meaningful when perpetual=true). Default: 1800 (30 min). Overrides type default when set"),
+  disallowed_tools: exports_external.string().optional().describe(`JSON array of tool deny-list patterns. Default includes safe git/rm guards. Example: '["Bash(git push*)","Edit","Bash(*deploy*)"]'`),
+  window: exports_external.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers assigned to the same group share a tiled layout within that window"),
+  report_to: exports_external.string().optional().describe("Worker or role this worker reports to. Default: mission_authority (usually 'chief-of-staff'). Set direct_report=true as a shortcut to report to the calling worker"),
+  permission_mode: exports_external.string().optional().describe("Claude permission mode for the worker's session. Default: 'bypassPermissions'. Use 'default' for stricter tool approval"),
+  launch: exports_external.boolean().optional().describe("If true, immediately launch the worker in a tmux pane after creation. If false (default), worker is created but not started \u2014 launch manually with launch-flat-worker.sh"),
+  tasks: exports_external.string().optional().describe("JSON array of initial tasks to seed the worker's queue. Each element: {subject: string, description?: string, priority?: 'critical'|'high'|'medium'|'low'}"),
+  proposal_required: exports_external.boolean().optional().describe("If true, worker must produce a self-contained HTML proposal document (architecture diagrams, UI mockups, data flow, file impact, risks) and get mission authority approval before writing any implementation code. Default: false"),
+  fork_from_session: exports_external.boolean().optional().describe("If true, fork the caller's current Claude session so the new worker inherits full conversation context. Requires launch=true. Use when the new worker needs everything you currently know"),
+  direct_report: exports_external.boolean().optional().describe("If true, set report_to to the calling worker's name instead of mission_authority. Convenience shortcut for creating subordinate workers")
 } }, async ({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, proposal_required, fork_from_session, direct_report }) => {
   try {
     let createPane = function(_pl, cwd) {
@@ -21684,9 +21684,9 @@ server.registerTool("create_worker", { description: "Spin up a new persistent wo
   }
 });
 server.registerTool("get_worker_template", {
-  description: "Preview a worker type template before creating. Returns mission.md (with {{PLACEHOLDERS}} showing expected structure and \u4E09\u7701\u543E\u8EAB variant), permissions defaults, and state config. Use before create_worker(type=...) to understand what to write.",
+  description: "Preview the defaults and mission structure for a worker archetype before creating one. Returns the template mission.md (showing expected sections and {{PLACEHOLDERS}}), permissions defaults (model, permission_mode, deny-list), and state config (perpetual, sleep_duration). Call this before create_worker(type=...) to understand what the archetype provides and what you need to customize in your mission.",
   inputSchema: {
-    type: exports_external.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).describe("Worker archetype to preview")
+    type: exports_external.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).describe("Worker archetype to preview. Each has different defaults for model, permissions, perpetual mode, and sleep duration")
   }
 }, async ({ type }) => {
   const typeDir = join(TEMPLATE_TYPES_DIR, type);
@@ -21752,11 +21752,11 @@ function moveWorkerPane(paneId, tmuxSession, targetWindow) {
   }
 }
 server.registerTool("move_window", {
-  description: "Move a worker's pane to a different tmux window. Worker stays alive. Moving to 'standby' sets status=standby (watchdog ignores). Auth: self or mission_authority.",
+  description: "Move a worker's tmux pane to a different named window without interrupting its session. The worker process stays alive \u2014 only its visual placement changes. Moving to the 'standby' window automatically sets status=standby in the registry (watchdog will stop monitoring it). Moving out of standby restores status=active. Authorization: you can move yourself freely; moving other workers requires being the mission_authority.",
   inputSchema: {
-    name: exports_external.string().optional().describe("Worker to move (default: yourself). Only mission_authority can move other workers."),
-    window: exports_external.string().describe("Target tmux window name (e.g. 'background', 'standby', 'optimizers')"),
-    reason: exports_external.string().optional().describe("Why it's being moved")
+    name: exports_external.string().optional().describe("Worker to move. Omit to move yourself. Only the mission_authority can move other workers"),
+    window: exports_external.string().describe("Target tmux window name. Workers in the same window share a tiled layout. Special: 'standby' sets the worker's status to standby"),
+    reason: exports_external.string().optional().describe("Reason for the move. If moving to standby, this is written to handoff.md for context when the worker is later woken")
   }
 }, async ({ name, window: targetWindow, reason }) => {
   const targetName = name || WORKER_NAME;
@@ -21829,10 +21829,10 @@ Worker is in standby \u2014 registered but not running. Call move_window(name="$
   };
 });
 server.registerTool("standby", {
-  description: "Toggle standby mode. If active \u2192 standby (pane moved to standby window, watchdog ignores). If standby \u2192 wake (relaunch + move back). USER-ONLY: This tool is invoked by the user via /standby \u2014 workers must NEVER call this proactively. Auth: self-only unless you're the mission_authority.",
+  description: "Toggle a worker between active and standby states. If currently active: moves pane to the standby window, sets status=standby (watchdog stops monitoring), and writes a handoff note. If currently in standby: moves pane back to its original window and restores status=active. USER-ONLY \u2014 this tool is invoked by the human operator via the /standby command. Workers must NEVER call this proactively on themselves or others. Authorization: self or mission_authority only.",
   inputSchema: {
-    name: exports_external.string().optional().describe("Worker to toggle standby (default: yourself). Only mission_authority can standby/wake other workers."),
-    reason: exports_external.string().optional().describe("Why it's going to/coming from standby")
+    name: exports_external.string().optional().describe("Worker to toggle. Omit to toggle yourself. Only the mission_authority can standby/wake other workers"),
+    reason: exports_external.string().optional().describe("Why the worker is being put on standby or woken up. Written to handoff.md for context")
   }
 }, async ({ name, reason }) => {
   const targetName = name || WORKER_NAME;
@@ -21940,12 +21940,12 @@ Worker is in standby \u2014 registered but not running. Call standby(name="${tar
   };
 });
 server.registerTool("register", {
-  description: "Self-register in the registry. Auto-detects your pane ID, tmux session, model, and worktree. Call this when lint warns you're not in registry.json. Only registers yourself \u2014 cannot register other workers.",
+  description: "Register yourself in the fleet registry. Auto-detects your tmux pane ID, session, and runtime from the process environment. Call this when the lint system warns that you are not in registry.json \u2014 typically happens for manually launched workers or after registry corruption. Only registers the calling worker; cannot register other workers.",
   inputSchema: {
-    model: exports_external.string().optional().describe("Model override (default: from registry or 'opus')"),
-    perpetual: exports_external.boolean().optional().describe("Run in perpetual loop (default: false)"),
-    sleep_duration: exports_external.number().optional().describe("Seconds between cycles if perpetual (default: 1800)"),
-    report_to: exports_external.string().optional().describe("Who this worker reports to (default: mission_authority)")
+    model: exports_external.string().optional().describe("LLM model to record in registry. Default: existing registry value or 'opus'"),
+    perpetual: exports_external.boolean().optional().describe("Whether to run in perpetual recycle loop. Default: existing value or false"),
+    sleep_duration: exports_external.number().optional().describe("Seconds between perpetual cycles. Default: existing value or 1800"),
+    report_to: exports_external.string().optional().describe("Who this worker reports to. Default: existing value or mission_authority from _config")
   }
 }, async ({ model, perpetual, sleep_duration, report_to }) => {
   try {
@@ -21990,10 +21990,10 @@ server.registerTool("register", {
   }
 });
 server.registerTool("deregister", {
-  description: "Remove a worker from the registry. Preserves files and worktree \u2014 only the registry entry is removed. Auth: self-only unless you're the mission_authority (from _config).",
+  description: "Remove a worker's entry from the fleet registry. The worker's files (.claude/workers/<name>/), git worktree, and branch are preserved \u2014 only the registry entry is deleted. Requires a HANDOFF.md (>50 chars) in the worker's directory before proceeding, to ensure knowledge is captured before the worker is retired. Authorization: self or mission_authority only. The reason is appended to HANDOFF.md with a timestamp for the audit trail.",
   inputSchema: {
-    name: exports_external.string().optional().describe("Worker name to deregister (default: yourself). Only mission_authority can deregister other workers."),
-    reason: exports_external.string().optional().describe("Reason for deregistration \u2014 written to the worker's handoff.md for posterity")
+    name: exports_external.string().optional().describe("Worker to deregister. Omit to deregister yourself. Only the mission_authority can deregister other workers"),
+    reason: exports_external.string().optional().describe("Reason for deregistration. Appended to HANDOFF.md with a timestamp for the audit trail")
   }
 }, async ({ name, reason }) => {
   const targetName = name || WORKER_NAME;
