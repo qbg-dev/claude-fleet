@@ -133,6 +133,45 @@ if [ -f "$_sc_file" ]; then
   fi
 fi
 
+# ── Ephemeral worker parent notification (best-effort, non-blocking) ──
+_REGISTRY_FILE="$PROJECT_ROOT/.claude/workers/registry.json"
+# Worktree fallback for registry
+[ ! -f "$_REGISTRY_FILE" ] && {
+  _main_root=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')
+  [ -n "$_main_root" ] && [ -f "$_main_root/.claude/workers/registry.json" ] && _REGISTRY_FILE="$_main_root/.claude/workers/registry.json"
+}
+if [ -f "$_REGISTRY_FILE" ]; then
+  _ephemeral=$(jq -r --arg w "$_wname" '.[$w].custom.ephemeral // false' "$_REGISTRY_FILE" 2>/dev/null || echo "false")
+  _parent_worker=$(jq -r --arg w "$_wname" '.[$w].custom.parent_worker // ""' "$_REGISTRY_FILE" 2>/dev/null || echo "")
+
+  if [ "$_ephemeral" = "true" ] && [ -n "$_parent_worker" ]; then
+    _notified_flag="$_SESSION_DIR/ephemeral-parent-notified"
+    if [ ! -f "$_notified_flag" ]; then
+      # Gather commit summary for the notification
+      _parent_branch="worker/$_parent_worker"
+      _feature_branch="worker/$_wname"
+      _feature_name=$(jq -r --arg w "$_wname" '.[$w].custom.feature_name // ""' "$_REGISTRY_FILE" 2>/dev/null || echo "")
+      _commits=$(git log --oneline "$_parent_branch..$_feature_branch" 2>/dev/null | head -10 || echo "(no new commits)")
+      _commit_count=$(echo "$_commits" | grep -c . 2>/dev/null || echo "0")
+
+      # Send BMS mail to parent (background, non-blocking)
+      _bms_url="${BMS_URL:-http://127.0.0.1:8025}"
+      _own_token=$(jq -r --arg w "$_wname" '.[$w].bms_token // ""' "$_REGISTRY_FILE" 2>/dev/null || echo "")
+      if [ -n "$_own_token" ]; then
+        _body="Feature worker **${_wname}** has stopped (${_commit_count} commits).\n\n**Commits:**\n\`\`\`\n${_commits}\n\`\`\`\n\n**Review & merge:**\n1. Review: \`git log ${_parent_branch}..${_feature_branch}\`\n2. Or: \`deep_review(base_branch=\"${_parent_branch}\")\`\n3. Merge: \`git merge ${_feature_branch}\` (from your worktree)\n4. Cleanup: \`fleet(action=\"deregister\", name=\"${_wname}\")\`"
+        (curl -sf -X POST "$_bms_url/api/messages" \
+          -H "Authorization: Bearer $_own_token" \
+          -H "Content-Type: application/json" \
+          -d "$(jq -nc --arg to "$_parent_worker" --arg subject "Feature worker stopped: ${_feature_name:-$_wname}" --arg body "$_body" '{to:$to, subject:$subject, body:$body}')" \
+          >/dev/null 2>&1 || true) &
+        disown 2>/dev/null || true
+      fi
+      touch "$_notified_flag"
+      _log "ephemeral stop: $_wname notified parent $_parent_worker"
+    fi
+  fi
+fi
+
 # Perpetual workers: pass through (watchdog handles respawn cycle)
 _perpetual=$(jq -r '.perpetual // false' "$_wstate" 2>/dev/null || echo "false")
 if [ "$_perpetual" = "true" ]; then

@@ -14,7 +14,7 @@
 | `add_stop_check(description)` | Register a verification you MUST do before recycling |
 | `complete_stop_check(id)` | Mark a check done after verifying (`id="all"` to clear) |
 | `recycle(message?)` | Restart fresh; `resume=true` for hot-restart; `sleep_seconds=N` overrides timer; `cancel=true` aborts sleep. **Blocked if stop checks pending** (shows pending list). |
-| `fleet(action, ...)` | Fleet admin. `action`: create, register, deregister, move, standby, template, help. Call `fleet(action="help")` for full parameter docs. |
+| `fleet(action, ...)` | Fleet admin. `action`: create, register, deregister, move, standby, template, spawn_feature, help. Call `fleet(action="help")` for full parameter docs. |
 | `deep_review(scope, spec?)` | Spawn adversarial reviewer for complex changes |
 
 Every tool response includes lint warnings if issues are detected — fix them immediately.
@@ -45,6 +45,41 @@ complete_stop_check("sc-1", result="PASS — no TS errors")
 | **Deep review** | Complex refactors, cross-cutting changes | `deep_review(scope="diff")` — spawns a dedicated reviewer |
 
 Pick the method that matches your change's risk level. A one-line CSS fix needs a quick browser check. A new API endpoint needs API E2E with real auth. A refactor touching 10 files needs deep review.
+
+## Feature Workers (Parallel Feature Development)
+
+When you have multiple independent tasks, spawn **ephemeral feature workers** to work in parallel:
+
+```
+fleet(action="spawn_feature", feature="auth-fix", mission="Fix SSO login timeout bug...")
+fleet(action="spawn_feature", feature="dashboard-charts", mission="Add pie charts to finance dashboard...")
+```
+
+Each feature worker:
+- Gets its own worktree branched from YOUR branch (not main)
+- Is named `{you}--{feature}` (e.g. `optimizer--auth-fix`)
+- Is one-shot (not perpetual) — completes the task and stops
+- Mails you when done; stop hook also auto-notifies you
+- Reports only to you (its parent)
+
+**After feature worker finishes — you must review:**
+
+| Method | When | How |
+|--------|------|-----|
+| **Self-review** | Small changes | `git log worker/{you}..worker/{you}--{feature}` |
+| **Deep review** | Complex changes | `deep_review(base_branch="worker/{you}")` |
+| **Verifier worker** | Critical changes | `fleet(action="spawn_feature", feature="verify-{name}", mission="Review and verify...")` |
+
+**Merge & cleanup:**
+```bash
+# From your worktree:
+git merge worker/{you}--{feature}
+
+# Then cleanup (auto-removes worktree + branch + worker dir):
+fleet(action="deregister", name="{you}--{feature}")
+```
+
+Verifier workers are also ephemeral — same lifecycle, same auto-cleanup.
 
 ## Perpetual Loop Protocol
 
