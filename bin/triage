@@ -12,7 +12,6 @@
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
-import { createInterface } from "readline";
 import { join, dirname, basename } from "path";
 
 // --- Find repo root by walking up ---
@@ -289,42 +288,94 @@ function render() {
   process.stdout.write(lines.join("\n") + "\n");
 }
 
-// --- Response mode (drops to readline) ---
-async function respondToItem(item: TriageItem) {
+// --- Response mode (stays in raw mode — no readline, Bun-safe) ---
+// Collects input character-by-character. Enter submits line, double-Enter finishes.
+// Backspace works. Escape cancels.
+let respondBuf = "";
+let respondLines: string[] = [];
+let respondItem: TriageItem | null = null;
+
+function startRespond(item: TriageItem) {
   mode = "respond";
-  process.stdin.setRawMode(false);
+  respondItem = item;
+  respondBuf = "";
+  respondLines = [];
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ask = (q: string): Promise<string> => new Promise((r) => rl.question(q, r));
-
-  process.stdout.write("\n");
+  process.stdout.write("\x1b[2J\x1b[H");
   process.stdout.write(`  ${C.bold}Responding to:${C.reset} ${item.title}\n`);
   if (item.from_worker) process.stdout.write(`  ${C.dim}From: @${item.from_worker}${C.reset}\n`);
 
   if (item.options?.length) {
     process.stdout.write(`  ${C.yellow}Options:${C.reset}\n`);
     item.options.forEach((opt, j) => process.stdout.write(`    ${C.bold}${C.cyan}${j + 1})${C.reset} ${opt}\n`));
-    process.stdout.write(`  ${C.dim}Enter option number, or type a custom response (empty line to finish):${C.reset}\n`);
+    process.stdout.write(`  ${C.dim}Type option number or custom response. Enter=newline, double-Enter=submit, Esc=cancel${C.reset}\n`);
   } else {
-    process.stdout.write(`  ${C.dim}Type your decision (empty line to finish):${C.reset}\n`);
+    process.stdout.write(`  ${C.dim}Type your decision. Enter=newline, double-Enter=submit, Esc=cancel${C.reset}\n`);
+  }
+  process.stdout.write(`\n  ${C.gold}│${C.reset} `);
+}
+
+function handleRespondKey(key: string) {
+  if (!respondItem) return;
+
+  // Escape — cancel (but not arrow keys which start with \x1b[)
+  if (key === "\x1b") {
+    mode = "list";
+    respondItem = null;
+    render();
+    return;
   }
 
-  const lines: string[] = [];
-  while (true) {
-    const line = await ask(`  ${C.gold}│${C.reset} `);
-    if (line === "" && lines.length > 0) break;
-    if (line !== "") lines.push(line);
-  }
-  rl.close();
+  // Ignore arrow keys and other escape sequences in respond mode
+  if (key.startsWith("\x1b[")) return;
 
-  let response = lines.join("\n");
+  // Ctrl+C — quit entirely
+  if (key === "\x03") {
+    process.stdout.write("\x1b[2J\x1b[H");
+    process.exit(0);
+  }
+
+  // Enter
+  if (key === "\r" || key === "\n") {
+    if (respondBuf === "" && respondLines.length > 0) {
+      // Double-enter = submit
+      finishRespond();
+      return;
+    }
+    if (respondBuf !== "") {
+      respondLines.push(respondBuf);
+      respondBuf = "";
+    }
+    process.stdout.write(`\n  ${C.gold}│${C.reset} `);
+    return;
+  }
+
+  // Backspace (0x7f or 0x08)
+  if (key === "\x7f" || key === "\x08") {
+    if (respondBuf.length > 0) {
+      respondBuf = respondBuf.slice(0, -1);
+      process.stdout.write("\b \b");
+    }
+    return;
+  }
+
+  // Printable character
+  if (key.charCodeAt(0) >= 32) {
+    respondBuf += key;
+    process.stdout.write(key);
+  }
+}
+
+function finishRespond() {
+  const item = respondItem!;
+  let response = respondLines.join("\n");
 
   // Numeric option selection
-  if (item.options?.length && lines.length === 1) {
-    const optNum = parseInt(lines[0]);
+  if (item.options?.length && respondLines.length === 1) {
+    const optNum = parseInt(respondLines[0]);
     if (!isNaN(optNum) && optNum >= 1 && optNum <= item.options.length) {
       response = item.options[optNum - 1];
-      process.stdout.write(`  ${C.dim}→ Selected: ${response}${C.reset}\n`);
+      process.stdout.write(`\n  ${C.dim}→ Selected: ${response}${C.reset}`);
     }
   }
 
@@ -336,6 +387,7 @@ async function respondToItem(item: TriageItem) {
   appendToHistory(item);
 
   // Route response
+  process.stdout.write("\n");
   if (item.from_worker) {
     const ok = sendToWorkerInbox(item.from_worker, response, item);
     process.stdout.write(`  ${C.green}✓ Sent to @${item.from_worker}${ok ? "" : " (inbox dir missing)"}${C.reset}\n`);
@@ -343,14 +395,15 @@ async function respondToItem(item: TriageItem) {
   sendToChiefInbox(response, item);
   process.stdout.write(`  ${C.green}✓ Sent to chief-of-staff${C.reset}\n`);
 
-  await new Promise((r) => setTimeout(r, 800));
+  respondItem = null;
 
-  // Back to list mode
-  mode = "list";
-  items = loadQueue();
-  cursor = Math.min(cursor, Math.max(0, getPending().length - 1));
-  process.stdin.setRawMode(true);
-  render();
+  // Brief pause then back to list
+  setTimeout(() => {
+    mode = "list";
+    items = loadQueue();
+    cursor = Math.min(cursor, Math.max(0, getPending().length - 1));
+    render();
+  }, 800);
 }
 
 function dismissItem(item: TriageItem) {
@@ -390,13 +443,19 @@ if (!process.stdin.isTTY) {
 }
 process.stdin.setRawMode(true);
 process.stdin.resume();
-process.stdin.setEncoding("utf-8");
+// NOTE: do NOT call setEncoding("utf-8") — breaks raw mode data events in Bun
 
 lastCount = getPending().length;
 render();
 
-process.stdin.on("data", (key: string) => {
-  if (mode !== "list") return;
+process.stdin.on("data", (chunk: Buffer) => {
+  const key = chunk.toString("utf-8");
+
+  // In respond mode, route to respond handler
+  if (mode === "respond") {
+    handleRespondKey(key);
+    return;
+  }
 
   const pending = getPending();
 
@@ -439,7 +498,7 @@ process.stdin.on("data", (key: string) => {
   // Enter — respond to selected
   if (key === "\r" || key === "\n") {
     if (pending.length > 0 && pending[cursor]) {
-      respondToItem(pending[cursor]);
+      startRespond(pending[cursor]);
     }
     return;
   }
@@ -473,7 +532,7 @@ process.stdin.on("data", (key: string) => {
     cursor = num - 1;
     render();
     // Small delay so user sees the selection before response prompt
-    setTimeout(() => respondToItem(pending[cursor]), 150);
+    setTimeout(() => startRespond(pending[cursor]), 150);
     return;
   }
 });
