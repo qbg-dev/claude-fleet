@@ -40,8 +40,8 @@ function _setWorkersDir(dir: string) { WORKERS_DIR = dir; }
 const HARNESS_LOCK_DIR = join(CLAUDE_OPS, "state/locks");
 
 /** Load shared compaction context template, interpolate placeholders */
-function loadCompactionContext(branch: string, missionAuthority: string): string {
-  const tmplPath = join(CLAUDE_OPS, "templates/compaction-context.md");
+function loadSeedContext(branch: string, missionAuthority: string): string {
+  const tmplPath = join(CLAUDE_OPS, "templates/seed-context.md");
   try {
     return readFileSync(tmplPath, "utf-8")
       .replace(/\{\{WORKER_NAME\}\}/g, WORKER_NAME)
@@ -879,7 +879,7 @@ Use Edit/Write to update it directly at that path. Then begin working immediatel
 
 If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}
 
-${loadCompactionContext(branch, _missionAuth)}`;
+${loadSeedContext(branch, _missionAuth)}`;
 
   if (handoff) {
     seed += `\n\n## Handoff from Previous Cycle\n\n${handoff}`;

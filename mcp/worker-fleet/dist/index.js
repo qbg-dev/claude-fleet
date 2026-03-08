@@ -18644,7 +18644,6 @@ class ExperimentalMcpServerTasks {
     return mcpServerInternal._createRegisteredTool(name, config2.title, config2.description, config2.inputSchema, config2.outputSchema, config2.annotations, execution, config2._meta, handler);
   }
 }
-
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js
 class McpServer {
   constructor(serverInfo, options) {
@@ -19366,7 +19365,7 @@ var EMPTY_COMPLETION_RESULT = {
 };
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
-import process2 from "node:process";
+import process2 from "process";
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 class ReadBuffer {
@@ -19455,6 +19454,7 @@ class StdioServerTransport {
     });
   }
 }
+
 // index.ts
 import {
   readFileSync,
@@ -19485,8 +19485,8 @@ function _setWorkersDir(dir) {
   WORKERS_DIR = dir;
 }
 var HARNESS_LOCK_DIR = join(CLAUDE_OPS, "state/locks");
-function loadCompactionContext(branch, missionAuthority) {
-  const tmplPath = join(CLAUDE_OPS, "templates/compaction-context.md");
+function loadSeedContext(branch, missionAuthority) {
+  const tmplPath = join(CLAUDE_OPS, "templates/seed-context.md");
   try {
     return readFileSync(tmplPath, "utf-8").replace(/\{\{WORKER_NAME\}\}/g, WORKER_NAME).replace(/\{\{BRANCH\}\}/g, branch).replace(/\{\{MISSION_AUTHORITY\}\}/g, missionAuthority);
   } catch {
@@ -20133,7 +20133,7 @@ Use Edit/Write to update it directly at that path. Then begin working immediatel
 
 If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}
 
-${loadCompactionContext(branch, _missionAuth)}`;
+${loadSeedContext(branch, _missionAuth)}`;
   if (handoff) {
     seed += `
 
@@ -21876,7 +21876,7 @@ async function main() {
   const transport = new StdioServerTransport;
   await server.connect(transport);
 }
-if (__require.main == __require.module) {
+if (import.meta.main) {
   main().catch((e) => {
     console.error("worker-fleet MCP server fatal:", e);
     process.exit(1);
