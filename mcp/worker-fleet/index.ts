@@ -1120,18 +1120,28 @@ const server = new McpServer({
 
 server.registerTool(
   "send_message",
-  { description: `Primary inter-worker communication. Messages require a reply by default — the recipient is reminded at recycle/standby if they haven't replied. Use fyi=true for informational messages that don't need a response. Use in_reply_to with a msg_id to acknowledge a message you received. Writes to the recipient's durable inbox (survives restarts) and delivers instantly via tmux if the pane is live. Use to="all" to broadcast fleet-wide (expensive — use sparingly). Use to="report" to message who you report_to. Use to="direct_reports" to message all workers who report_to you.
+  { description: `Send a message to another worker, the human operator, or the entire fleet. Each message is written to the recipient's durable inbox (persists across restarts) and delivered instantly via tmux overlay if their pane is live.
 
-Use to="user" to escalate to the human operator (writes to triage queue + desktop notification). You SHOULD notify the user when: (1) substantial design or architecture decisions need human judgment, (2) security or safety implications arise (auth changes, permission models, data access), (3) business logic changes that affect how the product works for end users, (4) authentication or authorization modifications, (5) adding significant product surface area (new pages, features, user-facing flows), (6) removing or deprecating functionality users depend on, (7) coordination with external stakeholders is needed, (8) you're blocked and need product direction. When in doubt, escalate — the cost of an unnecessary notification is far lower than the cost of an unauthorized change.`, inputSchema: {
-    to: z.string().describe("Worker name, 'report', 'direct_reports', 'all' (broadcast to every worker), 'user' (escalate to the human operator via triage queue + desktop notification), or raw pane ID '%NN'"),
-    content: z.string().describe("Message content"),
-    summary: z.string().describe("Short preview (5-10 words)"),
-    fyi: z.boolean().optional().describe("If true, no reply expected — informational only (default: false = reply expected)"),
-    in_reply_to: z.string().optional().describe("msg_id of a message you're replying to — marks it as acknowledged"),
-    reply_type: z.string().optional().describe("What kind of reply is expected: 'ack' (simple acknowledgment), 'e2e_verify' (verify on main test and confirm), 'review' (review and provide feedback). Stored in message and shown in pending replies."),
-    options: z.array(z.string()).optional().describe("Structured choices for the recipient. Shown as numbered list."),
-    context: z.string().optional().describe("Background/context appended after content. Markdown and tables supported."),
-    urgency: z.enum(["low", "normal", "high"]).optional().describe("Message urgency (default: normal)."),
+Messages require a reply by default — the recipient is reminded at recycle/standby until they reply with in_reply_to. Set fyi=true for informational messages that need no response.
+
+Routing:
+- Worker name (e.g. "merger"): direct message to a specific worker.
+- "report": message whoever you report_to.
+- "direct_reports": fan-out to all workers who report_to you.
+- "all": broadcast to every worker in the fleet (expensive — use sparingly).
+- "user": escalate to the human operator (writes to triage queue + fires desktop notification).
+- Raw pane ID (e.g. "%42"): tmux-only delivery, no inbox persistence.
+
+Escalate to user when: (1) design/architecture decisions need human judgment, (2) security or auth changes arise, (3) business logic changes affect end users, (4) new product surface area is added, (5) functionality is being removed, (6) external coordination is needed, (7) you're blocked and need product direction. When in doubt, escalate — false alarms are cheap, unauthorized changes are not.`, inputSchema: {
+    to: z.string().describe('Recipient: worker name, "report", "direct_reports", "all" (fleet broadcast), "user" (human escalation), or raw pane ID "%NN"'),
+    content: z.string().describe("Message body text"),
+    summary: z.string().describe("5-10 word preview shown in inbox listings and notifications"),
+    fyi: z.boolean().optional().describe("If true, no reply expected (informational only). Default: false (reply expected — recipient is reminded until they respond)"),
+    in_reply_to: z.string().optional().describe("msg_id of a message you are replying to. Marks that message as acknowledged and clears it from your pending replies"),
+    reply_type: z.string().optional().describe("Hint for the recipient on what kind of reply you expect: 'ack' (simple acknowledgment), 'e2e_verify' (verify on main test and confirm), 'review' (review and provide feedback)"),
+    options: z.array(z.string()).optional().describe("Structured choices presented as a numbered list. Useful for approval flows (e.g. ['APPROVED', 'REVISE', 'REJECT'])"),
+    context: z.string().optional().describe("Supplementary context appended after the main content. Supports markdown and tables for structured background information"),
+    urgency: z.enum(["low", "normal", "high"]).optional().describe("Message priority level. 'high' triggers immediate attention; 'low' can wait until next cycle. Default: 'normal'"),
   } },
   async ({ to, content, summary, fyi, in_reply_to, reply_type, options, context, urgency }) => {
     // Build structured body from content + context + options
@@ -1320,10 +1330,10 @@ Use to="user" to escalate to the human operator (writes to triage queue + deskto
 
 server.registerTool(
   "read_inbox",
-  { description: "Read messages sent to you by other workers or the user. Call at the start of every cycle to act on pending instructions before checking tasks. Uses a cursor so repeated calls only return new messages — no data loss on restart. Use clear=true only if you want to explicitly purge old messages.", inputSchema: {
-    limit: z.number().optional().describe("Max messages to return (default: all)"),
-    since: z.string().optional().describe("ISO timestamp — only messages after this time"),
-    clear: z.boolean().optional().describe("If true, clear inbox after reading (replaces clear_inbox)"),
+  { description: "Read messages from your durable inbox. Call at the start of every cycle — messages may contain instructions, merge notifications, or approval requests that should be acted on before starting new work. Uses a cursor internally so repeated calls return only new messages (no duplicates, no data loss across restarts). Also appends a summary of any pending replies you owe (messages with ack_required that you haven't replied to yet). Use clear=true only to explicitly purge the entire inbox — this is rarely needed.", inputSchema: {
+    limit: z.number().optional().describe("Maximum number of messages to return. Omit to return all unread messages"),
+    since: z.string().optional().describe("ISO 8601 timestamp — return only messages received after this time (e.g. '2026-03-07T00:00:00Z')"),
+    clear: z.boolean().optional().describe("If true, permanently delete all messages after reading. Default: false. Use sparingly — messages are the audit trail"),
   } },
   async ({ limit, since, clear }) => {
     try {
@@ -1371,14 +1381,14 @@ server.registerTool(
 
 server.registerTool(
   "create_task",
-  { description: "Track a unit of work you've identified. Use whenever you discover a bug, feature, or investigation that needs doing — even mid-cycle. Tasks survive recycles, can block each other, and give the team visibility into your queue. Prefer creating tasks over holding work in context.", inputSchema: {
-    subject: z.string().describe("Task title (imperative form)"),
-    description: z.string().optional().describe("Detailed description"),
-    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Priority level (default: medium)"),
-    active_form: z.string().optional().describe("Present continuous label for spinner (e.g. 'Running tests')"),
-    blocks: z.string().optional().describe("Comma-separated task IDs that this task blocks (e.g. 'T003,T004')"),
-    blocked_by: z.string().optional().describe("Comma-separated task IDs that block this (e.g. 'T001,T002')"),
-    recurring: z.boolean().optional().describe("If true, resets to pending when completed"),
+  { description: "Create a durable task to track a unit of work. Tasks persist across recycles, support dependency chains (blocked_by/blocks), and give the fleet visibility into your work queue. Create a task whenever you identify a bug, feature, investigation, or follow-up — even mid-cycle. Prefer externalizing work into tasks over holding it in conversation context, since context is lost on recycle.", inputSchema: {
+    subject: z.string().describe("Task title in imperative form (e.g. 'Fix TypeScript errors in auth module', 'Add pagination to user list')"),
+    description: z.string().optional().describe("Detailed description of what needs to be done, acceptance criteria, or relevant context"),
+    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Execution priority. 'critical' tasks should be addressed before any others. Default: 'medium'"),
+    active_form: z.string().optional().describe("Present-continuous label shown in status displays while this task is in progress (e.g. 'Running tests', 'Deploying to slot')"),
+    blocks: z.string().optional().describe("Comma-separated task IDs that cannot start until this task completes (e.g. 'T003,T004'). Creates forward dependencies"),
+    blocked_by: z.string().optional().describe("Comma-separated task IDs that must complete before this task can start (e.g. 'T001,T002'). Task stays blocked until all are completed"),
+    recurring: z.boolean().optional().describe("If true, task auto-resets to 'pending' after completion instead of staying 'completed'. Use for repeating work like monitoring sweeps or periodic audits"),
   } },
   async ({ subject, description, priority, active_form, blocks, blocked_by, recurring }) => {
     try {
@@ -1436,16 +1446,16 @@ server.registerTool(
 
 server.registerTool(
   "update_task",
-  { description: "Advance a task through its lifecycle or reassign it. Claim work with status='in_progress' before starting (prevents double-work across workers). Mark 'completed' only after fully verified. Use 'deleted' to discard irrelevant tasks. Set add_blocked_by to express dependencies that gate execution.", inputSchema: {
-    task_id: z.string().describe("Task ID (e.g. 'T001')"),
-    status: z.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("New status"),
-    subject: z.string().optional().describe("New subject"),
-    description: z.string().optional().describe("New description"),
-    active_form: z.string().optional().describe("Present continuous label for spinner"),
-    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("New priority"),
-    owner: z.string().optional().describe("New owner (worker name)"),
-    add_blocked_by: z.string().optional().describe("Comma-separated task IDs to add as blockers"),
-    add_blocks: z.string().optional().describe("Comma-separated task IDs this task should block"),
+  { description: "Advance a task through its lifecycle, update its metadata, or manage dependencies. Lifecycle: pending → in_progress → completed (or deleted at any point). Always claim a task with status='in_progress' before starting work — this sets you as owner and prevents other workers from duplicating the effort. Only mark 'completed' after the work is fully verified. Use 'deleted' to permanently discard tasks that are no longer relevant. Refuses to start a task that has unfinished blockers.", inputSchema: {
+    task_id: z.string().describe("Task identifier (e.g. 'T001'). Use list_tasks to find available IDs"),
+    status: z.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("Target status. 'in_progress' claims the task and sets you as owner. 'completed' marks it done (recurring tasks auto-reset to pending). 'deleted' permanently discards it"),
+    subject: z.string().optional().describe("Updated task title"),
+    description: z.string().optional().describe("Updated task description or notes"),
+    active_form: z.string().optional().describe("Present-continuous label shown in status displays (e.g. 'Running tests')"),
+    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Updated priority level"),
+    owner: z.string().optional().describe("Reassign to a different worker by name. Automatically set when claiming with status='in_progress'"),
+    add_blocked_by: z.string().optional().describe("Comma-separated task IDs to add as blockers (e.g. 'T001,T002'). Task cannot start until all blockers are completed"),
+    add_blocks: z.string().optional().describe("Comma-separated task IDs that should be blocked by this task (e.g. 'T005,T006'). Adds this task's ID to their blocked_by lists"),
   } },
   async ({ task_id, status, subject, description, active_form, priority, owner, add_blocked_by, add_blocks }) => {
     try {
@@ -1538,11 +1548,11 @@ server.registerTool(
 
 server.registerTool(
   "list_tasks",
-  { description: "Survey available work before starting a cycle. Use filter='pending' to find unblocked tasks ready to claim. Use worker='all' to see the full fleet's queue and avoid duplicating work another worker is already doing.", inputSchema: {
+  { description: "List tasks from your queue or across the fleet. Use at the start of each cycle to find work to claim. filter='pending' shows only unblocked tasks ready to start — the most common query. worker='all' provides a cross-fleet view to see what everyone is working on and avoid duplicate effort. Deleted tasks are always excluded from results.", inputSchema: {
     filter: z.enum(["all", "pending", "in_progress", "blocked"]).optional()
-      .describe("Filter by status (default: all non-deleted)"),
+      .describe("Filter tasks by status. 'pending': ready to claim (unblocked only). 'in_progress': actively being worked. 'blocked': waiting on dependencies. 'all': everything except deleted. Default: 'all'"),
     worker: z.string().optional()
-      .describe("Specific worker name, or 'all' for cross-worker view (default: self)"),
+      .describe("Whose tasks to list. Omit for your own queue. Use a worker name for a specific peer, or 'all' for a fleet-wide view grouped by worker"),
   } },
   async ({ filter, worker }) => {
     try {
@@ -1605,8 +1615,8 @@ server.registerTool(
 
 server.registerTool(
   "get_worker_state",
-  { description: "Read worker state from registry. Omit name for your own state. Use name='all' for full fleet overview (all workers, pane health, custom state).", inputSchema: {
-    name: z.string().optional().describe("Worker name (default: self). Use 'all' for fleet-wide overview."),
+  { description: "Read a worker's state from the central registry. Returns status, perpetual/sleep config, last commit info, issue counts, and any custom state keys. For a single worker, returns raw JSON. For name='all', returns a formatted fleet dashboard with a table of all workers showing runtime, status, pane health (alive/dead), and current in-progress task — plus a custom state section. The fleet view also auto-discovers workers from the filesystem and prunes dead panes.", inputSchema: {
+    name: z.string().optional().describe("Worker name to query. Omit for your own state. Use 'all' for a fleet-wide dashboard showing every registered worker, pane health, and active tasks"),
   } },
   async ({ name }) => {
     try {
@@ -1700,10 +1710,10 @@ server.registerTool(
 
 server.registerTool(
   "update_state",
-  { description: "Persist state across recycles — sleep duration, custom metrics. Pass `worker` to update another worker's state (requires authority: you must be their report_to or the mission_authority).", inputSchema: {
-    key: z.string().describe("State key to update (e.g. 'status', 'sleep_duration'). Known keys go top-level; unknown keys go into custom."),
-    value: z.union([z.string(), z.number(), z.boolean()]).describe("New value"),
-    worker: z.string().optional().describe("Target worker name (default: self). Requires authority — caller must be target's report_to or mission_authority."),
+  { description: "Write a key-value pair to the worker registry that persists across recycles. Use for sleep_duration, custom metrics, feature flags, or any state that must survive restarts. Known keys (status, perpetual, sleep_duration, last_commit_sha/msg/at, issues_found/fixed, report_to) are stored at the top level; all other keys go into the custom state bag. Cross-worker updates require authority — you must be the target's report_to or the mission_authority.", inputSchema: {
+    key: z.string().describe("State key name. Known keys (status, perpetual, sleep_duration, report_to, last_commit_sha, last_commit_msg, last_commit_at, issues_found, issues_fixed) go top-level. Any other key goes into the custom state bag"),
+    value: z.union([z.string(), z.number(), z.boolean()]).describe("Value to store. Must be a primitive (string, number, or boolean)"),
+    worker: z.string().optional().describe("Target worker. Omit to update your own state. Cross-worker updates are authorized only if you are the target's report_to or the mission_authority"),
   } },
   async ({ key, value, worker }) => {
     try {
@@ -1791,9 +1801,9 @@ function _replaceMemorySection(existing: string, section: string, content: strin
 server.registerTool(
   "add_stop_check",
   {
-    description: "Register a verification item you MUST complete before recycling. Use this whenever you make a change that needs end-to-end verification (e.g. 'verify TypeScript compiles', 'test deploy to slot', 'check no console errors'). recycle() will refuse until all checks are completed.",
+    description: "Register a verification gate that must be completed before you can recycle. Creates a named check that blocks recycle() until explicitly marked done via complete_stop_check(). Use whenever you make a change that requires end-to-end verification — e.g. 'verify TypeScript compiles', 'test deploy to slot', 'confirm no console errors on page load'. This prevents accidental recycles before critical verification steps are done.",
     inputSchema: {
-      description: z.string().describe("What needs to be verified before you stop"),
+      description: z.string().describe("Human-readable description of what must be verified (e.g. 'TypeScript compiles without errors', 'slot loads correctly in browser', 'all unit tests pass')"),
     },
   },
   async ({ description }) => {
@@ -1817,10 +1827,10 @@ server.registerTool(
 server.registerTool(
   "complete_stop_check",
   {
-    description: "Mark a stop check as completed after you've verified it. Pass the check ID (e.g. 'sc-1') or 'all' to mark everything done.",
+    description: "Mark a stop check as verified and completed. Call this after you have actually performed the verification described in the check — do not mark checks complete without verifying. Once all checks are completed, recycle() is unblocked. Pass 'all' to mark every pending check done at once (use only when you've genuinely verified everything).",
     inputSchema: {
-      id: z.string().describe("Check ID (e.g. 'sc-1') or 'all' to complete everything"),
-      result: z.string().optional().describe("Brief verification result (e.g. 'PASS — no TS errors', 'PASS — slot loads correctly')"),
+      id: z.string().describe("Check ID to complete (e.g. 'sc-1'). Use 'all' to mark every pending check as completed simultaneously"),
+      result: z.string().optional().describe("Brief verification outcome to record (e.g. 'PASS — 0 TypeScript errors', 'PASS — slot renders correctly'). Stored alongside the check for audit purposes"),
     },
   },
   async ({ id, result }) => {
@@ -1867,7 +1877,7 @@ server.registerTool(
 server.registerTool(
   "list_stop_checks",
   {
-    description: "List all registered stop checks and their status.",
+    description: "List all stop checks registered this session with their current status (pending or completed). Shows check IDs, descriptions, and completion timestamps. Use before recycling to see what verification gates remain, or to find check IDs for complete_stop_check(). Returns a ready/not-ready summary at the end.",
     inputSchema: {},
   },
   async () => {
@@ -1893,10 +1903,10 @@ server.registerTool(
 
 server.registerTool(
   "recycle",
-  { description: "Restart yourself in the same pane. Default: fresh context with seed. resume=true: hot-restart resuming the same session (no seed). Refuses to proceed if you have pending stop checks — complete them first or pass force=true.", inputSchema: {
-    message: z.string().optional().describe("Handoff message for the next instance (what's done, what's next, blockers)"),
-    resume: z.boolean().optional().describe("If true, hot-restart: exit and resume the same session (no seed). Use to reload MCP config, model changes, or tool definitions."),
-    force: z.boolean().optional().describe("If true, skip stop check gate (use only when checks are genuinely not applicable)"),
+  { description: "Restart yourself in the same tmux pane to get a fresh context window. Two modes: (1) Default (cold restart): exits current session, generates a new seed file with the handoff message, and launches a brand-new Claude session. Use at the end of each work cycle. (2) resume=true (hot restart): exits and immediately resumes the same session ID — preserves full conversation history but reloads MCP config, model changes, and tool definitions. Blocked by pending stop checks unless force=true. Also warns about unreplied messages that will carry over.", inputSchema: {
+    message: z.string().optional().describe("Handoff context for the next instance. Include: what was accomplished, what remains, any blockers or decisions needed. Written to handoff.md and injected into the next session's seed"),
+    resume: z.boolean().optional().describe("If true, hot-restart: resume the same session (keeps conversation history, reloads MCP/model config). If false (default), cold-restart with a fresh seed"),
+    force: z.boolean().optional().describe("If true, bypass the stop-check gate. Use only when pending checks are genuinely not applicable to the current cycle"),
   } },
   async ({ message, resume, force }) => {
     // 0. Gate on stop checks
@@ -2395,24 +2405,24 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
 
 server.registerTool(
   "create_worker",
-  { description: "Spin up a new persistent worker with its own mission, memory, and task list. Use when you've identified a domain of work that warrants a dedicated agent — ongoing monitoring, specialized repair, continuous optimization. Set launch=true to start it immediately. Set fork_from_session=true to fork your current conversation context (inherits what you know). Set placement to control where the pane appears.", inputSchema: {
-    name: z.string().describe("Worker name in kebab-case (e.g. 'chatbot-fix')"),
-    mission: z.string().describe("Full mission.md content (markdown)"),
-    type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("Worker archetype — sets model, permissions, perpetual/sleep defaults from template. Caller still writes mission. Use get_worker_template to preview."),
-    runtime: z.enum(["claude", "codex"]).optional().describe("Runtime engine (default: claude). Use codex for well-specified tasks, logical/structured work, verification, and instruction-following. Use claude for open-ended exploration, complex reasoning, and creative problem-solving. Codex uses OpenAI Codex CLI; Claude uses Claude Code CLI."),
-    model: z.string().optional().describe("LLM model (overrides type/runtime default if set). Claude: sonnet, opus, haiku. Codex: gpt-5.4, o3, o4-mini."),
-    reasoning_effort: z.enum(["low", "medium", "high", "extra_high"]).optional().describe("Reasoning effort level (default: high). Both Claude (--effort) and Codex (-c model_reasoning_effort) support this."),
-    perpetual: z.boolean().optional().describe("Run in perpetual loop (overrides type default if set)"),
-    sleep_duration: z.number().optional().describe("Seconds between cycles, only if perpetual (overrides type default if set)"),
-    disallowed_tools: z.string().optional().describe("JSON array of disallowed tool patterns (default: safe git/rm guards). Example: [\"Bash(git push*)\",\"Edit\",\"Bash(*deploy*)\"]"),
-    window: z.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers in the same group share a tiled layout."),
-    report_to: z.string().optional().describe("Who this worker reports to (default: chief-of-staff / mission_authority). Use direct_report=true to report to calling worker instead."),
-    permission_mode: z.string().optional().describe("Claude permission mode (default: bypassPermissions)"),
-    launch: z.boolean().optional().describe("Auto-launch in tmux after creation (default: false)"),
-    tasks: z.string().optional().describe("JSON array of tasks: [{subject, description?, priority?}]"),
-    proposal_required: z.boolean().optional().describe("Require the worker to produce an HTML proposal document before coding. Includes architecture diagrams, UI mockups (frontend), data flow (backend), file impact, task breakdown, and risks. Mission authority must approve before implementation begins. (default: false)"),
-    fork_from_session: z.boolean().optional().describe("Fork the caller's Claude session so the new worker inherits conversation context (default: false). Requires launch=true."),
-    direct_report: z.boolean().optional().describe("Set report_to to the calling worker instead of mission_authority (default: false)"),
+  { description: "Create a new autonomous worker with its own mission, git worktree, task queue, and inbox. Each worker runs as an independent Claude (or Codex) session in a dedicated tmux pane. Use when a domain of work warrants a dedicated agent — feature implementation, ongoing monitoring, specialized repair, or continuous optimization. The worker gets: a .claude/workers/<name>/ directory (mission.md, tasks.json, inbox.jsonl), a git worktree branched from HEAD, and a registry entry. Set launch=true to start immediately, or launch manually later. Worker names must be unique across the fleet.", inputSchema: {
+    name: z.string().describe("Unique worker name in kebab-case (e.g. 'chatbot-fix', 'deploy-monitor'). Used as directory name, git branch suffix, and tmux identifier"),
+    mission: z.string().describe("Full mission.md content in markdown. Defines the worker's objectives, scope, constraints, and acceptance criteria. This is the worker's primary instruction document"),
+    type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("Worker archetype that sets model, permissions, perpetual/sleep defaults from a template. You still write the mission. Use get_worker_template() to preview what each type provides before choosing"),
+    runtime: z.enum(["claude", "codex"]).optional().describe("Execution engine. 'claude' (default): Claude Code CLI — best for open-ended exploration, complex reasoning, creative problem-solving. 'codex': OpenAI Codex CLI — best for well-specified tasks, logical/structured work, verification, strict instruction-following"),
+    model: z.string().optional().describe("LLM model, overriding type/runtime defaults. Claude models: sonnet, opus, haiku. Codex models: gpt-5.4, o3, o4-mini"),
+    reasoning_effort: z.enum(["low", "medium", "high", "extra_high"]).optional().describe("Controls depth of reasoning. Higher = more thorough but slower/costlier. Both Claude (--effort) and Codex (-c model_reasoning_effort) support this. Default: 'high'"),
+    perpetual: z.boolean().optional().describe("If true, worker runs in an infinite recycle loop (work → sleep → recycle → repeat). If false (default), worker runs a single session. Overrides type default when set"),
+    sleep_duration: z.number().optional().describe("Seconds to sleep between perpetual cycles (only meaningful when perpetual=true). Default: 1800 (30 min). Overrides type default when set"),
+    disallowed_tools: z.string().optional().describe("JSON array of tool deny-list patterns. Default includes safe git/rm guards. Example: '[\"Bash(git push*)\",\"Edit\",\"Bash(*deploy*)\"]'"),
+    window: z.string().optional().describe("tmux window group name (e.g. 'optimizers', 'monitors'). Workers assigned to the same group share a tiled layout within that window"),
+    report_to: z.string().optional().describe("Worker or role this worker reports to. Default: mission_authority (usually 'chief-of-staff'). Set direct_report=true as a shortcut to report to the calling worker"),
+    permission_mode: z.string().optional().describe("Claude permission mode for the worker's session. Default: 'bypassPermissions'. Use 'default' for stricter tool approval"),
+    launch: z.boolean().optional().describe("If true, immediately launch the worker in a tmux pane after creation. If false (default), worker is created but not started — launch manually with launch-flat-worker.sh"),
+    tasks: z.string().optional().describe("JSON array of initial tasks to seed the worker's queue. Each element: {subject: string, description?: string, priority?: 'critical'|'high'|'medium'|'low'}"),
+    proposal_required: z.boolean().optional().describe("If true, worker must produce a self-contained HTML proposal document (architecture diagrams, UI mockups, data flow, file impact, risks) and get mission authority approval before writing any implementation code. Default: false"),
+    fork_from_session: z.boolean().optional().describe("If true, fork the caller's current Claude session so the new worker inherits full conversation context. Requires launch=true. Use when the new worker needs everything you currently know"),
+    direct_report: z.boolean().optional().describe("If true, set report_to to the calling worker's name instead of mission_authority. Convenience shortcut for creating subordinate workers"),
   } },
   async ({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, proposal_required, fork_from_session, direct_report }) => {
     try {
@@ -3119,6 +3129,131 @@ server.registerTool(
 );
 
 // reload removed — merged into recycle(resume=true)
+
+// ═══════════════════════════════════════════════════════════════════
+// DEEP REVIEW — Bugbot-style multi-pass code review
+// ═══════════════════════════════════════════════════════════════════
+
+// @ts-ignore — MCP SDK deep type instantiation with Zod
+server.registerTool(
+  "deep_review",
+  {
+    description:
+      "Launch a Bugbot-style multi-pass code review pipeline. Creates a 'bug-bot' tmux window with 8 parallel Opus review workers + 1 Sonnet coordinator. Workers review the diff with randomized chunk ordering; coordinator aggregates via majority voting (>=2/8), validates, dedupes against history, and applies fixes. Default: reviews the current HEAD commit.",
+    inputSchema: {
+      commit: z
+        .string()
+        .optional()
+        .describe("Specific commit SHA to review. Default: HEAD (current commit)"),
+      base_branch: z
+        .string()
+        .optional()
+        .describe("Review all changes since this branch (e.g. 'main'). Overrides commit."),
+      uncommitted: z
+        .boolean()
+        .optional()
+        .describe("Review staged + unstaged + untracked changes. Overrides commit and base_branch."),
+      pr_number: z
+        .string()
+        .optional()
+        .describe("Review a pull request by number (uses gh pr diff). Overrides other modes."),
+      passes: z
+        .number()
+        .optional()
+        .describe("Number of parallel review passes (default: 8)"),
+    },
+  },
+  async ({
+    commit,
+    base_branch,
+    uncommitted,
+    pr_number,
+    passes,
+  }: {
+    commit?: string;
+    base_branch?: string;
+    uncommitted?: boolean;
+    pr_number?: string;
+    passes?: number;
+  }) => {
+    try {
+      const scriptPath = join(CLAUDE_OPS, "scripts", "deep-review.sh");
+      if (!existsSync(scriptPath)) {
+        throw new Error(`deep-review.sh not found at ${scriptPath}`);
+      }
+
+      // Build args — default to --commit HEAD
+      const args: string[] = [];
+      if (pr_number) {
+        args.push("--pr", pr_number);
+      } else if (uncommitted) {
+        args.push("--uncommitted");
+      } else if (base_branch) {
+        args.push("--base", base_branch);
+      } else {
+        const headSha = execSync("git rev-parse HEAD", {
+          encoding: "utf-8",
+          cwd: PROJECT_ROOT,
+        }).trim();
+        args.push("--commit", headSha);
+      }
+
+      if (passes) {
+        args.push("--passes", String(passes));
+      }
+
+      // Detect tmux session
+      const tmuxSession = process.env.TMUX_SESSION || (() => {
+        try {
+          return execSync("tmux display-message -p \'#{session_name}\'", {
+            encoding: "utf-8",
+          }).trim();
+        } catch {
+          return "h";
+        }
+      })();
+
+      const launchResult = spawnSync("bash", [scriptPath, ...args], {
+        encoding: "utf-8",
+        cwd: PROJECT_ROOT,
+        env: { ...process.env, PROJECT_ROOT, TMUX_SESSION: tmuxSession },
+        timeout: 60_000,
+      });
+
+      if (launchResult.status !== 0) {
+        const stderr = launchResult.stderr?.slice(0, 1000) || "";
+        throw new Error(`deep-review.sh failed (exit ${launchResult.status}): ${stderr}`);
+      }
+
+      const stdout = launchResult.stdout || "";
+      const sessionMatch = stdout.match(/Session:\s+(\S+)/);
+      const sessionDir = sessionMatch ? sessionMatch[1] : "unknown";
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: [
+            `Deep review pipeline launched.`,
+            ``,
+            `Window: ${tmuxSession}:bug-bot (9 panes)`,
+            `Session: ${sessionDir}`,
+            `Passes: ${passes || 8} workers (Opus, xhigh effort)`,
+            `Coordinator: pane 0 (Sonnet, medium effort)`,
+            ``,
+            `Pipeline: 8 parallel passes -> bucket -> majority vote (>=2/8) -> validate -> dedup -> autofix -> report`,
+            `Report: ${sessionDir}/report.md`,
+          ].join("\n"),
+        }],
+      };
+    } catch (e: any) {
+      const msg = `Deep review launch failed: ${e.message?.slice(0, 500) || String(e)}`;
+      return {
+        content: [{ type: "text" as const, text: msg }],
+        isError: true,
+      };
+    }
+  }
+);
 
 // ═══════════════════════════════════════════════════════════════════
 // START SERVER
