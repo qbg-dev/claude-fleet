@@ -844,11 +844,25 @@ function generateSeedContent(handoff?: string): string {
 
   // Include persisted state in seed so workers resume where they left off
   let stateBlock = "";
+  let proposalBlock = "";
   try {
     const reg = readRegistry();
     const entry = reg[WORKER_NAME] as RegistryWorkerEntry | undefined;
     if (entry?.custom && Object.keys(entry.custom).length > 0) {
       stateBlock = `\n\n## Persisted State\n\`\`\`json\n${JSON.stringify(entry.custom, null, 2)}\n\`\`\`\nThese values were saved by your previous instance via \`update_state()\`. Use them to resume context.`;
+    }
+    // Load proposal instructions if proposal_required is set
+    if (entry?.custom?.proposal_required) {
+      const instrPath = join(CLAUDE_OPS, "templates/proposal-instructions.md");
+      const tmplPath = join(CLAUDE_OPS, "templates/proposal-template.html");
+      try {
+        let instrContent = readFileSync(instrPath, "utf-8");
+        instrContent = instrContent
+          .replace(/\{\{WORKER_NAME\}\}/g, WORKER_NAME)
+          .replace(/\{\{MISSION_AUTHORITY\}\}/g, _missionAuth)
+          .replace(/\{\{TEMPLATE_PATH\}\}/g, tmplPath);
+        proposalBlock = "\n\n" + instrContent;
+      } catch {}
     }
   } catch {}
 
@@ -864,7 +878,7 @@ Read these files NOW in this order:
 Your MEMORY.md is auto-loaded by Claude (see "persistent auto memory directory" in your context).
 Use Edit/Write to update it directly at that path. Then begin working immediately.
 
-If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}
+If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}${proposalBlock}
 
 ${loadSeedContext(branch, _missionAuth)}`;
 
@@ -2245,6 +2259,7 @@ interface CreateWorkerInput {
   report_to?: string;
   permission_mode?: string;
   taskEntries?: Array<{ subject: string; description?: string; priority?: string }>;
+  proposal_required?: boolean;
 }
 
 const TEMPLATE_TYPES_DIR = join(CLAUDE_OPS, "templates/flat-worker/types");
@@ -2395,10 +2410,11 @@ server.registerTool(
     permission_mode: z.string().optional().describe("Claude permission mode (default: bypassPermissions)"),
     launch: z.boolean().optional().describe("Auto-launch in tmux after creation (default: false)"),
     tasks: z.string().optional().describe("JSON array of tasks: [{subject, description?, priority?}]"),
+    proposal_required: z.boolean().optional().describe("Require the worker to produce an HTML proposal document before coding. Includes architecture diagrams, UI mockups (frontend), data flow (backend), file impact, task breakdown, and risks. Mission authority must approve before implementation begins. (default: false)"),
     fork_from_session: z.boolean().optional().describe("Fork the caller's Claude session so the new worker inherits conversation context (default: false). Requires launch=true."),
     direct_report: z.boolean().optional().describe("Set report_to to the calling worker instead of mission_authority (default: false)"),
   } },
-  async ({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, fork_from_session, direct_report }) => {
+  async ({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, report_to, permission_mode, launch, tasks: tasksJson, proposal_required, fork_from_session, direct_report }) => {
     try {
       // Change 4: Enforce unique worker names
       const existingRegistry = readRegistry();
@@ -2445,7 +2461,7 @@ server.registerTool(
       }
 
       // Create files
-      const result = createWorkerFiles({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, taskEntries });
+      const result = createWorkerFiles({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, taskEntries, proposal_required });
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: `Error: ${result.error}` }], isError: true };
       }
@@ -2473,6 +2489,9 @@ server.registerTool(
         }
         entry.report_to = reportTo;
         entry.custom = { ...entry.custom, runtime: resolvedRuntime || "claude", reasoning_effort: permissions.reasoning_effort || "high" };
+        if (proposal_required) {
+          entry.custom.proposal_required = true;
+        }
         if (fork_from_session) {
           entry.forked_from = WORKER_NAME;
         }
@@ -2640,6 +2659,7 @@ server.registerTool(
         permissions.window ? `  Window: ${permissions.window}` : null,
         `  Reports to: ${reportTo}`,
         fork_from_session ? `  Forked from: ${WORKER_NAME}` : null,
+        proposal_required ? `  Proposal: REQUIRED (worker produces HTML proposal before coding)` : null,
         permissions.disallowedTools.length > 0 ? `  Disallowed: ${permissions.disallowedTools.length} rules` : `  Disallowed: none (full access)`,
         `  Tasks: ${taskSummary}`,
         worktreeReady ? `  Worktree: ${worktreeDir}` : `  Worktree: NOT CREATED (manual setup needed)`,

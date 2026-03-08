@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>[WORKER_NAME] — Implementation Proposal</title>
+<style>
+/* qbg.dev monospace-minimal + project design tokens for mockup frames */
+:root {
+  --ink: #1c1917; --bg: #fafaf9; --accent: #f97316;
+  --muted: #78716c; --border: #e7e5e4; --card: #fff;
+  --success: #16a34a; --danger: #dc2626; --info: #2563eb; --warn: #d97706;
+  --code-bg: #f5f5f4;
+}
+[data-theme="dark"] {
+  --ink: #e7e5e4; --bg: #0c0a09; --accent: #fb923c;
+  --muted: #a8a29e; --border: #292524; --card: #1c1917;
+  --success: #4ade80; --danger: #f87171; --info: #60a5fa; --warn: #fbbf24;
+  --code-bg: #1c1917;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Source Code Pro','SF Mono','Menlo',monospace; font-weight: 500; background: var(--bg); color: var(--ink); line-height: 1.5; font-size: 13px; }
+main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+/* Typography */
+h1 { font-size: 2.25rem; font-weight: 900; letter-spacing: -0.03em; margin-bottom: 4px; line-height: 1.15; }
+h1 .harness-tag { font-size: 1rem; font-weight: 500; color: var(--muted); display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.08em; }
+h2 { font-size: 1.1rem; font-weight: 700; margin: 28px 0 10px; border-left: 3px solid var(--accent); padding-left: 10px; }
+h3 { font-size: 0.9rem; font-weight: 700; margin: 14px 0 6px; }
+h4 { font-size: 0.75rem; font-weight: 700; margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+p, li { font-size: 0.82rem; margin-bottom: 5px; line-height: 1.6; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.muted { color: var(--muted); font-size: 0.78rem; }
+.subtitle { color: var(--muted); font-size: 0.8rem; margin-bottom: 20px; }
+
+/* Layout */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+@media(max-width:640px){ .grid-2,.grid-3,.grid-4{ grid-template-columns:1fr; } }
+
+/* Card */
+.card { background: var(--card); border: 1px solid var(--border); padding: 10px; margin-bottom: 8px; }
+
+/* Hook */
+.hook { background: var(--card); border: 2px solid var(--accent); padding: 14px 18px; margin: 14px 0; }
+.hook h2 { margin-top: 0; border-left: none; padding-left: 0; color: var(--accent); font-size: 1rem; }
+
+/* Action */
+.action { background: var(--card); border: 2px solid var(--accent); border-left-width: 4px; padding: 14px 18px; margin: 20px 0; }
+.action h2 { margin-top: 0; border-left: none; padding-left: 0; }
+
+/* Metric */
+.metric { text-align: center; padding: 10px 6px; }
+.metric .value { font-size: 1.75rem; font-weight: 900; color: var(--accent); }
+.metric .label { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 3px; color: var(--muted); }
+
+/* Status badges */
+.badge { display: inline-block; padding: 1px 6px; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid; }
+.badge-ok { color: var(--success); border-color: var(--success); }
+.badge-fail { color: var(--danger); border-color: var(--danger); }
+.badge-warn { color: var(--warn); border-color: var(--warn); }
+.badge-info { color: var(--info); border-color: var(--info); }
+
+/* Dense list */
+.dense-list { list-style: none; padding: 0; margin-left: 2px; }
+.dense-list li { padding: 2px 0 2px 12px; position: relative; font-size: 0.78rem; }
+.dense-list li:before { content: "\25B8"; position: absolute; left: 0; color: var(--accent); font-size: 9px; top: 4px; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 0.75rem; margin: 8px 0; }
+th { text-align: left; padding: 4px 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid var(--border); font-size: 0.65rem; }
+td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+
+/* Code */
+code { font-family: inherit; font-size: 0.73rem; background: var(--code-bg); padding: 1px 4px; border: 1px solid var(--border); }
+pre { background: var(--code-bg); border: 1px solid var(--border); padding: 8px; margin: 6px 0; overflow-x: auto; font-size: 0.73rem; line-height: 1.4; }
+pre code { background: none; border: none; padding: 0; }
+
+/* Collapsibles */
+.collapsible { margin: 6px 0; }
+.collapsible-header { cursor: pointer; padding: 7px 10px; border-left: 3px solid var(--border); display: flex; align-items: center; justify-content: space-between; user-select: none; font-size: 0.82rem; font-weight: 700; }
+.collapsible-header:hover { border-left-color: var(--accent); }
+.collapsible-header .arrow { transition: transform 0.2s; color: var(--accent); font-size: 9px; }
+.collapsible.open .arrow { transform: rotate(90deg); }
+.collapsible-content { max-height: 0; overflow: hidden; transition: max-height 0.3s; padding: 0 10px; }
+.collapsible.open .collapsible-content { max-height: 10000px; padding: 8px 10px 10px 14px; }
+
+/* Wave / task graph */
+.wave { margin: 10px 0; border-left: 2px solid var(--border); padding-left: 12px; }
+.wave-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; }
+.task-row { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.task-row:last-child { border-bottom: none; }
+.task-id { font-size: 0.7rem; color: var(--muted); min-width: 120px; flex-shrink: 0; }
+.task-desc { flex: 1; font-size: 0.78rem; }
+
+/* Risk / insight callouts */
+.callout { border-left: 3px solid; padding: 8px 12px; margin: 6px 0; font-size: 0.8rem; }
+.callout-danger { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.callout-warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.callout-info { border-color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); }
+.callout strong { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+.callout-danger strong { color: var(--danger); }
+.callout-warn strong { color: var(--warn); }
+.callout-info strong { color: var(--info); }
+
+/* Mermaid */
+.diagram-container { background: var(--card); border: 1px solid var(--border); padding: 12px; margin: 10px 0; }
+.mermaid { padding: 8px; }
+
+/* Mockup frame — scoped to project design system (Inter, not monospace) */
+.mockup-frame { font-family: "Inter","PingFang SC",-apple-system,BlinkMacSystemFont,sans-serif; background: #f4f5f7; border: 2px solid var(--border); border-radius: 6px; padding: 20px; margin: 12px 0; --primary: #268AED; --gold: #c8a24e; --radius-lg: 6px; --radius-md: 4px; --radius-sm: 2px; }
+[data-theme="dark"] .mockup-frame { background: #18181b; }
+.mockup-frame * { font-family: inherit; }
+.mockup-label { font-family: 'Source Code Pro','SF Mono','Menlo',monospace; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 8px; }
+/* Project UI tokens inside mockup frames */
+.mockup-frame .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: var(--radius-md); font-size: 13px; font-weight: 500; border: 1px solid var(--border); background: var(--card); color: var(--ink); cursor: pointer; }
+.mockup-frame .btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+.mockup-frame .btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.mockup-frame .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.mockup-frame .data-table th { text-align: left; padding: 8px 12px; font-weight: 600; font-size: 12px; border-bottom: 2px solid var(--border); }
+.mockup-frame .data-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.mockup-frame .form-input { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; width: 100%; background: var(--card); color: var(--ink); }
+.mockup-frame .card-ui { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; }
+.mockup-frame .tab-bar { display: flex; gap: 0; border-bottom: 2px solid var(--border); }
+.mockup-frame .tab { padding: 8px 16px; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+.mockup-frame .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+
+/* Footer */
+footer { margin-top: 28px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 0.72rem; font-weight: 600; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; color: var(--muted); }
+
+/* Theme toggle */
+.theme-toggle { position: fixed; top: 8px; right: 8px; z-index: 100; background: var(--card); color: var(--ink); border: 1px solid var(--border); padding: 3px 8px; cursor: pointer; font-family: inherit; font-size: 0.68rem; font-weight: 700; }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="theme-toggle">Dark</button>
+<main>
+
+  <span class="harness-tag">[WORKER_NAME]</span>
+  <h1>[PROPOSAL TITLE]</h1>
+  <p class="subtitle">Implementation Proposal — [DATE] · Awaiting [MISSION_AUTHORITY] Approval</p>
+
+  <!-- 1. HOOK -->
+  <div class="hook">
+    <h2>Bottom Line</h2>
+    <p><strong>[One sentence: what this delivers and why it matters]</strong></p>
+    <ul class="dense-list">
+      <li><strong>Why now:</strong> [Urgency / cost of waiting]</li>
+      <li><strong>Scope:</strong> [N files, N components, estimated effort]</li>
+      <li><strong>Type:</strong> [Frontend / Backend / Full-stack]</li>
+    </ul>
+  </div>
+
+  <!-- 2. ARCHITECTURE -->
+  <h2>Architecture</h2>
+  <p>[Brief narrative explaining the architecture and how components interact]</p>
+  <div class="diagram-container">
+    <div class="mermaid">
+flowchart LR
+    A[Component A] --> B[Component B]
+    B --> C[Component C]
+    C --> D[Output]
+    </div>
+  </div>
+
+  <!-- 3. UI MOCKUPS (Frontend tasks — delete this section if backend-only) -->
+  <h2>UI Mockups</h2>
+  <p class="muted">Rendered components using the project design system (Inter, --primary, --gold)</p>
+
+  <div class="mockup-label">Example: Page Header with Tabs</div>
+  <div class="mockup-frame">
+    <div style="margin-bottom: 16px;">
+      <h2 style="font-size: 18px; font-weight: 700; margin: 0 0 4px 0;">[Page Title]</h2>
+      <p style="font-size: 13px; color: #78716c; margin: 0;">[Page description]</p>
+    </div>
+    <div class="tab-bar">
+      <div class="tab active">[Tab 1]</div>
+      <div class="tab">[Tab 2]</div>
+      <div class="tab">[Tab 3]</div>
+    </div>
+    <div style="padding: 16px 0;">
+      <div class="card-ui" style="margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <div style="font-weight: 600; font-size: 14px;">[Card Title]</div>
+            <div style="font-size: 12px; color: #78716c;">[Card description]</div>
+          </div>
+          <button class="btn btn-primary">[Action]</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup-label">Example: Data Table</div>
+  <div class="mockup-frame">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <input class="form-input" style="max-width: 300px;" placeholder="Search..." />
+      <button class="btn btn-primary">[+ New]</button>
+    </div>
+    <table class="data-table">
+      <thead><tr><th>[Column A]</th><th>[Column B]</th><th>[Column C]</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>[Value]</td><td>[Value]</td><td>[Value]</td><td><span class="badge badge-ok">Active</span></td></tr>
+        <tr><td>[Value]</td><td>[Value]</td><td>[Value]</td><td><span class="badge badge-warn">Pending</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 4. DATA FLOW (Backend tasks — delete this section if frontend-only) -->
+  <h2>Data Flow</h2>
+  <p>[Explain the request/data path through the system]</p>
+  <div class="diagram-container">
+    <div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant API
+    participant DB
+    Client->>API: POST /api/v1/[endpoint]
+    API->>DB: INSERT INTO [table]
+    DB-->>API: OK
+    API-->>Client: 200 { success: true }
+    </div>
+  </div>
+
+  <h4>Schema Changes</h4>
+  <table>
+    <thead><tr><th>Table/Collection</th><th>Change</th><th>Fields</th></tr></thead>
+    <tbody>
+      <tr><td>[table_name]</td><td>New table</td><td>[field1, field2, ...]</td></tr>
+      <tr><td>[table_name]</td><td>Add column</td><td>[field_name: type]</td></tr>
+    </tbody>
+  </table>
+
+  <!-- 5. FILE IMPACT -->
+  <h2>File Impact</h2>
+  <div class="grid-3" style="margin-bottom: 8px;">
+    <div class="card metric">
+      <div class="value">[N]</div>
+      <div class="label">Files Total</div>
+    </div>
+    <div class="card metric">
+      <div class="value">[N]</div>
+      <div class="label">New Files</div>
+    </div>
+    <div class="card metric">
+      <div class="value">[N]</div>
+      <div class="label">Modified</div>
+    </div>
+  </div>
+  <table>
+    <thead><tr><th>File Path</th><th>Action</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>[src/path/to/file.ts]</code></td><td><span class="badge badge-ok">New</span></td><td>[What this file does]</td></tr>
+      <tr><td><code>[src/path/to/existing.ts]</code></td><td><span class="badge badge-info">Modify</span></td><td>[What changes]</td></tr>
+    </tbody>
+  </table>
+
+  <!-- 6. TASK BREAKDOWN -->
+  <h2>Task Breakdown</h2>
+
+  <div class="wave">
+    <div class="wave-title">Phase 1 — [Theme]</div>
+    <div class="task-row">
+      <div class="task-id">T001</div>
+      <div class="task-desc">[Task description]</div>
+      <div><span class="badge badge-info">Ready</span></div>
+    </div>
+    <div class="task-row">
+      <div class="task-id">T002</div>
+      <div class="task-desc">[Task description]</div>
+      <div><span class="badge badge-info">Ready</span></div>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-title">Phase 2 — [Theme]</div>
+    <div class="task-row">
+      <div class="task-id">T003</div>
+      <div class="task-desc">[Task description]</div>
+      <div><span class="badge badge-fail">Blocked on T001</span></div>
+    </div>
+  </div>
+
+  <!-- 7. RISKS & MITIGATIONS -->
+  <div class="collapsible" data-collapsible="open">
+    <div class="collapsible-header">
+      <span>Risks &amp; Mitigations</span>
+      <span class="arrow">&#9654;</span>
+    </div>
+    <div class="collapsible-content">
+      <div class="callout callout-danger">
+        <strong>High Risk</strong>
+        [Risk description and how you'll mitigate it]
+      </div>
+      <div class="callout callout-warn">
+        <strong>Medium Risk</strong>
+        [Risk description and how you'll mitigate it]
+      </div>
+    </div>
+  </div>
+
+  <!-- 8. OPEN QUESTIONS -->
+  <div class="collapsible" data-collapsible="open">
+    <div class="collapsible-header">
+      <span>Open Questions</span>
+      <span class="arrow">&#9654;</span>
+    </div>
+    <div class="collapsible-content">
+      <ol>
+        <li>[Decision needed from mission authority — e.g. "Should we support dark mode in the new component?"]</li>
+        <li>[Another decision — e.g. "Use existing SQLite table or create new?"]</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- 9. ACTION -->
+  <div class="action">
+    <h2>Awaiting Approval</h2>
+    <p>Review this proposal and reply with one of:</p>
+    <ul class="dense-list">
+      <li><strong>APPROVED</strong> — proceed with implementation as proposed</li>
+      <li><strong>REVISE</strong> — update proposal per your feedback (include notes)</li>
+      <li><strong>REJECT</strong> — stop and discuss scope</li>
+    </ul>
+  </div>
+
+  <footer>
+    <span>[WORKER_NAME] — implementation proposal</span>
+    <span>[DATE]</span>
+  </footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var t = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', t);
+  var btn = document.getElementById('theme-toggle');
+  if (btn) {
+    btn.textContent = t === 'dark' ? 'Light' : 'Dark';
+    btn.onclick = function() {
+      var c = document.documentElement.getAttribute('data-theme');
+      var n = c === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', n);
+      localStorage.setItem('theme', n);
+      btn.textContent = n === 'dark' ? 'Light' : 'Dark';
+      mermaid.initialize({ startOnLoad: false, theme: n === 'dark' ? 'dark' : 'default' });
+    };
+  }
+  mermaid.initialize({ startOnLoad: true, theme: t === 'dark' ? 'dark' : 'default' });
+  document.querySelectorAll('[data-collapsible]').forEach(function(s) {
+    s.classList.add('collapsible');
+    if (s.getAttribute('data-collapsible') === 'open') s.classList.add('open');
+  });
+  document.querySelectorAll('.collapsible-header').forEach(function(h) {
+    h.onclick = function() { this.closest('.collapsible').classList.toggle('open'); };
+  });
+});
+</script>
+</body>
+</html>
