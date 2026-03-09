@@ -18,12 +18,12 @@ export LC_ALL=en_US.UTF-8
 export EDITOR="nvim"
 export VISUAL="nvim"
 export DOCKER_ARCH=arm64
-export DYLD_LIBRARY_PATH="$(brew --prefix)/lib:$DYLD_LIBRARY_PATH"
+export DYLD_LIBRARY_PATH="$HOMEBREW_PREFIX/lib:$DYLD_LIBRARY_PATH"
 
 # ===== Powerlevel10k =====
 typeset POWERLEVEL9K_DISABLE_GITSTATUS=true
 typeset POWERLEVEL9K_INSTANT_PROMPT=quiet
-source /opt/homebrew/share/powerlevel10k/powerlevel10k.zsh-theme
+source "$HOMEBREW_PREFIX/share/powerlevel10k/powerlevel10k.zsh-theme"
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
 
 # ===== History =====
@@ -36,8 +36,8 @@ setopt hist_ignore_dups
 setopt hist_verify
 
 # ===== Plugins =====
-source /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
-source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+source "$HOMEBREW_PREFIX/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
+source "$HOMEBREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 
 # ===== Syntax highlighting config =====
 ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets pattern cursor)

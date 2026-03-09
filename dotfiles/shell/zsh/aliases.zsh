@@ -77,7 +77,7 @@ alias cldmd='claudemd'
 alias snippi='snippets search -p -i'
 
 # ===== Conda =====
-alias conda-init='eval "$(/opt/miniconda3/bin/conda shell.zsh hook)"'
+alias conda-init='eval "$(conda shell.zsh hook 2>/dev/null || /opt/miniconda3/bin/conda shell.zsh hook)"'
 
 # ===== fzs (program launcher) =====
 alias fzs="fzs --config ~/.config/fzs/config.toml"

@@ -12,30 +12,30 @@ export PATH="$HOME/.claude-ops/bin:$PATH"
 
 # ===== Package managers =====
 export PATH="$HOME/.pixi/bin:$PATH"
-export PATH="/opt/miniconda3/bin:$PATH"
+[[ -d /opt/miniconda3/bin ]] && export PATH="/opt/miniconda3/bin:$PATH"
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
 # ===== Language runtimes =====
 export PATH="$HOME/.rbenv/bin:$PATH"
-export PATH="/opt/homebrew/opt/ruby@3.3/bin:$PATH"
-export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:$PATH"
-export PATH="/opt/homebrew/opt/openjdk@17/bin:$PATH"
+[[ -d "$HOMEBREW_PREFIX/opt/ruby@3.3" ]] && export PATH="$HOMEBREW_PREFIX/opt/ruby@3.3/bin:$PATH"
+[[ -d "$HOMEBREW_PREFIX/opt/python@3.11" ]] && export PATH="$HOMEBREW_PREFIX/opt/python@3.11/libexec/bin:$PATH"
+[[ -d "$HOMEBREW_PREFIX/opt/openjdk@17" ]] && export PATH="$HOMEBREW_PREFIX/opt/openjdk@17/bin:$PATH"
 export PATH="$HOME/.juliaup/bin:$PATH"
 
 # ===== Homebrew =====
-export PATH="/opt/homebrew/bin:$PATH"
-export PATH="/opt/homebrew/sbin:$PATH"
-export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+export PATH="$HOMEBREW_PREFIX/bin:$PATH"
+export PATH="$HOMEBREW_PREFIX/sbin:$PATH"
+[[ -d "$HOMEBREW_PREFIX/opt/postgresql@15" ]] && export PATH="$HOMEBREW_PREFIX/opt/postgresql@15/bin:$PATH"
 
 # ===== System Python =====
 export PATH="$HOME/Library/Python/3.10/bin:$PATH"
 
 # ===== TeX =====
-export PATH="/usr/local/texlive/2025/bin/universal-darwin:$PATH"
+[[ -d /usr/local/texlive ]] && export PATH="$(ls -d /usr/local/texlive/*/bin/universal-darwin 2>/dev/null | tail -1):$PATH"
 
 # ===== Applications =====
-export PATH="/Applications/Visual Studio Code.app/Contents/Resources/app/bin:$PATH"
+[[ -d "/Applications/Visual Studio Code.app" ]] && export PATH="/Applications/Visual Studio Code.app/Contents/Resources/app/bin:$PATH"
 export PATH="$HOME/.codeium/windsurf/bin:$PATH"
 export PATH="$HOME/.antigravity/antigravity/bin:$PATH"
 export PATH="$HOME/.npm-global/bin:$PATH"
