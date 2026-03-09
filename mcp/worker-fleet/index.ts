@@ -3007,7 +3007,7 @@ server.registerTool(
 // reload removed — merged into recycle(resume=true)
 
 // ═══════════════════════════════════════════════════════════════════
-// DEEP REVIEW — Multi-pass review (code diffs OR content/plans/docs)
+// DEEP REVIEW — Multi-pass review (diffs + content, additive)
 // ═══════════════════════════════════════════════════════════════════
 
 // @ts-ignore — MCP SDK deep type instantiation with Zod
@@ -3015,55 +3015,40 @@ server.registerTool(
   "deep_review",
   {
     description:
-      "Launch a multi-pass deep review pipeline. Two modes: DIFF MODE (default) reviews git diffs — code changes, commits, PRs. CONTENT MODE reviews any files — plans, docs, designs, proposals. Total workers = passes × focus areas. Diff default: 2×8=16 workers (security, logic, error-handling, data-integrity, architecture, performance, ux-impact, completeness). Content default: 2×4=8 workers (correctness, completeness, feasibility, risks). Creates DEDICATED tmux session with coordinator + worker panes. Voting within focus groups (≥2/passes). Use `content` param for plans/docs, `spec` to guide the review focus.",
+      "Launch a multi-pass deep review pipeline. Material is ADDITIVE — combine scope (git diff) and content (files) in a single review, or use either alone. `scope` auto-detects: branch name=diff since branch, SHA=commit, 'uncommitted'=working changes, 'pr:N'=pull request. Default focus: diff-only=8 code areas, content-only=4 content areas, mixed=6 balanced areas. Creates DEDICATED tmux session with coordinator + worker panes. Voting within focus groups (≥2/passes).",
     inputSchema: {
-      commit: z
+      scope: z
         .string()
         .optional()
-        .describe("Specific commit SHA to review. Default: HEAD (current commit)"),
-      base_branch: z
-        .string()
-        .optional()
-        .describe("Review all changes since this branch (e.g. 'main'). Overrides commit."),
-      uncommitted: z
-        .boolean()
-        .optional()
-        .describe("Review staged + unstaged + untracked changes. Overrides commit and base_branch."),
-      pr_number: z
-        .string()
-        .optional()
-        .describe("Review a pull request by number (uses gh pr diff). Overrides other modes."),
+        .describe("Git diff scope. Auto-detects: branch name (e.g. 'main'), commit SHA, 'uncommitted', 'pr:42'. Default: HEAD if no content. Additive with content."),
       content: z
         .union([z.string(), z.array(z.string())])
         .optional()
-        .describe("File path(s) to review instead of a diff. For plans, docs, or any text. Comma-separated string or array. Overrides all diff params."),
+        .describe("File path(s) to review. Comma-separated string or array. Additive with scope."),
       spec: z
         .string()
         .optional()
-        .describe("What to review for — guides worker focus. E.g., 'check this plan for logical gaps and missing edge cases'. Used with content mode or as additional context for diff mode."),
+        .describe("What to review for — guides all workers. E.g., 'verify implementation matches the plan'."),
       passes: z
         .number()
         .optional()
-        .describe("Passes PER focus area (default: 2). Total workers = passes × focus areas. E.g. passes:3 + 2 focus = 6 workers."),
+        .describe("Passes PER focus area (default: 2). Total workers = passes × focus areas."),
       session_name: z
         .string()
         .optional()
-        .describe("Custom tmux session name (overrides auto-naming from worktree+commit)"),
+        .describe("Custom tmux session name (overrides auto-naming)"),
       notify: z
         .string()
         .optional()
-        .describe("Worker name or 'user' to notify on completion. Desktop notification always fires."),
+        .describe("Worker name or 'user' to notify on completion."),
       focus: z
         .array(z.string())
         .optional()
-        .describe("Custom focus areas. Each focus gets `passes` independent workers. Diff default: 8 areas. Content default: 4 areas (correctness, completeness, feasibility, risks). Override with e.g. ['security', 'auth', 'scope-bypass']."),
+        .describe("Custom focus areas. Overrides auto-detect. Diff: 8 areas, content: 4 areas, mixed: 6 areas."),
     },
   },
   async ({
-    commit,
-    base_branch,
-    uncommitted,
-    pr_number,
+    scope,
     content,
     spec,
     passes,
@@ -3071,10 +3056,7 @@ server.registerTool(
     notify,
     focus,
   }: {
-    commit?: string;
-    base_branch?: string;
-    uncommitted?: boolean;
-    pr_number?: string;
+    scope?: string;
     content?: string | string[];
     spec?: string;
     passes?: number;
@@ -3088,26 +3070,17 @@ server.registerTool(
         throw new Error(`deep-review.sh not found at ${scriptPath}`);
       }
 
-      // Build args — content mode takes priority over diff modes
       const args: string[] = [];
+
+      // Scope and content are additive
+      if (scope) {
+        args.push("--scope", scope);
+      }
       if (content) {
         const contentPaths = Array.isArray(content) ? content.join(",") : content;
         args.push("--content", contentPaths);
-      } else if (pr_number) {
-        args.push("--pr", pr_number);
-      } else if (uncommitted) {
-        args.push("--uncommitted");
-      } else if (base_branch) {
-        args.push("--base", base_branch);
-      } else if (commit) {
-        args.push("--commit", commit);
-      } else {
-        const headSha = execSync("git rev-parse HEAD", {
-          encoding: "utf-8",
-          cwd: PROJECT_ROOT,
-        }).trim();
-        args.push("--commit", headSha);
       }
+      // If neither provided, shell script defaults to HEAD
 
       if (spec) {
         args.push("--spec", spec);
@@ -3138,14 +3111,15 @@ server.registerTool(
       }
 
       const stdout = launchResult.stdout || "";
-      // Parse session name and dir from output
       const tmuxSessionMatch = stdout.match(/Session:\s+(\S+)/);
       const sessionDir = tmuxSessionMatch ? tmuxSessionMatch[1] : "unknown";
       const reviewSessionMatch = stdout.match(/tmux switch-client -t (\S+)/);
       const reviewSession = reviewSessionMatch ? reviewSessionMatch[1] : session_name || "dr-unknown";
       const passesPerFocus = passes || 2;
-      const isContentMode = !!content;
-      const numFocus = focus?.length || (isContentMode ? 4 : 8);
+      const hasContent = !!content;
+      const hasScope = !!scope;
+      const defaultFocus = hasContent && !hasScope ? 4 : hasContent && hasScope ? 6 : 8;
+      const numFocus = focus?.length || defaultFocus;
       const totalWorkers = passesPerFocus * numFocus;
       const numWorkerWindows = Math.ceil(totalWorkers / 4);
 

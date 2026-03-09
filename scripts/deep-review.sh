@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deep-review.sh — Launch multi-pass deep review (code diffs OR content/plans/docs)
+# deep-review.sh — Multi-pass deep review (code diffs, content, or both)
 #
 # Architecture:
 #   Window 0 "coordinator": 1 pane — coordinator (Sonnet)
@@ -8,33 +8,27 @@
 # Workers = passes × focus areas. Each focus area gets `passes` independent
 # workers, each seeing a different randomized ordering of the material.
 #
-# Two modes:
-#   DIFF MODE (default): Reviews git diffs (commit, branch, PR, uncommitted)
-#   CONTENT MODE:        Reviews files/plans/docs (no git diff needed)
+# Material is additive — combine diffs AND content files in a single review:
+#   --scope main --content plan.md  →  review diff + plan together
 #
 # Examples:
-#   --passes 2 --focus security,logic,perf  →  6 workers (2 per focus)
-#   --passes 4                              →  32 workers (4 × 8 default focus areas)
-#   --passes 2                              →  16 workers (2 × 8 default)
-#   --passes 1 --focus security             →  1 worker
-#   --content plan.md                       →  review a plan (2×4=8 workers, content focus)
-#   --content a.md,b.md --spec "check gaps" →  review multiple files with custom spec
+#   --scope main                            review changes since main
+#   --scope abc1234                         review specific commit
+#   --scope uncommitted                     review working changes
+#   --scope pr:42                           review a pull request
+#   --content plan.md                       review a plan/doc (no diff)
+#   --scope main --content design.md        review diff + design doc together
+#   --content a.md,b.md --spec "find gaps"  review files with custom spec
+#   --passes 1 --focus security             1 worker, security only
 #
-# Session naming: dr-{worktree}-{first-two-words}-{short-hash}
+# Session naming: dr-{worktree}-{descriptor}-{hash}
 #
-# Usage:
-#   bash ~/.claude-ops/scripts/deep-review.sh                     # review HEAD (2×8=16 workers)
-#   bash ~/.claude-ops/scripts/deep-review.sh --base main         # changes since main
-#   bash ~/.claude-ops/scripts/deep-review.sh --uncommitted       # uncommitted changes
-#   bash ~/.claude-ops/scripts/deep-review.sh --commit abc123     # specific commit
-#   bash ~/.claude-ops/scripts/deep-review.sh --pr 42             # pull request
-#   bash ~/.claude-ops/scripts/deep-review.sh --content file.md   # review content (no diff)
-#   bash ~/.claude-ops/scripts/deep-review.sh --content f1,f2     # review multiple files
-#   bash ~/.claude-ops/scripts/deep-review.sh --spec "find gaps"  # review spec (content mode)
-#   bash ~/.claude-ops/scripts/deep-review.sh --passes 1          # quick (1×8=8 workers)
-#   bash ~/.claude-ops/scripts/deep-review.sh --passes 3 --focus security,logic  # 6 workers
-#   bash ~/.claude-ops/scripts/deep-review.sh --session-name foo  # custom session name
-#   bash ~/.claude-ops/scripts/deep-review.sh --notify user       # notify on completion
+# Unified scope replaces --base/--commit/--uncommitted/--pr:
+#   main, develop, feature/x  →  diff since branch (was --base)
+#   abc1234, HEAD~3           →  specific commit (was --commit)
+#   uncommitted               →  working changes (was --uncommitted)
+#   pr:42                     →  pull request (was --pr)
+#   HEAD (default when no --content) → current commit
 set -euo pipefail
 
 CLAUDE_OPS="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
@@ -48,9 +42,10 @@ NOTIFY_TARGET=""
 CUSTOM_FOCUS=""
 CONTENT_FILES=""
 REVIEW_SPEC=""
+SCOPE=""
 
-# Default focus areas (diff mode)
-DEFAULT_FOCUS=(
+# Default focus areas
+DEFAULT_DIFF_FOCUS=(
   "security"
   "logic"
   "error-handling"
@@ -61,7 +56,6 @@ DEFAULT_FOCUS=(
   "completeness"
 )
 
-# Default focus areas (content mode)
 DEFAULT_CONTENT_FOCUS=(
   "correctness"
   "completeness"
@@ -69,68 +63,93 @@ DEFAULT_CONTENT_FOCUS=(
   "risks"
 )
 
-# ── Parse args ────────────────────────────────────────────────
-DIFF_MODE="base"
-BASE_BRANCH="main"
-COMMIT=""
-PR_NUMBER=""
+DEFAULT_MIXED_FOCUS=(
+  "security"
+  "logic"
+  "correctness"
+  "completeness"
+  "feasibility"
+  "risks"
+)
 
+# ── Parse args ────────────────────────────────────────────────
+# Legacy flags still work for backwards compatibility
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --base) DIFF_MODE="base"; BASE_BRANCH="$2"; shift 2 ;;
-    --uncommitted) DIFF_MODE="uncommitted"; shift ;;
-    --commit) DIFF_MODE="commit"; COMMIT="$2"; shift 2 ;;
-    --pr) DIFF_MODE="pr"; PR_NUMBER="$2"; shift 2 ;;
-    --content) DIFF_MODE="content"; CONTENT_FILES="$2"; shift 2 ;;
-    --spec) REVIEW_SPEC="$2"; shift 2 ;;
-    --passes) PASSES_PER_FOCUS="$2"; shift 2 ;;
+    --scope)   SCOPE="$2"; shift 2 ;;
+    --content) CONTENT_FILES="$2"; shift 2 ;;
+    --spec)    REVIEW_SPEC="$2"; shift 2 ;;
+    --passes)  PASSES_PER_FOCUS="$2"; shift 2 ;;
     --session-name) CUSTOM_SESSION_NAME="$2"; shift 2 ;;
-    --notify) NOTIFY_TARGET="$2"; shift 2 ;;
-    --focus) CUSTOM_FOCUS="$2"; shift 2 ;;
+    --notify)  NOTIFY_TARGET="$2"; shift 2 ;;
+    --focus)   CUSTOM_FOCUS="$2"; shift 2 ;;
+    # Legacy aliases
+    --base)        SCOPE="$2"; shift 2 ;;
+    --commit)      SCOPE="$2"; shift 2 ;;
+    --uncommitted) SCOPE="uncommitted"; shift ;;
+    --pr)          SCOPE="pr:$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: deep-review.sh [--base BRANCH] [--uncommitted] [--commit SHA] [--pr NUM] [--content FILE]"
+      echo "Usage: deep-review.sh [--scope SCOPE] [--content FILE] [--spec TEXT] [options]"
       echo ""
-      echo "Diff mode (default):"
-      echo "  --base BRANCH        Compare against branch (default: main)"
-      echo "  --uncommitted        Review uncommitted changes"
-      echo "  --commit SHA         Review a specific commit"
-      echo "  --pr NUM             Review a pull request"
+      echo "Material sources (additive — combine both for richer reviews):"
+      echo "  --scope SCOPE        Git diff scope. Auto-detects:"
+      echo "                         branch name → diff since branch"
+      echo "                         SHA/ref     → specific commit"
+      echo "                         uncommitted → working changes"
+      echo "                         pr:N        → pull request"
+      echo "                         HEAD        → current commit (default if no --content)"
+      echo "  --content FILE       Review file(s) (comma-separated for multiple)"
+      echo "  --spec TEXT          What to review for (guides all workers)"
       echo ""
-      echo "Content mode:"
-      echo "  --content FILE       Review file(s) instead of a diff (comma-separated for multiple)"
-      echo "  --spec TEXT          What to review for (e.g., 'check for logical gaps')"
+      echo "Options:"
+      echo "  --passes N           Passes PER focus area (default: 2)"
+      echo "  --session-name NAME  Custom tmux session name"
+      echo "  --notify TARGET      Notify on completion (worker name or 'user')"
+      echo "  --focus LIST         Comma-separated focus areas (overrides auto-detect)"
+      echo "                       Diff: security,logic,error-handling,data-integrity,architecture,performance,ux-impact,completeness"
+      echo "                       Content: correctness,completeness,feasibility,risks"
+      echo "                       Mixed: security,logic,correctness,completeness,feasibility,risks"
       echo ""
-      echo "Common options:"
-      echo "  --passes N           Passes PER focus area (default: 2). Total workers = passes × focus"
-      echo "  --session-name NAME  Custom tmux session name (overrides auto-naming)"
-      echo "  --notify TARGET      Send completion notification (worker name or 'user')"
-      echo "  --focus LIST         Comma-separated focus areas"
-      echo "                       Diff default: security,logic,error-handling,data-integrity,architecture,performance,ux-impact,completeness"
-      echo "                       Content default: correctness,completeness,feasibility,risks"
+      echo "Legacy aliases (still work):"
+      echo "  --base BRANCH        Same as --scope BRANCH"
+      echo "  --commit SHA         Same as --scope SHA"
+      echo "  --uncommitted        Same as --scope uncommitted"
+      echo "  --pr NUM             Same as --scope pr:NUM"
       echo ""
       echo "Examples:"
-      echo "  --passes 2                              16 workers (2 × 8 default focus areas)"
-      echo "  --passes 3 --focus security,logic       6 workers (3 × 2 focus areas)"
-      echo "  --passes 1 --focus security             1 worker"
-      echo "  --content plan.md                       8 workers (2 × 4 content focus areas)"
-      echo "  --content a.md,b.md --spec 'find gaps'  review multiple files"
+      echo "  --scope main                               diff since main (16 workers)"
+      echo "  --content plan.md                          review plan (8 workers)"
+      echo "  --scope main --content plan.md             diff + plan together (12 workers)"
+      echo "  --scope main --spec 'check auth changes'   diff with custom focus"
+      echo "  --passes 1 --focus security                1 worker, security only"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
 
+# ── Determine what we're reviewing ───────────────────────────
+HAS_DIFF=false
+HAS_CONTENT=false
+[ -n "$SCOPE" ] && HAS_DIFF=true
+[ -n "$CONTENT_FILES" ] && HAS_CONTENT=true
+
+# Default: if nothing specified, review HEAD commit
+if ! $HAS_DIFF && ! $HAS_CONTENT; then
+  SCOPE="HEAD"
+  HAS_DIFF=true
+fi
+
 # ── Resolve focus areas ──────────────────────────────────────
 if [ -n "$CUSTOM_FOCUS" ]; then
   IFS=',' read -ra FOCUS_AREAS <<< "$CUSTOM_FOCUS"
-elif [ "$DIFF_MODE" = "content" ]; then
+elif $HAS_DIFF && $HAS_CONTENT; then
+  FOCUS_AREAS=("${DEFAULT_MIXED_FOCUS[@]}")
+elif $HAS_CONTENT; then
   FOCUS_AREAS=("${DEFAULT_CONTENT_FOCUS[@]}")
 else
-  FOCUS_AREAS=("${DEFAULT_FOCUS[@]}")
+  FOCUS_AREAS=("${DEFAULT_DIFF_FOCUS[@]}")
 fi
-
-REVIEW_MODE="diff"
-[ "$DIFF_MODE" = "content" ] && REVIEW_MODE="content"
 
 NUM_FOCUS=${#FOCUS_AREAS[@]}
 TOTAL_WORKERS=$((PASSES_PER_FOCUS * NUM_FOCUS))
@@ -144,14 +163,8 @@ if ! tmux info &>/dev/null; then
   echo "ERROR: tmux not running" >&2; exit 1
 fi
 
-if [ "$REVIEW_MODE" = "content" ]; then
-  if [ ! -f "$TEMPLATE_DIR/worker-content-seed.md" ] || [ ! -f "$TEMPLATE_DIR/coordinator-seed.md" ]; then
-    echo "ERROR: Content review templates not found at $TEMPLATE_DIR" >&2; exit 1
-  fi
-else
-  if [ ! -f "$TEMPLATE_DIR/worker-seed.md" ] || [ ! -f "$TEMPLATE_DIR/coordinator-seed.md" ]; then
-    echo "ERROR: Templates not found at $TEMPLATE_DIR" >&2; exit 1
-  fi
+if [ ! -f "$TEMPLATE_DIR/worker-seed.md" ] || [ ! -f "$TEMPLATE_DIR/coordinator-seed.md" ]; then
+  echo "ERROR: Templates not found at $TEMPLATE_DIR" >&2; exit 1
 fi
 
 cd "$PROJECT_ROOT"
@@ -159,28 +172,29 @@ cd "$PROJECT_ROOT"
 # ── Build session name ───────────────────────────────────────
 if [ -n "$CUSTOM_SESSION_NAME" ]; then
   REVIEW_SESSION="$CUSTOM_SESSION_NAME"
-elif [ "$REVIEW_MODE" = "content" ]; then
-  # Content mode: name from first file basename
-  FIRST_FILE=$(echo "$CONTENT_FILES" | cut -d',' -f1)
-  FILE_BASE=$(basename "$FIRST_FILE" | sed 's/\.[^.]*$//' | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
-  CONTENT_HASH=$(echo "$CONTENT_FILES" | md5 2>/dev/null | cut -c1-8 || echo "$CONTENT_FILES" | md5sum 2>/dev/null | cut -c1-8 || echo "unknown")
-  REVIEW_SESSION="dr-content-${FILE_BASE}-${CONTENT_HASH}"
-  REVIEW_SESSION="${REVIEW_SESSION:0:50}"
 else
   WORKTREE_NAME=$(basename "$PROJECT_ROOT" | sed 's/^Wechat-w-//' | sed 's/^Wechat$/main/')
 
-  case "$DIFF_MODE" in
-    commit) REVIEW_COMMIT="$COMMIT" ;;
-    pr)     REVIEW_COMMIT="pr${PR_NUMBER}" ;;
-    *)      REVIEW_COMMIT=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown") ;;
-  esac
-
-  COMMIT_MSG=$(git log -1 --format='%s' "$REVIEW_COMMIT" 2>/dev/null || echo "review")
-  COMMIT_MSG=$(echo "$COMMIT_MSG" | sed 's/^[a-z]*([^)]*): *//' | sed 's/^[a-z]*: *//')
-  FIRST_TWO=$(echo "$COMMIT_MSG" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//' | cut -d'-' -f1-2)
-  SHORT_HASH=$(git rev-parse --short=8 "$REVIEW_COMMIT" 2>/dev/null || echo "$REVIEW_COMMIT")
-
-  REVIEW_SESSION="dr-${WORKTREE_NAME}-${FIRST_TWO}-${SHORT_HASH}"
+  if $HAS_CONTENT && ! $HAS_DIFF; then
+    # Content-only: name from first file
+    FIRST_FILE=$(echo "$CONTENT_FILES" | cut -d',' -f1)
+    FILE_BASE=$(basename "$FIRST_FILE" | sed 's/\.[^.]*$//' | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
+    CONTENT_HASH=$(echo "$CONTENT_FILES" | md5 2>/dev/null | cut -c1-8 || echo "$CONTENT_FILES" | md5sum 2>/dev/null | cut -c1-8 || echo "unknown")
+    REVIEW_SESSION="dr-${WORKTREE_NAME}-${FILE_BASE}-${CONTENT_HASH}"
+  else
+    # Has diff (maybe also content)
+    RESOLVED_REF="$SCOPE"
+    if [ "$SCOPE" = "uncommitted" ]; then
+      RESOLVED_REF=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "wip")
+    elif [[ "$SCOPE" == pr:* ]]; then
+      RESOLVED_REF="pr${SCOPE#pr:}"
+    fi
+    COMMIT_MSG=$(git log -1 --format='%s' "$RESOLVED_REF" 2>/dev/null || echo "review")
+    COMMIT_MSG=$(echo "$COMMIT_MSG" | sed 's/^[a-z]*([^)]*): *//' | sed 's/^[a-z]*: *//')
+    FIRST_TWO=$(echo "$COMMIT_MSG" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//' | cut -d'-' -f1-2)
+    SHORT_HASH=$(git rev-parse --short=8 "$RESOLVED_REF" 2>/dev/null || echo "$RESOLVED_REF")
+    REVIEW_SESSION="dr-${WORKTREE_NAME}-${FIRST_TWO}-${SHORT_HASH}"
+  fi
   REVIEW_SESSION="${REVIEW_SESSION:0:50}"
 fi
 
@@ -198,14 +212,81 @@ HISTORY_FILE="$PROJECT_ROOT/.claude/state/deep-review/history.jsonl"
 
 echo "Session: $SESSION_DIR"
 
-# ── Generate material (diff or content) ──────────────────────
-if [ "$REVIEW_MODE" = "content" ]; then
+# ── Collect material (additive) ──────────────────────────────
+MATERIAL_FILE="$SESSION_DIR/material-full.txt"
+DIFF_DESC_PARTS=()
+MATERIAL_TYPES=()
+
+# 1. Diff (if scope provided)
+if $HAS_DIFF; then
+  echo "Generating diff..."
+  DIFF_TMP="$SESSION_DIR/_diff.patch"
+
+  # Auto-detect scope type
+  if [ "$SCOPE" = "uncommitted" ]; then
+    { git diff; git diff --cached; } > "$DIFF_TMP"
+    for f in $(git ls-files --others --exclude-standard 2>/dev/null); do
+      echo "diff --git a/$f b/$f" >> "$DIFF_TMP"
+      echo "new file mode 100644" >> "$DIFF_TMP"
+      echo "--- /dev/null" >> "$DIFF_TMP"
+      echo "+++ b/$f" >> "$DIFF_TMP"
+      sed 's/^/+/' "$f" >> "$DIFF_TMP" 2>/dev/null || true
+    done
+    DIFF_DESC_PARTS+=("uncommitted changes")
+
+  elif [[ "$SCOPE" == pr:* ]]; then
+    PR_NUM="${SCOPE#pr:}"
+    gh pr diff "$PR_NUM" > "$DIFF_TMP"
+    DIFF_DESC_PARTS+=("PR #$PR_NUM")
+
+  elif git rev-parse --verify "$SCOPE^{commit}" &>/dev/null && \
+       [ "$(git rev-parse "$SCOPE" 2>/dev/null)" != "$(git merge-base "$SCOPE" HEAD 2>/dev/null)" ]; then
+    # It's a reachable commit that's an ancestor — treat as branch base
+    # Try 3-dot first (changes on this branch only), fall back to 2-dot
+    git diff "${SCOPE}...HEAD" > "$DIFF_TMP" 2>/dev/null || \
+    git diff "${SCOPE}..HEAD" > "$DIFF_TMP" 2>/dev/null || true
+
+    DIFF_LINES_TMP=$(wc -l < "$DIFF_TMP" | tr -d ' ')
+    if [ "$DIFF_LINES_TMP" -eq 0 ]; then
+      COMMITS_AHEAD=$(git rev-list "${SCOPE}..HEAD" --count 2>/dev/null || echo "0")
+      if [ "$COMMITS_AHEAD" -gt 0 ]; then
+        echo "WARN: $COMMITS_AHEAD commits ahead but tree content identical. Fallback to per-commit diffs..."
+        for sha in $(git rev-list --reverse "${SCOPE}..HEAD"); do
+          git show "$sha" >> "$DIFF_TMP" 2>/dev/null || true
+        done
+      fi
+    fi
+    DIFF_DESC_PARTS+=("changes since $SCOPE")
+
+  else
+    # Treat as specific commit
+    git show "$SCOPE" > "$DIFF_TMP" 2>/dev/null || true
+    DIFF_DESC_PARTS+=("commit $SCOPE")
+  fi
+
+  DIFF_LINES_TMP=$(wc -l < "$DIFF_TMP" | tr -d ' ')
+  if [ "$DIFF_LINES_TMP" -gt 0 ]; then
+    echo "═══ GIT DIFF ═══" >> "$MATERIAL_FILE"
+    cat "$DIFF_TMP" >> "$MATERIAL_FILE"
+    echo "" >> "$MATERIAL_FILE"
+    MATERIAL_TYPES+=("diff")
+    echo "  Diff: $DIFF_LINES_TMP lines"
+  elif ! $HAS_CONTENT; then
+    echo "ERROR: Empty diff and no content files — nothing to review" >&2
+    rm -rf "$SESSION_DIR"
+    exit 1
+  else
+    echo "  (diff is empty, reviewing content only)"
+  fi
+  rm -f "$DIFF_TMP"
+fi
+
+# 2. Content files (if provided)
+if $HAS_CONTENT; then
   echo "Collecting content files..."
   IFS=',' read -ra _CONTENT_ARRAY <<< "$CONTENT_FILES"
-  MATERIAL_FILE="$SESSION_DIR/content-full.txt"
   CONTENT_FILE_LIST=""
   for cf in "${_CONTENT_ARRAY[@]}"; do
-    # Expand ~ to $HOME
     cf="${cf/#\~/$HOME}"
     if [ ! -f "$cf" ]; then
       echo "ERROR: Content file not found: $cf" >&2
@@ -218,119 +299,61 @@ if [ "$REVIEW_MODE" = "content" ]; then
     echo "" >> "$MATERIAL_FILE"
     CONTENT_FILE_LIST="${CONTENT_FILE_LIST:+$CONTENT_FILE_LIST, }$(basename "$cf")"
   done
-  DIFF_DESC="content review of $CONTENT_FILE_LIST"
-  [ -n "$REVIEW_SPEC" ] || REVIEW_SPEC="Review this content thoroughly for issues, gaps, and improvements."
-  DIFF_LINES=$(wc -l < "$MATERIAL_FILE" | tr -d ' ')
-  echo "Content: $DIFF_LINES lines ($DIFF_DESC)"
-else
-  echo "Generating diff..."
-  MATERIAL_FILE="$SESSION_DIR/diff-full.patch"
-  case "$DIFF_MODE" in
-    base)
-      git diff "${BASE_BRANCH}...HEAD" > "$MATERIAL_FILE" 2>/dev/null || \
-      git diff "${BASE_BRANCH}..HEAD" > "$MATERIAL_FILE" 2>/dev/null || true
-      DIFF_DESC="changes since $BASE_BRANCH"
-
-      DIFF_LINES=$(wc -l < "$MATERIAL_FILE" | tr -d ' ')
-      if [ "$DIFF_LINES" -eq 0 ]; then
-        COMMITS_AHEAD=$(git rev-list "${BASE_BRANCH}..HEAD" --count 2>/dev/null || echo "0")
-        if [ "$COMMITS_AHEAD" -gt 0 ]; then
-          echo "WARN: $COMMITS_AHEAD commits ahead but tree content identical (already merged?)."
-          echo "Auto-fallback: generating diff from individual commits..."
-          for sha in $(git rev-list --reverse "${BASE_BRANCH}..HEAD"); do
-            git show "$sha" >> "$MATERIAL_FILE" 2>/dev/null || true
-          done
-          DIFF_DESC="$COMMITS_AHEAD commits on $(git branch --show-current 2>/dev/null || echo 'HEAD')"
-        fi
-      fi
-      ;;
-    uncommitted)
-      { git diff; git diff --cached; } > "$MATERIAL_FILE"
-      for f in $(git ls-files --others --exclude-standard 2>/dev/null); do
-        echo "diff --git a/$f b/$f" >> "$MATERIAL_FILE"
-        echo "new file mode 100644" >> "$MATERIAL_FILE"
-        echo "--- /dev/null" >> "$MATERIAL_FILE"
-        echo "+++ b/$f" >> "$MATERIAL_FILE"
-        sed 's/^/+/' "$f" >> "$MATERIAL_FILE" 2>/dev/null || true
-      done
-      DIFF_DESC="uncommitted changes"
-      ;;
-    commit)
-      git show "$COMMIT" > "$MATERIAL_FILE"
-      DIFF_DESC="commit $COMMIT"
-      ;;
-    pr)
-      gh pr diff "$PR_NUMBER" > "$MATERIAL_FILE"
-      DIFF_DESC="PR #$PR_NUMBER"
-      ;;
-  esac
-
-  DIFF_LINES=$(wc -l < "$MATERIAL_FILE" | tr -d ' ')
-  echo "Diff: $DIFF_LINES lines ($DIFF_DESC)"
-
-  if [ "$DIFF_LINES" -eq 0 ]; then
-    echo "ERROR: Empty diff — nothing to review" >&2
-    rm -rf "$SESSION_DIR"
-    exit 1
-  fi
+  DIFF_DESC_PARTS+=("$CONTENT_FILE_LIST")
+  MATERIAL_TYPES+=("content")
 fi
+
+DIFF_DESC=$(IFS=' + '; echo "${DIFF_DESC_PARTS[*]}")
+MATERIAL_TYPES_STR=$(IFS='+'; echo "${MATERIAL_TYPES[*]}")
+[ -n "$REVIEW_SPEC" ] || REVIEW_SPEC="Review this material thoroughly for issues, gaps, and improvements."
+DIFF_LINES=$(wc -l < "$MATERIAL_FILE" | tr -d ' ')
+echo "Material: $DIFF_LINES lines ($DIFF_DESC)"
 
 # ── Split material + generate randomized orderings ───────────
 echo "Generating $TOTAL_WORKERS randomized orderings..."
 
-python3 << 'PYEOF' - "$MATERIAL_FILE" "$SESSION_DIR" "$TOTAL_WORKERS" "$REVIEW_MODE"
+python3 << 'PYEOF' - "$MATERIAL_FILE" "$SESSION_DIR" "$TOTAL_WORKERS"
 import sys, os, random, json
 from datetime import datetime, timezone
 
 material_file = sys.argv[1]
 session_dir = sys.argv[2]
 num_workers = int(sys.argv[3])
-review_mode = sys.argv[4]
 
 with open(material_file) as f:
     content = f.read()
 
-# Split into chunks based on mode
+# Split into chunks at natural boundaries
 chunks = []
 current = []
-
-if review_mode == "content":
-    # Split by section headers (## ) or file boundaries (═══ FILE:)
-    for line in content.split('\n'):
-        if (line.startswith('## ') or line.startswith('═══ FILE:')) and current:
-            chunks.append('\n'.join(current))
-            current = []
-        current.append(line)
-else:
-    # Split into file-level chunks at "diff --git" boundaries
-    for line in content.split('\n'):
-        if line.startswith('diff --git ') and current:
-            chunks.append('\n'.join(current))
-            current = []
-        current.append(line)
-
+for line in content.split('\n'):
+    # Split at diff boundaries, section headers, or file markers
+    if (line.startswith('diff --git ') or
+        line.startswith('## ') or
+        line.startswith('═══ ')) and current:
+        chunks.append('\n'.join(current))
+        current = []
+    current.append(line)
 if current:
     chunks.append('\n'.join(current))
 
-# If content didn't split well (no headers), treat the whole thing as one chunk
+# If content didn't split well, treat the whole thing as one chunk
 if len(chunks) <= 1:
     chunks = [content]
 
 print(f"  Split into {len(chunks)} chunks")
 
-# Generate randomized orderings (each worker gets a unique shuffle)
-suffix = 'txt' if review_mode == 'content' else 'patch'
+# Generate randomized orderings
 for i in range(1, num_workers + 1):
     shuffled = chunks[:]
     random.shuffle(shuffled)
-    outpath = os.path.join(session_dir, f'material-pass-{i}.{suffix}')
+    outpath = os.path.join(session_dir, f'material-pass-{i}.txt')
     with open(outpath, 'w') as f:
         f.write('\n'.join(shuffled))
 
 # Write session metadata
 meta = {
     'session_id': os.path.basename(session_dir),
-    'review_mode': review_mode,
     'num_chunks': len(chunks),
     'num_workers': num_workers,
     'lines': content.count('\n'),
@@ -341,21 +364,10 @@ with open(os.path.join(session_dir, 'meta.json'), 'w') as f:
 PYEOF
 
 # ── Build focus assignment table ─────────────────────────────
-# Worker N gets focus area: FOCUS_AREAS[(N-1) / PASSES_PER_FOCUS]
-# Within each focus group, pass index: ((N-1) % PASSES_PER_FOCUS) + 1
-# Example: 3 focus × 2 passes = workers 1-2=focus[0], 3-4=focus[1], 5-6=focus[2]
-
-# Build a comma-separated focus list for coordinator template
 FOCUS_LIST_CSV=$(IFS=','; echo "${FOCUS_AREAS[*]}")
 
 # ── Generate seed prompts from templates ─────────────────────
 echo "Generating seed prompts..."
-
-MATERIAL_SUFFIX="patch"
-[ "$REVIEW_MODE" = "content" ] && MATERIAL_SUFFIX="txt"
-
-WORKER_TEMPLATE="$TEMPLATE_DIR/worker-seed.md"
-[ "$REVIEW_MODE" = "content" ] && WORKER_TEMPLATE="$TEMPLATE_DIR/worker-content-seed.md"
 
 for i in $(seq 1 "$TOTAL_WORKERS"); do
   FOCUS_IDX=$(( (i - 1) / PASSES_PER_FOCUS ))
@@ -367,15 +379,14 @@ for i in $(seq 1 "$TOTAL_WORKERS"); do
     -e "s|{{PASS_IN_FOCUS}}|$PASS_IN_FOCUS|g" \
     -e "s|{{PASSES_PER_FOCUS}}|$PASSES_PER_FOCUS|g" \
     -e "s|{{NUM_PASSES}}|$TOTAL_WORKERS|g" \
-    -e "s|{{DIFF_FILE}}|$SESSION_DIR/material-pass-$i.$MATERIAL_SUFFIX|g" \
-    -e "s|{{CONTENT_FILE}}|$SESSION_DIR/material-pass-$i.$MATERIAL_SUFFIX|g" \
+    -e "s|{{MATERIAL_FILE}}|$SESSION_DIR/material-pass-$i.txt|g" \
     -e "s|{{OUTPUT_FILE}}|$SESSION_DIR/findings-pass-$i.json|g" \
     -e "s|{{DONE_FILE}}|$SESSION_DIR/pass-$i.done|g" \
     -e "s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g" \
     -e "s|{{SESSION_DIR}}|$SESSION_DIR|g" \
     -e "s|{{SPECIALIZATION}}|$FOCUS|g" \
     -e "s|{{SPEC}}|$REVIEW_SPEC|g" \
-    "$WORKER_TEMPLATE" > "$SESSION_DIR/worker-$i-seed.md"
+    "$TEMPLATE_DIR/worker-seed.md" > "$SESSION_DIR/worker-$i-seed.md"
 done
 
 sed \
@@ -390,8 +401,8 @@ sed \
   -e "s|{{HISTORY_FILE}}|$HISTORY_FILE|g" \
   -e "s|{{NOTIFY_TARGET}}|$NOTIFY_TARGET|g" \
   -e "s|{{REVIEW_SESSION}}|$REVIEW_SESSION|g" \
-  -e "s|{{REVIEW_MODE}}|$REVIEW_MODE|g" \
   -e "s|{{DIFF_DESC}}|$DIFF_DESC|g" \
+  -e "s|{{MATERIAL_TYPES}}|$MATERIAL_TYPES_STR|g" \
   "$TEMPLATE_DIR/coordinator-seed.md" > "$SESSION_DIR/coordinator-seed.md"
 
 # ── Create launch wrappers ───────────────────────────────────
@@ -412,14 +423,11 @@ CEOF
 chmod +x "$SESSION_DIR/run-coordinator.sh"
 
 # ── Create dedicated tmux session ────────────────────────────
-# Layout: 1 coordinator window + ceil(TOTAL_WORKERS/4) worker windows (4 panes each)
 NUM_WORKER_WINDOWS=$(( (TOTAL_WORKERS + 3) / 4 ))
 echo "Creating tmux session: $REVIEW_SESSION (1 coordinator + $NUM_WORKER_WINDOWS worker windows)..."
 
-# Window 0: coordinator
 tmux new-session -d -s "$REVIEW_SESSION" -n "coordinator" -c "$PROJECT_ROOT"
 
-# Worker windows: 4 panes each
 WORKERS_REMAINING=$TOTAL_WORKERS
 for w in $(seq 1 "$NUM_WORKER_WINDOWS"); do
   PANES_IN_WINDOW=$((WORKERS_REMAINING > 4 ? 4 : WORKERS_REMAINING))
@@ -437,7 +445,6 @@ sleep 1
 echo "Launching $TOTAL_WORKERS review workers across $NUM_FOCUS focus areas..."
 echo ""
 
-# Helper: get Nth pane ID from a window (0-indexed)
 get_pane() {
   tmux list-panes -t "$1" -F '#{pane_id}' | sed -n "$((${2} + 1))p"
 }
@@ -470,9 +477,9 @@ echo "  DEEP REVIEW LAUNCHED"
 echo ""
 echo "  Session:     $REVIEW_SESSION"
 echo "  Dir:         $SESSION_DIR"
-echo "  Mode:        $REVIEW_MODE"
+echo "  Material:    $MATERIAL_TYPES_STR"
 echo "  Reviewing:   $DIFF_DESC ($DIFF_LINES lines)"
-if [ "$REVIEW_MODE" = "content" ] && [ -n "$REVIEW_SPEC" ]; then
+if [ -n "$REVIEW_SPEC" ] && [ "$REVIEW_SPEC" != "Review this material thoroughly for issues, gaps, and improvements." ]; then
 echo "  Spec:        $REVIEW_SPEC"
 fi
 echo ""

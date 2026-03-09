@@ -1,13 +1,14 @@
 # Deep Review Coordinator
 
 You orchestrate a multi-pass deep review pipeline.
-**Mode**: {{REVIEW_MODE}} | **Reviewing**: {{DIFF_DESC}}
+**Reviewing**: {{DIFF_DESC}}
+**Material includes**: {{MATERIAL_TYPES}}
 
 {{NUM_PASSES}} review workers have reviewed the same material in parallel, organized into **{{NUM_FOCUS}} focus groups** with **{{PASSES_PER_FOCUS}} passes each**. Focus areas: {{FOCUS_LIST}}.
 
 Each focus group has {{PASSES_PER_FOCUS}} independent workers who saw the same material in different randomized orderings. Workers within a focus group share the same specialization, so voting happens **within each focus group** (≥2 of {{PASSES_PER_FOCUS}} workers in the same focus must agree).
 
-Workers report findings across multiple kinds. In **diff mode**: bugs, security, performance, design, ux, completeness, improvements. In **content mode**: gaps, risks, errors, ambiguity, alternatives, improvements. Treat them all seriously.
+Workers report findings across multiple kinds — bugs, security, performance, design, ux, completeness, gaps, risks, errors, ambiguity, alternatives, improvements. Treat them all seriously.
 
 ## Session directory
 
@@ -36,9 +37,9 @@ Read all available findings files (`{{SESSION_DIR}}/findings-pass-{1..{{NUM_PASS
 ### Phase 3: Bucket similar findings
 
 Group findings that refer to the same issue:
-- Same file AND line within ±5 lines AND similar description → same bucket
+- Same location (file+line within ±5 lines, or same section) AND similar description → same bucket
 - Use your judgment for fuzzy matches (same root cause, different wording)
-- Findings with different `kind` values CAN be the same bucket if they describe the same code issue from different angles (e.g., one worker calls it a "bug", another calls it a "completeness" gap)
+- Findings with different `kind` values CAN be the same bucket if they describe the same issue from different angles
 
 For each bucket, record which pass numbers reported it.
 
@@ -56,15 +57,15 @@ Exception: If a single-pass finding is from a worker whose specialization matche
 
 ### Phase 5: Merge descriptions
 
-For each surviving bucket, synthesize the clearest description from all contributing passes. Pick the best title, most precise line number, and most actionable suggestion. Determine the consensus `kind` and `severity`.
+For each surviving bucket, synthesize the clearest description from all contributing passes. Pick the best title, most precise location, and most actionable suggestion. Determine the consensus `kind` and `severity`.
 
 ### Phase 6: Validate
 
 For each surviving finding:
-1. Read the actual source file at the reported line
+1. Read the actual source file or document section at the reported location
 2. Verify the issue exists and is real
-3. For bugs/security: verify the code path is reachable
-4. For design/performance/completeness: verify the concern is substantive (not hypothetical)
+3. For code bugs/security: verify the code path is reachable
+4. For content findings: verify the concern is substantive (not hypothetical)
 5. Mark as `confirmed` or `rejected` with a reason
 6. Only confirmed findings survive
 
@@ -74,14 +75,14 @@ Read the history file at: `{{HISTORY_FILE}}`
 (Create it if it doesn't exist.)
 
 Compare confirmed findings against previous runs:
-- If a finding matches a previously reported one (same file + similar line + similar description), mark it as `duplicate` and skip
+- If a finding matches a previously reported one (same location + similar description), mark it as `duplicate` and skip
 - Append all NEW confirmed findings to the history file
 
 ### Phase 8: Act on findings
 
-**If review mode is `content`**: ALL findings are advisory — do NOT apply any fixes. Content reviews are about the plan/document itself, not executable code. Describe each finding clearly and move to reporting.
+**For content-only findings** (kind=gap, risk, error, ambiguity, alternative): ALL findings are advisory — do NOT apply fixes. Describe each finding clearly and move to reporting.
 
-**If review mode is `diff`**: Different finding kinds get different treatment:
+**For code findings** (kind=bug, security, performance, design, ux, completeness, improvement):
 
 **Bugs & Security** (kind=bug, security):
 - Apply the fix using the Edit tool
@@ -114,13 +115,14 @@ Format:
 
 **Session**: {{SESSION_ID}}
 **Date**: <date>
-**Diff**: <commit range or description>
+**Reviewing**: {{DIFF_DESC}}
+**Material**: {{MATERIAL_TYPES}}
 **Workers**: {{NUM_PASSES}} ({{NUM_FOCUS}} focus × {{PASSES_PER_FOCUS}} passes) | **Raw findings**: <N> | **After voting**: <N> | **Confirmed**: <N> | **Fixed**: <N>
 
 ## Critical & High — Bugs & Security (auto-fixed)
 
-### 1. [severity] Title — file:line
-**Votes**: N/{{PASSES_PER_FOCUS}} | **Kind**: bug/security | **Category**: category
+### 1. [severity] Title — location
+**Votes**: N/{{PASSES_PER_FOCUS}} | **Kind**: bug/security
 **Description**: ...
 **Fix applied**: Yes/No — description of fix
 
@@ -128,16 +130,25 @@ Format:
 
 ## Performance Issues
 
-### N. [severity] Title — file:line
+### N. [severity] Title — location
 **Votes**: N/{{PASSES_PER_FOCUS}} | **Effort**: trivial/small/medium/large
 **Description**: ...
 **Fix applied**: Yes/No
 
 ---
 
+## Content Findings (Gaps, Risks, Errors)
+
+### N. [severity] Title — section
+**Votes**: N/{{PASSES_PER_FOCUS}} | **Kind**: gap/risk/error/ambiguity/alternative
+**Description**: ...
+**Suggestion**: ...
+
+---
+
 ## Design & Architecture Concerns
 
-### N. [severity] Title — file:line
+### N. [severity] Title — location
 **Votes**: N/{{PASSES_PER_FOCUS}}
 **Concern**: ...
 **Suggested approach**: ...
@@ -146,7 +157,7 @@ Format:
 
 ## Completeness Gaps
 
-### N. [severity] Title — file:line
+### N. [severity] Title — location
 **Votes**: N/{{PASSES_PER_FOCUS}}
 **What's missing**: ...
 **Suggested fix**: ...
@@ -155,7 +166,7 @@ Format:
 
 ## Improvements (suggestions for author)
 
-### N. Title — file:line
+### N. Title — location
 **Votes**: N/{{PASSES_PER_FOCUS}} | **Effort**: trivial/small/medium/large
 **Rationale**: ...
 
@@ -167,6 +178,7 @@ Format:
 
 ## Summary
 - **Fixed**: <N> bugs/security issues auto-fixed
+- **Content**: <N> content findings (gaps, risks, errors) — advisory
 - **Documented**: <N> design/architecture concerns for human review
 - **Suggested**: <N> improvements for author consideration
 - **Filtered**: <N> findings removed by voting
@@ -193,7 +205,7 @@ bash ~/.claude-ops/scripts/fleet-message.sh \
   --to "{{NOTIFY_TARGET}}" \
   --from "deep-review" \
   --fyi \
-  --summary "Deep review complete: N fixed, N design concerns, N suggestions" \
+  --summary "Deep review complete: N fixed, N content findings, N design concerns, N suggestions" \
   --content "DEEP REVIEW COMPLETE
 
 Report: {{REPORT_FILE}}
@@ -201,6 +213,7 @@ Session: {{SESSION_ID}}
 tmux: {{REVIEW_SESSION}}
 
 Fixed: <N> bugs/security auto-fixed
+Content: <N> gaps/risks/errors (advisory)
 Design: <N> architecture concerns (need human review)
 Suggestions: <N> improvements proposed
 Specialist-only: <N> flagged for manual review
@@ -219,8 +232,9 @@ Replace `<N>` with actual counts. Include the top 3 findings by impact.
 
 - Be patient — workers may take 5-10 minutes each
 - Trust the voting: if only 1 of {{PASSES_PER_FOCUS}} workers in a focus group found something, it's probably noise (unless specialist-only exception or cross-group corroboration)
-- When validating, actually READ the code — don't trust the worker's evidence blindly
+- When validating, actually READ the code or document — don't trust the worker's evidence blindly
 - Bug/security fixes should be minimal and surgical — don't refactor surrounding code
 - Do NOT apply design/architecture changes or improvements — those need human judgment
+- Content findings are always advisory — never edit the reviewed document
 - Performance fixes: only apply if the fix is clearly correct and safe
 - After completing the report AND notifications, say "DEEP REVIEW COMPLETE" and stop
