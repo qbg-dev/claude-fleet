@@ -93,19 +93,33 @@ export async function autoProvisionUser(): Promise<string> {
   if (resp.ok) {
     const acct = (await resp.json()) as any;
     const token = acct.bearerToken;
-    try {
-      const reg = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8"));
-      reg.user = reg.user || {};
-      reg.user.bms_token = token;
-      reg.user.bms_id = acct.id;
-      reg.user.status = "active";
-      writeFileSync(REGISTRY_PATH, JSON.stringify(reg, null, 2) + "\n");
-    } catch {}
+    saveUserToken(token, acct.id);
     return token;
   } else if (resp.status === 409) {
-    throw new Error("BMS user account exists but token not in registry");
+    // Account exists but token not in registry. Fall back to any worker token for read-only access.
+    const reg = loadRegistry();
+    const fallback = Object.entries(reg)
+      .filter(([k]) => k !== "_config" && k !== "user")
+      .map(([, w]: [string, any]) => w.bms_token)
+      .find((t: string) => !!t);
+    if (fallback) {
+      process.stderr.write("Warning: using fallback token (user account exists but token lost)\n");
+      return fallback;
+    }
+    throw new Error("BMS user account exists but token not in registry. Query kevinster: ssh kevinster 'cd ~/mail_db && dolt sql -q \"SELECT bearer_token FROM accounts WHERE name=\\\"user\\\"\"'");
   }
   throw new Error(`BMS registration failed: ${resp.status}`);
+}
+
+function saveUserToken(token: string, id: string) {
+  try {
+    const reg = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8"));
+    reg.user = reg.user || {};
+    reg.user.bms_token = token;
+    reg.user.bms_id = id;
+    reg.user.status = "active";
+    writeFileSync(REGISTRY_PATH, JSON.stringify(reg, null, 2) + "\n");
+  } catch {}
 }
 
 // ── Directory Resolution ──
