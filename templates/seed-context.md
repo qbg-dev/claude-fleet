@@ -1,16 +1,13 @@
 ## MCP Tools (`mcp__worker-fleet__*`)
 
-23 tools. One action per tool for clear schemas and reliable tool selection.
+20 tools. One action per tool for clear schemas and reliable tool selection.
 
 | Tool | What it does |
 |------|-------------|
 | `mail_send(to, subject, body)` | Message a worker, "report", "direct_reports", "all", or "user". `cc`, `in_reply_to`, `thread_id`, `labels` supported. |
-| `mail_inbox(label?)` | Read your inbox. Default label=UNREAD. Use label="INBOX" for all. |
+| `mail_inbox(label?)` | Read your inbox. Default label=UNREAD. Use label="INBOX" for all. Use label="TASK" for task threads. |
 | `mail_read(id)` | Read full message body by ID (auto-marks as read). |
-| `mail_help()` | BMS CLI docs — search, threads, labels, mailing lists, curl examples. |
-| `task_create(subject, ...)` | Add a task. Optional: description, priority, blocks, blocked_by, recurring. |
-| `task_update(task_id, ...)` | Update a task. Optional: status, subject, description, priority, owner, add_blocked_by, add_blocks. |
-| `task_list(filter?, worker?)` | View tasks. filter: all/pending/in_progress/blocked. worker: omit=self, "all"=fleet-wide. |
+| `mail_help()` | Fleet Mail CLI docs — search, threads, labels, mailing lists, curl examples. |
 | `get_worker_state(name?)` | Read worker state; `name="all"` for fleet overview |
 | `update_state(key, value)` | Persist state across recycles (saved in registry, included in next seed) |
 | `add_hook(event, description, ...)` | Register a dynamic hook: gate (blocking) or inject (context). See Dynamic Hooks section |
@@ -29,6 +26,33 @@
 | `deep_review(scope, spec?)` | Spawn adversarial reviewer for complex changes |
 
 Every tool response includes lint warnings if issues are detected — fix them immediately.
+
+## Issue Tracking (LKML Model)
+
+**Your tasks are mail threads with TASK labels.** No separate task system — issues live in Fleet Mail.
+
+| Action | How |
+|--------|-----|
+| Create issue | `mail_send(to="self", subject="[TASK] Fix SSO timeout", labels=["TASK","P1","PENDING"])` |
+| Claim | Reply to thread: `mail_send(in_reply_to=msg_id, body="Starting.", labels=["TASK","IN_PROGRESS"])` and remove `PENDING` via curl |
+| Update progress | Reply to thread with findings/blockers |
+| Block | Reply: `body="BLOCKED on [thread-id]"`, add label `BLOCKED` |
+| Complete | Reply with resolution, add `COMPLETED`, remove `IN_PROGRESS` |
+| Assign to other worker | `mail_send(to="other-worker", subject="[TASK] ...", labels=["TASK","P2","PENDING"])` |
+| List pending | `mail_inbox(label="TASK")` then filter for PENDING |
+| List all tasks | `mail_inbox(label="TASK")` |
+
+**Label conventions:**
+- **Status labels** (mutually exclusive): `PENDING`, `IN_PROGRESS`, `BLOCKED`, `COMPLETED`
+- **Priority labels**: `P0` (critical), `P1` (high), `P2` (medium), `P3` (low)
+- **Type prefixes in subject**: `[TASK]`, `[BUG]`, `[RFC]`, `[MERGE]`, `[CYCLE-REPORT]`
+
+**Modify labels via curl** (for add+remove in one operation):
+```bash
+curl -sf -X POST "${FLEET_MAIL_URL}/api/messages/<msg-id>/modify" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"addLabelIds":["IN_PROGRESS"],"removeLabelIds":["PENDING"]}'
+```
 
 ## You Are Your Environment
 

@@ -232,6 +232,27 @@ _notify_chief_of_staff_dead_worker() {
   _log "NOTIFY-COS: $worker — dead-worker alert sent to chief-of-staff inbox ($state)"
 }
 
+# ── Check Fleet Mail for unread messages (early wake trigger) ─────────
+# Returns 0 (true) if the worker has unread Fleet Mail messages.
+# Uses the worker's bms_token from registry.json.
+_worker_has_unread_mail() {
+  local worker="$1"
+  local fleet_mail_url="${FLEET_MAIL_URL:-${BMS_URL:-http://127.0.0.1:8025}}"
+  local token
+  token=$(jq -r --arg n "$worker" '.[$n].bms_token // empty' "$REGISTRY" 2>/dev/null || echo "")
+  [ -z "$token" ] || [ "$token" = "null" ] && return 1
+
+  local result
+  result=$(curl -sf --max-time 3 \
+    -H "Authorization: Bearer $token" \
+    "${fleet_mail_url}/api/messages?label=UNREAD&maxResults=1" 2>/dev/null || echo "")
+  [ -z "$result" ] && return 1
+
+  local count
+  count=$(echo "$result" | jq -r '._diagnostics.unread_count // (.messages | length) // 0' 2>/dev/null || echo "0")
+  [ "$count" -gt 0 ] 2>/dev/null
+}
+
 # ── Clear chief-of-staff notification flag when worker is alive again ─
 _clear_cos_notified() {
   local worker="$1"
@@ -605,12 +626,21 @@ check_worker() {
       local wake_ts
       wake_ts=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "${sleep_until%%.*}" +%s 2>/dev/null || echo 0)
       if [ "$wake_ts" -gt 0 ] && [ "$now_ts" -lt "$wake_ts" ]; then
-        # Still sleeping — skip this worker
-        return
+        # Still within sleep window — check for early wake triggers
+
+        # Early wake: check Fleet Mail for unread messages
+        if _worker_has_unread_mail "$worker"; then
+          _log "EARLY-WAKE: $worker — unread Fleet Mail, waking before timer"
+          _registry_jq_update '.[$n].status = "active" | .[$n].custom.sleep_until = null' --arg n "$worker"
+          # Fall through to normal pane checks — the worker needs relaunching
+        else
+          return  # No triggers — stay sleeping
+        fi
+      else
+        # Sleep timer expired — clear sleeping status and relaunch
+        _log "WAKE: $worker — sleep_until ($sleep_until) reached, waking up"
+        _registry_jq_update '.[$n].status = "active" | .[$n].custom.sleep_until = null' --arg n "$worker"
       fi
-      # Sleep complete — clear sleeping status and relaunch
-      _log "WAKE: $worker — sleep_until ($sleep_until) reached, waking up"
-      _registry_jq_update '.[$n].status = "active" | .[$n].custom.sleep_until = null' --arg n "$worker"
     else
       # No sleep_until set but status is sleeping — clear it
       _registry_jq_update '.[$n].status = "active"' --arg n "$worker"

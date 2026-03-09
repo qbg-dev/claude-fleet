@@ -7,7 +7,6 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "fs";
 import { join } from "path";
 import {
-  readTasks, writeTasks, nextTaskId, isTaskBlocked,
   writeToTriageQueue, buildMessageBody,
   resolveRecipient, generateSeedContent, runDiagnostics, createWorkerFiles, _setWorkersDir,
   readRegistry, getWorkerEntry, ensureWorkerInRegistry, lintRegistry,
@@ -15,7 +14,7 @@ import {
   getReportTo, canUpdateWorker,
   _captureHooksSnapshot, _timestampFilename, _writeCheckpoint,
   WORKER_NAME, WORKERS_DIR, REGISTRY_PATH, HARNESS_LOCK_DIR,
-  type Task, type DiagnosticIssue,
+  type DiagnosticIssue,
   type RegistryConfig, type RegistryWorkerEntry, type ProjectRegistry,
   type WorkerRuntime,
 } from "./index";
@@ -25,24 +24,6 @@ const TEST_DIR = join(import.meta.dir, ".test-tmp");
 const TEST_WORKERS_DIR = join(TEST_DIR, "workers");
 const TEST_WORKER = "test-worker";
 const TEST_WORKER_DIR = join(TEST_WORKERS_DIR, TEST_WORKER);
-
-function makeTask(overrides: Partial<Task> = {}): Task {
-  return {
-    subject: "Test task",
-    description: "",
-    activeForm: "Working on: Test task",
-    status: "pending",
-    priority: "medium",
-    recurring: false,
-    blocked_by: [],
-    metadata: {},
-    cycles_completed: 0,
-    owner: null,
-    created_at: new Date().toISOString(),
-    completed_at: null,
-    ...overrides,
-  };
-}
 
 function makeRegistryEntry(overrides: Partial<RegistryWorkerEntry> = {}): RegistryWorkerEntry {
   return {
@@ -84,7 +65,6 @@ function makeProjectRegistry(workers: Record<string, RegistryWorkerEntry> = {}):
 beforeEach(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
   mkdirSync(TEST_WORKER_DIR, { recursive: true });
-  writeFileSync(join(TEST_WORKER_DIR, "tasks.json"), "{}");
   // Point helpers at our test directory
   _setWorkersDir(TEST_WORKERS_DIR);
 });
@@ -93,214 +73,8 @@ afterEach(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
-// ═══════════════════════════════════════════════════════════════════
-// nextTaskId
-// ═══════════════════════════════════════════════════════════════════
-
-describe("nextTaskId", () => {
-  test("empty tasks → T001", () => {
-    expect(nextTaskId({})).toBe("T001");
-  });
-
-  test("sequential after T003 → T004", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask(),
-      T002: makeTask(),
-      T003: makeTask(),
-    };
-    expect(nextTaskId(tasks)).toBe("T004");
-  });
-
-  test("handles gaps — uses max, not count", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask(),
-      T005: makeTask(),
-    };
-    expect(nextTaskId(tasks)).toBe("T006");
-  });
-
-  test("three-digit padding", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask(),
-      T099: makeTask(),
-    };
-    expect(nextTaskId(tasks)).toBe("T100");
-  });
-
-  test("four digits when > 999", () => {
-    const tasks: Record<string, Task> = {
-      T999: makeTask(),
-    };
-    expect(nextTaskId(tasks)).toBe("T1000");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// isTaskBlocked
-// ═══════════════════════════════════════════════════════════════════
-
-describe("isTaskBlocked", () => {
-  test("no deps → not blocked", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask(),
-    };
-    expect(isTaskBlocked(tasks, "T001")).toBe(false);
-  });
-
-  test("dep completed → not blocked", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ status: "completed" }),
-      T002: makeTask({ blocked_by: ["T001"] }),
-    };
-    expect(isTaskBlocked(tasks, "T002")).toBe(false);
-  });
-
-  test("dep pending → blocked", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ status: "pending" }),
-      T002: makeTask({ blocked_by: ["T001"] }),
-    };
-    expect(isTaskBlocked(tasks, "T002")).toBe(true);
-  });
-
-  test("one of multiple deps incomplete → blocked", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ status: "completed" }),
-      T002: makeTask({ status: "in_progress" }),
-      T003: makeTask({ blocked_by: ["T001", "T002"] }),
-    };
-    expect(isTaskBlocked(tasks, "T003")).toBe(true);
-  });
-
-  test("nonexistent task → not blocked", () => {
-    expect(isTaskBlocked({}, "T999")).toBe(false);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// Task CRUD (readTasks/writeTasks via filesystem)
-// ═══════════════════════════════════════════════════════════════════
-
-describe("task CRUD", () => {
-  const TASK_WORKER = "crud-worker";
-  const TASK_WORKER_DIR = join(TEST_WORKERS_DIR, TASK_WORKER);
-  const TASKS_FILE = join(TASK_WORKER_DIR, "tasks.json");
-
-  beforeEach(() => {
-    mkdirSync(TASK_WORKER_DIR, { recursive: true });
-    writeFileSync(TASKS_FILE, "{}");
-  });
-
-  test("readTasks on empty file → empty object", () => {
-    const data = JSON.parse(readFileSync(TASKS_FILE, "utf-8"));
-    expect(data).toEqual({});
-  });
-
-  test("readTasks on missing file → empty object", () => {
-    const result = readTasks("nonexistent-worker-xyz");
-    expect(result).toEqual({});
-  });
-
-  test("forward-blocking adds taskId to target blocked_by", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ subject: "Setup" }),
-      T002: makeTask({ subject: "Build" }),
-    };
-    const newId = "T003";
-    tasks[newId] = makeTask({ subject: "Infra" });
-    const blocksList = ["T001", "T002"];
-    for (const targetId of blocksList) {
-      if (tasks[targetId]) {
-        const existing = tasks[targetId].blocked_by || [];
-        if (!existing.includes(newId)) {
-          tasks[targetId].blocked_by = [...existing, newId];
-        }
-      }
-    }
-    expect(tasks.T001.blocked_by).toEqual(["T003"]);
-    expect(tasks.T002.blocked_by).toEqual(["T003"]);
-  });
-
-  test("writeTasks persists to filesystem", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ subject: "First task" }),
-      T002: makeTask({ subject: "Second task", status: "in_progress" }),
-    };
-    writeTasks(TASK_WORKER, tasks);
-    const onDisk = JSON.parse(readFileSync(join(TASK_WORKER_DIR, "tasks.json"), "utf-8"));
-    expect(onDisk.T001.subject).toBe("First task");
-    expect(onDisk.T002.status).toBe("in_progress");
-  });
-
-  test("readTasks returns what writeTasks wrote", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ subject: "Roundtrip test" }),
-    };
-    writeTasks(TASK_WORKER, tasks);
-    const read = readTasks(TASK_WORKER);
-    expect(read.T001).toBeDefined();
-    expect(read.T001.subject).toBe("Roundtrip test");
-  });
-
-  test("writeTasks handles empty tasks object", () => {
-    writeTasks(TASK_WORKER, {});
-    const read = readTasks(TASK_WORKER);
-    expect(Object.keys(read)).toEqual([]);
-  });
-
-  test("writeTasks preserves task metadata", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({
-        subject: "Complex task",
-        priority: "critical",
-        recurring: true,
-        blocked_by: ["T002"],
-        metadata: { custom: "value" },
-        owner: "me",
-      }),
-    };
-    writeTasks(TASK_WORKER, tasks);
-    const read = readTasks(TASK_WORKER);
-    expect(read.T001.priority).toBe("critical");
-    expect(read.T001.recurring).toBe(true);
-    expect(read.T001.blocked_by).toEqual(["T002"]);
-    expect(read.T001.metadata).toEqual({ custom: "value" });
-    expect(read.T001.owner).toBe("me");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// complete_task behavior
-// ═══════════════════════════════════════════════════════════════════
-
-describe("complete_task logic", () => {
-  test("non-recurring → status=completed, completed_at set", () => {
-    const task = makeTask({ status: "in_progress" });
-    const now = new Date().toISOString();
-    task.status = "completed";
-    task.completed_at = now;
-    expect(task.status).toBe("completed");
-    expect(task.completed_at).toBeTruthy();
-  });
-
-  test("recurring → reset to pending, bump cycle", () => {
-    const task = makeTask({ status: "in_progress", recurring: true, owner: "me", cycles_completed: 2 });
-    const now = new Date().toISOString();
-    task.status = "pending";
-    task.owner = null;
-    task.completed_at = null;
-    task.last_completed_at = now;
-    task.cycles_completed = (task.cycles_completed || 0) + 1;
-    expect(task.status).toBe("pending");
-    expect(task.owner).toBeNull();
-    expect(task.cycles_completed).toBe(3);
-    expect(task.last_completed_at).toBe(now);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// writeToInbox
-// ═══════════════════════════════════════════════════════════════════
+// Task tools (nextTaskId, isTaskBlocked, readTasks, writeTasks, complete_task) removed — LKML model.
+// Tasks are now Fleet Mail threads with labels. See seed-context.md "Issue Tracking (LKML Model)".
 
 // writeToInbox / inbox cursor tests removed — BMS replaced JSONL inbox
 
@@ -614,13 +388,13 @@ describe("generateSeedContent", () => {
 
   test("includes handoff when provided", () => {
     const seed = generateSeedContent("Previous cycle finished task T003. Next: work on T004.");
-    expect(seed).toContain("Handoff from Previous Cycle");
+    expect(seed).toContain("HANDOFF FROM PREVIOUS CYCLE");
     expect(seed).toContain("Previous cycle finished task T003");
   });
 
   test("without handoff — no handoff section", () => {
     const seed = generateSeedContent();
-    expect(seed).not.toContain("Handoff from Previous Cycle");
+    expect(seed).not.toContain("HANDOFF FROM PREVIOUS CYCLE");
   });
 
   test("seed references get_worker_state, not state.json", () => {
@@ -729,9 +503,10 @@ describe("generateSeedContent", () => {
 
   test("includes fine-grained tool names in tool table", () => {
     const seed = generateSeedContent();
-    expect(seed).toContain("task_create");
-    expect(seed).toContain("task_update");
-    expect(seed).toContain("task_list");
+    // task_create/task_update/task_list removed — LKML model
+    expect(seed).not.toContain("task_create");
+    expect(seed).not.toContain("task_update");
+    expect(seed).not.toContain("task_list");
     expect(seed).toContain("create_worker");
     expect(seed).toContain("register_worker");
     expect(seed).toContain("deregister_worker");
@@ -1116,11 +891,11 @@ describe("ProjectRegistry _config", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// createWorkerFiles — no longer creates state.json or permissions.json
+// createWorkerFiles — no longer creates state.json, permissions.json, or tasks.json
 // ═══════════════════════════════════════════════════════════════════
 
 describe("createWorkerFiles", () => {
-  test("creates mission.md and tasks.json but not state.json or permissions.json", () => {
+  test("creates mission.md but not state.json, permissions.json, or tasks.json", () => {
     const testName = "create-test-worker";
     const testDir = join(TEST_WORKERS_DIR, testName);
 
@@ -1132,7 +907,8 @@ describe("createWorkerFiles", () => {
 
     expect(result.ok).toBe(true);
     expect(existsSync(join(testDir, "mission.md"))).toBe(true);
-    expect(existsSync(join(testDir, "tasks.json"))).toBe(true);
+    // tasks.json removed — LKML model (tasks are Fleet Mail threads)
+    expect(existsSync(join(testDir, "tasks.json"))).toBe(false);
     // These should NOT be created anymore (data is in registry.json)
     expect(existsSync(join(testDir, "state.json"))).toBe(false);
     expect(existsSync(join(testDir, "permissions.json"))).toBe(false);
@@ -1541,7 +1317,7 @@ describe("createWorkerFiles — unique name check", () => {
     expect(result.error).toContain("empty");
   });
 
-  test("returns task IDs when tasks provided", () => {
+  test("returns task entries when tasks provided (LKML: IDs are placeholders until Fleet Mail send)", () => {
     const result = createWorkerFiles({
       name: "with-tasks-test",
       mission: "Test mission",
@@ -1552,7 +1328,8 @@ describe("createWorkerFiles — unique name check", () => {
     });
     expect(result.ok).toBe(true);
     expect(result.taskIds!.length).toBe(2);
-    expect(result.taskIds![0]).toMatch(/^T\d+$/);
+    expect(result.taskEntries!.length).toBe(2);
+    expect(result.taskEntries![0].subject).toBe("Task 1");
   });
 });
 
@@ -1981,11 +1758,10 @@ describe("seed content — tool refactor", () => {
     expect(seed).not.toContain('complete_stop_check(');
   });
 
-  test("seed includes all 23 tool names", () => {
+  test("seed includes all 20 tool names (LKML: no task_create/update/list)", () => {
     const seed = generateSeedContent();
     const expectedTools = [
       "mail_send", "mail_inbox", "mail_read", "mail_help",
-      "task_create", "task_update", "task_list",
       "get_worker_state", "update_state",
       "add_hook", "complete_hook", "remove_hook", "list_hooks",
       "recycle", "save_checkpoint",
@@ -1996,11 +1772,15 @@ describe("seed content — tool refactor", () => {
     for (const tool of expectedTools) {
       expect(seed).toContain(tool);
     }
+    // Removed task tools
+    expect(seed).not.toContain("task_create(");
+    expect(seed).not.toContain("task_update(");
+    expect(seed).not.toContain("task_list(");
   });
 
   test("seed tool table uses correct count", () => {
     const seed = generateSeedContent();
-    expect(seed).toContain("23 tools");
+    expect(seed).toContain("20 tools");
   });
 
   test("seed references add_hook for stop gates, not add_stop_check", () => {
@@ -2031,66 +1811,7 @@ describe("fleet help text", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════
-// Task tools — fine-grained CRUD still works
-// ═══════════════════════════════════════════════════════════════════
-
-describe("task CRUD — fine-grained tools", () => {
-  test("create → update → list lifecycle", () => {
-    // Create
-    const tasks = readTasks(TEST_WORKER);
-    expect(Object.keys(tasks).length).toBe(0);
-
-    const id = nextTaskId(tasks);
-    expect(id).toBe("T001");
-    tasks[id] = makeTask({ subject: "Implement login page" });
-    writeTasks(TEST_WORKER, tasks);
-
-    // Update
-    const tasks2 = readTasks(TEST_WORKER);
-    expect(tasks2[id]).toBeDefined();
-    tasks2[id].status = "in_progress";
-    tasks2[id].owner = TEST_WORKER;
-    writeTasks(TEST_WORKER, tasks2);
-
-    // List
-    const tasks3 = readTasks(TEST_WORKER);
-    expect(tasks3[id].status).toBe("in_progress");
-    expect(tasks3[id].owner).toBe(TEST_WORKER);
-  });
-
-  test("task with dependencies", () => {
-    const tasks: Record<string, Task> = {};
-    tasks["T001"] = makeTask({ subject: "Setup DB" });
-    tasks["T002"] = makeTask({ subject: "Write API", blocked_by: ["T001"] });
-    writeTasks(TEST_WORKER, tasks);
-
-    const loaded = readTasks(TEST_WORKER);
-    expect(isTaskBlocked(loaded, "T002")).toBe(true);
-    expect(isTaskBlocked(loaded, "T001")).toBe(false);
-
-    // Complete T001
-    loaded["T001"].status = "completed";
-    expect(isTaskBlocked(loaded, "T002")).toBe(false);
-  });
-
-  test("recurring task resets on completion", () => {
-    const tasks: Record<string, Task> = {};
-    tasks["T001"] = makeTask({ subject: "Daily check", recurring: true, status: "in_progress" });
-    writeTasks(TEST_WORKER, tasks);
-
-    const loaded = readTasks(TEST_WORKER);
-    // Simulate recurring completion
-    loaded["T001"].status = "pending";
-    loaded["T001"].owner = null;
-    loaded["T001"].cycles_completed = (loaded["T001"].cycles_completed || 0) + 1;
-    writeTasks(TEST_WORKER, loaded);
-
-    const after = readTasks(TEST_WORKER);
-    expect(after["T001"].status).toBe("pending");
-    expect(after["T001"].cycles_completed).toBe(1);
-  });
-});
+// Task CRUD tests removed — LKML model. Tasks are Fleet Mail threads with labels.
 
 // ═══════════════════════════════════════════════════════════════════
 // bms_token persistence — error logging (not silent catch)
@@ -2185,57 +1906,4 @@ describe("checkpoint helpers", () => {
 // Task dependency validation
 // ═══════════════════════════════════════════════════════════════════
 
-describe("task dependency validation", () => {
-  beforeEach(() => {
-    rmSync(TEST_DIR, { recursive: true, force: true });
-    mkdirSync(TEST_WORKER_DIR, { recursive: true });
-    _setWorkersDir(TEST_WORKERS_DIR);
-  });
-
-  afterEach(() => {
-    rmSync(TEST_DIR, { recursive: true, force: true });
-  });
-
-  test("isTaskBlocked returns true when blocker is not completed", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ subject: "Blocker", status: "in_progress" }),
-      T002: makeTask({ subject: "Blocked", blocked_by: ["T001"] }),
-    };
-    expect(isTaskBlocked(tasks, "T002")).toBe(true);
-  });
-
-  test("isTaskBlocked returns false when blocker is completed", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ subject: "Blocker", status: "completed" }),
-      T002: makeTask({ subject: "Blocked", blocked_by: ["T001"] }),
-    };
-    expect(isTaskBlocked(tasks, "T002")).toBe(false);
-  });
-
-  test("isTaskBlocked returns false when no blockers", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ subject: "Free", blocked_by: [] }),
-    };
-    expect(isTaskBlocked(tasks, "T001")).toBe(false);
-  });
-
-  test("isTaskBlocked handles missing blocker task gracefully", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ subject: "Blocked by ghost", blocked_by: ["T999"] }),
-    };
-    // T999 doesn't exist — should treat as blocked (can't confirm completion)
-    expect(isTaskBlocked(tasks, "T001")).toBe(true);
-  });
-
-  test("nextTaskId increments correctly", () => {
-    const tasks: Record<string, Task> = {
-      T001: makeTask({ subject: "First" }),
-      T002: makeTask({ subject: "Second" }),
-    };
-    expect(nextTaskId(tasks)).toBe("T003");
-  });
-
-  test("nextTaskId handles empty tasks", () => {
-    expect(nextTaskId({})).toBe("T001");
-  });
-});
+// Task dependency validation tests removed — LKML model.

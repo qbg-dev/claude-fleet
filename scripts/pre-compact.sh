@@ -268,18 +268,10 @@ if [ -f "$MISSION_FILE" ] && [ -s "$MISSION_FILE" ]; then
   echo ""
 fi
 
-# In-progress tasks
-TASKS_FILE="$WORKER_DIR/tasks.json"
-if [ -f "$TASKS_FILE" ] && [ -s "$TASKS_FILE" ]; then
-  IN_PROGRESS=$(jq -r 'to_entries[] | select(.value.status == "in_progress") | "  [\(.key)] \(.value.subject)"' "$TASKS_FILE" 2>/dev/null || true)
-  PENDING=$(jq -r '[to_entries[] | select(.value.status == "pending")] | length' "$TASKS_FILE" 2>/dev/null || echo "0")
-  if [ -n "$IN_PROGRESS" ]; then
-    echo "### In-Progress Tasks (resume these first)"
-    echo "$IN_PROGRESS"
-    echo "($PENDING pending tasks also queued)"
-    echo ""
-  fi
-fi
+# Tasks are now LKML mail threads — check Fleet Mail for TASK-labeled messages
+echo "### Tasks"
+echo "Check your task backlog: \`mail_inbox(label=\"TASK\")\`"
+echo ""
 
 # Rules and perpetual mode are already in seed-context.md template above.
 # Only add compaction-specific reminders not in the shared template.
