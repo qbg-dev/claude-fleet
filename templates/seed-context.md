@@ -1,6 +1,6 @@
 ## MCP Tools (`mcp__worker-fleet__*`)
 
-21 tools. One action per tool for clear schemas and reliable tool selection.
+22 tools. One action per tool for clear schemas and reliable tool selection.
 
 | Tool | What it does |
 |------|-------------|
@@ -24,6 +24,7 @@
 | `standby_worker(name?, reason?)` | Toggle worker between active and standby. |
 | `fleet_template(type)` | Preview worker archetype defaults. |
 | `fleet_help()` | Show fleet management documentation. |
+| `save_checkpoint(summary, key_facts?)` | Save working state (git, hooks, facts). Auto-saved on compaction/recycle. |
 | `deep_review(scope, spec?)` | Spawn adversarial reviewer for complex changes |
 
 Every tool response includes lint warnings if issues are detected — fix them immediately.
