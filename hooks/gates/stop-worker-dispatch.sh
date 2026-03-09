@@ -143,16 +143,8 @@ TASKS_FILE="$_wdir/tasks.json"
 _status=$(jq -r '.status // "running"' "$_wstate" 2>/dev/null || echo "running")
 [ "$_status" = "stopped" ] && { hook_pass; exit 0; }
 
-# ── Dynamic hooks gate (file-persisted by MCP add_hook / add_stop_check) ──
-_hf="/tmp/claude-hooks-${_wname}.json"
-if [ -f "$_hf" ]; then
-  _hf_pending=$(jq '[.hooks[] | select(.event=="Stop" and .blocking==true and .completed==false)] | length' "$_hf" 2>/dev/null || echo "0")
-  if [ "$_hf_pending" -gt 0 ]; then
-    _hf_list=$(jq -r '.hooks[] | select(.event=="Stop" and .blocking==true and .completed==false) | "  [\(.id)] \(.description)" + (if .agent_id then " (subagent \(.agent_id))" else "" end)' "$_hf" 2>/dev/null || echo "  (could not read hooks)")
-    hook_block "$(printf '## %s: %s pending blocking hook(s)\n\n%s\n\nComplete each with complete_hook(id), or recycle(force=true) to bypass.\n\nEscape: touch %s/allow-stop' "$_wname" "$_hf_pending" "$_hf_list" "$_SESSION_DIR")"
-    exit 0
-  fi
-fi
+# NOTE: Dynamic hooks gate (blocking Stop hooks) is handled by dynamic-hook-dispatcher.sh
+# which is registered as a separate hook for ALL events. No duplication here.
 
 # Perpetual workers: pass through (watchdog handles respawn cycle)
 _perpetual=$(jq -r '.perpetual // false' "$_wstate" 2>/dev/null || echo "false")

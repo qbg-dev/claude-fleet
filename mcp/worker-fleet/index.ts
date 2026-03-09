@@ -84,14 +84,24 @@ const WORKER_NAME = detectWorkerName();
 // Agents register hooks at runtime. Each hook can block (gate) or inject context.
 // Hook scripts read this file and apply matching hooks per event.
 // File persistence: /tmp/claude-hooks-{WORKER_NAME}.json
+// All 18 Claude Code hook events
+type HookEvent =
+  | "SessionStart" | "SessionEnd" | "InstructionsLoaded"
+  | "UserPromptSubmit"
+  | "PreToolUse" | "PermissionRequest" | "PostToolUse" | "PostToolUseFailure"
+  | "Notification" | "Stop"
+  | "SubagentStart" | "SubagentStop" | "TeammateIdle" | "TaskCompleted"
+  | "ConfigChange" | "PreCompact"
+  | "WorktreeCreate" | "WorktreeRemove";
+
 interface DynamicHook {
   id: string;
-  event: "Stop" | "PreToolUse";
+  event: HookEvent;
   description: string;
   content?: string;              // inject: context text. gate: block reason (falls back to description)
   blocking: boolean;             // true = blocks until completed. false = injects and passes.
   condition?: {
-    tool?: string;               // Tool name match
+    tool?: string;               // Tool name match (PreToolUse/PostToolUse/PermissionRequest)
     file_glob?: string;          // File path glob
     command_pattern?: string;    // Bash command regex
   };
@@ -1313,7 +1323,15 @@ server.registerTool(
   {
     description: "Register a dynamic hook that fires on a hook event. Can block the event (gate) or inject context. Use for self-governance: add verification gates before recycling, inject guidance before tool calls, or block specific tool usage until conditions are met. Hook scripts read these at runtime.",
     inputSchema: {
-      event: z.enum(["Stop", "PreToolUse"]).describe("Which hook event to fire on. Stop: blocks session exit. PreToolUse: fires before each tool call"),
+      event: z.enum([
+        "SessionStart", "SessionEnd", "InstructionsLoaded",
+        "UserPromptSubmit",
+        "PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure",
+        "Notification", "Stop",
+        "SubagentStart", "SubagentStop", "TeammateIdle", "TaskCompleted",
+        "ConfigChange", "PreCompact",
+        "WorktreeCreate", "WorktreeRemove",
+      ]).describe("Which hook event to fire on. Common: Stop (blocks session exit), PreToolUse (fires before tool call), PreCompact (before context compaction), SubagentStop (when subagent finishes)"),
       description: z.string().describe("Human-readable purpose (e.g. 'verify build passes', 'ontology guidance')"),
       blocking: z.boolean().optional().describe("If true (default for Stop), blocks the event until complete_hook(id) is called. If false (default for PreToolUse), injects content as context and passes through"),
       content: z.string().optional().describe("For inject hooks: context text to add. For blocking hooks: block reason shown to agent. Falls back to description if omitted"),
@@ -1327,7 +1345,8 @@ server.registerTool(
   },
   async ({ event, description, blocking, content, condition, agent_id }) => {
     const id = `dh-${++_hookCounter}`;
-    const isBlocking = blocking ?? (event === "Stop"); // Stop defaults to blocking, PreToolUse defaults to inject
+    // Stop defaults to blocking, most others default to inject
+    const isBlocking = blocking ?? (event === "Stop");
     const hook: DynamicHook = {
       id, event, description,
       blocking: isBlocking,

@@ -57,7 +57,7 @@
       "path": "~/.claude-ops/hooks/interceptors/pre-tool-context-injector.sh",
       "required": true,
       "category": "core",
-      "description": "Injects contextual hints before tool execution"
+      "description": "Injects contextual hints before tool execution (policy, inbox, phase)"
     },
     {
       "id": "liveness-heartbeat-post",
@@ -98,7 +98,7 @@
       "timeout": 5000,
       "required": true,
       "category": "core",
-      "description": "Saves critical context before conversation compaction"
+      "description": "Re-injects seed template + worker state before context compaction"
     },
     {
       "id": "liveness-heartbeat-stop",
@@ -114,7 +114,7 @@
       "path": "~/.claude-ops/hooks/gates/stop-worker-dispatch.sh",
       "required": true,
       "category": "core",
-      "description": "Routes worker sessions — blocks until tasks complete, enforces vision gate"
+      "description": "Routes worker sessions — blocks until tasks complete"
     },
     {
       "id": "stop-inbox-drain",
@@ -131,6 +131,236 @@
       "required": false,
       "category": "user",
       "description": "Echo chain support — pops queued items and re-injects as block reasons"
+    },
+
+    {"_comment": "── Universal infrastructure (ALL events) ──"},
+
+    {
+      "id": "universal-logger-session-start",
+      "event": "SessionStart",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log SessionStart to event bus"
+    },
+    {
+      "id": "universal-logger-session-end",
+      "event": "SessionEnd",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log SessionEnd to event bus"
+    },
+    {
+      "id": "universal-logger-instructions-loaded",
+      "event": "InstructionsLoaded",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log InstructionsLoaded to event bus"
+    },
+    {
+      "id": "universal-logger-permission-request",
+      "event": "PermissionRequest",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log PermissionRequest to event bus"
+    },
+    {
+      "id": "universal-logger-post-tool-use-failure",
+      "event": "PostToolUseFailure",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log PostToolUseFailure to event bus"
+    },
+    {
+      "id": "universal-logger-notification",
+      "event": "Notification",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log Notification to event bus"
+    },
+    {
+      "id": "universal-logger-teammate-idle",
+      "event": "TeammateIdle",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log TeammateIdle to event bus"
+    },
+    {
+      "id": "universal-logger-task-completed",
+      "event": "TaskCompleted",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log TaskCompleted to event bus"
+    },
+    {
+      "id": "universal-logger-config-change",
+      "event": "ConfigChange",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log ConfigChange to event bus"
+    },
+    {
+      "id": "universal-logger-worktree-create",
+      "event": "WorktreeCreate",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log WorktreeCreate to event bus"
+    },
+    {
+      "id": "universal-logger-worktree-remove",
+      "event": "WorktreeRemove",
+      "path": "~/.claude-ops/hooks/publishers/universal-logger.sh",
+      "required": true,
+      "category": "core",
+      "description": "Log WorktreeRemove to event bus"
+    },
+
+    {"_comment": "── Dynamic hook dispatcher (ALL events) ──"},
+
+    {
+      "id": "dynamic-hooks-session-start",
+      "event": "SessionStart",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for SessionStart"
+    },
+    {
+      "id": "dynamic-hooks-session-end",
+      "event": "SessionEnd",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for SessionEnd"
+    },
+    {
+      "id": "dynamic-hooks-user-prompt",
+      "event": "UserPromptSubmit",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for UserPromptSubmit"
+    },
+    {
+      "id": "dynamic-hooks-pre-tool-use",
+      "event": "PreToolUse",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for PreToolUse"
+    },
+    {
+      "id": "dynamic-hooks-permission-request",
+      "event": "PermissionRequest",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for PermissionRequest"
+    },
+    {
+      "id": "dynamic-hooks-post-tool-use",
+      "event": "PostToolUse",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for PostToolUse"
+    },
+    {
+      "id": "dynamic-hooks-post-tool-use-failure",
+      "event": "PostToolUseFailure",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for PostToolUseFailure"
+    },
+    {
+      "id": "dynamic-hooks-notification",
+      "event": "Notification",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for Notification"
+    },
+    {
+      "id": "dynamic-hooks-stop",
+      "event": "Stop",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for Stop"
+    },
+    {
+      "id": "dynamic-hooks-subagent-start",
+      "event": "SubagentStart",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for SubagentStart"
+    },
+    {
+      "id": "dynamic-hooks-subagent-stop",
+      "event": "SubagentStop",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for SubagentStop"
+    },
+    {
+      "id": "dynamic-hooks-teammate-idle",
+      "event": "TeammateIdle",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for TeammateIdle"
+    },
+    {
+      "id": "dynamic-hooks-task-completed",
+      "event": "TaskCompleted",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for TaskCompleted"
+    },
+    {
+      "id": "dynamic-hooks-config-change",
+      "event": "ConfigChange",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for ConfigChange"
+    },
+    {
+      "id": "dynamic-hooks-pre-compact",
+      "event": "PreCompact",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for PreCompact"
+    },
+    {
+      "id": "dynamic-hooks-worktree-create",
+      "event": "WorktreeCreate",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for WorktreeCreate"
+    },
+    {
+      "id": "dynamic-hooks-worktree-remove",
+      "event": "WorktreeRemove",
+      "path": "~/.claude-ops/hooks/interceptors/dynamic-hook-dispatcher.sh",
+      "required": true,
+      "category": "core",
+      "description": "Dynamic hooks for WorktreeRemove"
     }
   ]
 }
