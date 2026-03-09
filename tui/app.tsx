@@ -321,6 +321,32 @@ export function App({
           return;
         }
 
+        if (verb === "jump" || verb === "j") {
+          const target = parts[1];
+          let paneId = "";
+          if (target) {
+            // Find worker's pane_id from registry
+            const s = stateRef.current;
+            const worker = s.workerList.find(
+              (w) => w.name === target || w.name.includes(target)
+            );
+            paneId = worker?.pane || "";
+          } else {
+            // Jump to sidebar-selected worker's pane
+            const s = stateRef.current;
+            const worker = s.workerList[s.sidebarIndex];
+            paneId = worker?.pane || "";
+          }
+          if (paneId) {
+            const { spawnSync } = require("child_process");
+            spawnSync("tmux", ["select-pane", "-t", paneId]);
+            dispatch({ type: "SET_STATUS", message: `Jumped to ${paneId}` });
+          } else {
+            dispatch({ type: "SET_STATUS", message: "No tmux pane for worker" });
+          }
+          return;
+        }
+
         if (verb === "reply") {
           const body = parts.slice(1).join(" ");
           if (!body) {
@@ -574,6 +600,16 @@ export function App({
     // Command mode
     if (s.commandMode) {
       if (key.return) {
+        // Save to history before executing
+        if (s.commandInput.trim()) {
+          const hist = [...s.commandHistory];
+          // Avoid duplicates at the end
+          if (hist[hist.length - 1] !== s.commandInput.trim()) {
+            hist.push(s.commandInput.trim());
+            if (hist.length > 50) hist.shift();
+          }
+          dispatch({ type: "SET_COMMAND_HISTORY", history: hist });
+        }
         executeCommand(s.commandInput);
         return;
       }
@@ -588,9 +624,33 @@ export function App({
         });
         return;
       }
+      // Up/down arrow for command history
+      if (key.upArrow) {
+        if (s.commandHistory.length > 0) {
+          const newIdx = s.commandHistoryIndex < 0
+            ? s.commandHistory.length - 1
+            : Math.max(0, s.commandHistoryIndex - 1);
+          dispatch({ type: "SET_COMMAND_INPUT", input: s.commandHistory[newIdx] });
+          dispatch({ type: "SET_COMMAND_HISTORY_INDEX", index: newIdx });
+        }
+        return;
+      }
+      if (key.downArrow) {
+        if (s.commandHistoryIndex >= 0) {
+          const newIdx = s.commandHistoryIndex + 1;
+          if (newIdx >= s.commandHistory.length) {
+            dispatch({ type: "SET_COMMAND_INPUT", input: "" });
+            dispatch({ type: "SET_COMMAND_HISTORY_INDEX", index: -1 });
+          } else {
+            dispatch({ type: "SET_COMMAND_INPUT", input: s.commandHistory[newIdx] });
+            dispatch({ type: "SET_COMMAND_HISTORY_INDEX", index: newIdx });
+          }
+        }
+        return;
+      }
       // Tab completion
       if (key.tab) {
-        const cmds = ["vsplit", "hsplit", "close", "as", "send", "search", "reply", "quit"];
+        const cmds = ["vsplit", "hsplit", "close", "as", "send", "search", "reply", "jump", "quit"];
         const workerNames = s.workerList.map((w) => w.name);
         // Use the original base text when cycling
         const txt = s.tabCompletionBase || s.commandInput;
@@ -856,6 +916,20 @@ export function App({
         const newIdx = s.panes.length;
         setTimeout(() => refreshPane(newIdx), 100);
         dispatch({ type: "SET_STATUS", message: "Split \u2502" });
+        return;
+      }
+
+      // J — jump to sidebar-selected worker's tmux pane
+      if (input === "J") {
+        const worker = s.workerList[s.sidebarIndex];
+        const paneId = worker?.pane;
+        if (paneId) {
+          const { spawnSync } = require("child_process");
+          spawnSync("tmux", ["select-pane", "-t", paneId]);
+          dispatch({ type: "SET_STATUS", message: `→ ${worker.name} (${paneId})` });
+        } else {
+          dispatch({ type: "SET_STATUS", message: "No tmux pane" });
+        }
         return;
       }
 

@@ -59,6 +59,9 @@ export interface AppState {
 
   replyMode: boolean; // inline reply below message
   replyInput: string;
+
+  commandHistory: string[]; // previous commands for up/down cycling
+  commandHistoryIndex: number; // -1 = not cycling, 0..N = position
 }
 
 // ── Actions ──
@@ -103,7 +106,9 @@ export type Action =
   | { type: "TAB_COMPLETE"; completions: string[] }
   | { type: "ENTER_REPLY" }
   | { type: "EXIT_REPLY" }
-  | { type: "SET_REPLY_INPUT"; input: string };
+  | { type: "SET_REPLY_INPUT"; input: string }
+  | { type: "SET_COMMAND_HISTORY"; history: string[] }
+  | { type: "SET_COMMAND_HISTORY_INDEX"; index: number };
 
 // ── Helpers ──
 
@@ -416,6 +421,12 @@ export function reducer(state: AppState, action: Action): AppState {
     case "SET_REPLY_INPUT":
       return { ...state, replyInput: action.input };
 
+    case "SET_COMMAND_HISTORY":
+      return { ...state, commandHistory: action.history };
+
+    case "SET_COMMAND_HISTORY_INDEX":
+      return { ...state, commandHistoryIndex: action.index };
+
     default:
       return state;
   }
@@ -462,6 +473,8 @@ export function createInitialState(
     tabCompletionBase: "",
     replyMode: false,
     replyInput: "",
+    commandHistory: [],
+    commandHistoryIndex: -1,
   };
 }
 

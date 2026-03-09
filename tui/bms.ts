@@ -180,12 +180,21 @@ export function recipientNames(
 
 export function timeAgo(iso: string): string {
   if (!iso) return "";
-  const ms = Date.now() - new Date(iso).getTime();
+  const now = new Date();
+  const d = new Date(iso);
+  const ms = now.getTime() - d.getTime();
   if (ms < 60e3) return "now";
   if (ms < 3600e3) return `${(ms / 60e3) | 0}m`;
-  if (ms < 86400e3) return `${(ms / 3600e3) | 0}h`;
-  if (ms < 604800e3) return `${(ms / 86400e3) | 0}d`;
-  const d = new Date(iso);
+  // Same day: show HH:MM
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+  // Same week (within 7 days): show "Mon 14:30"
+  if (ms < 604800e3) {
+    const day = d.toLocaleDateString("en-US", { weekday: "short" });
+    const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+    return `${day} ${time}`;
+  }
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 

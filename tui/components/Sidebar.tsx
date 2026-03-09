@@ -74,7 +74,8 @@ export function Sidebar({ width }: { width: number }) {
         const name = truncate(w.name, nameW);
         const badge = isCurrent ? "\u25c9" : "";
         const count = w.unread > 0 ? String(w.unread) : "";
-        const suffix = (badge + " " + count).trim();
+        const paneHint = w.pane ? `%${w.pane.replace("%", "")}` : "";
+        const suffix = [badge, count, paneHint].filter(Boolean).join(" ");
 
         // Build the full line, pad to innerW
         const lineContent = `${statusDot(w)} ${name}`;

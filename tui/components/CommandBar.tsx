@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { colors } from "../theme.js";
 import { useAppState } from "../state.js";
 
-const COMMANDS = ["vsplit", "hsplit", "close", "as", "send", "search", "reply", "quit"];
+const COMMANDS = ["vsplit", "hsplit", "close", "as", "send", "search", "reply", "jump", "quit"];
 
 export function CommandBar() {
   const { state } = useAppState();
@@ -60,6 +60,7 @@ export function CommandBar() {
         <Text dim>r</Text> reply{"  "}
         <Text dim>e</Text> archive{"  "}
         <Text dim>V</Text> split{"  "}
+        <Text dim>J</Text> jump{"  "}
         <Text dim>:</Text> cmd{"  "}
         <Text dim>?</Text> help
         {state.panes.length > 1 && (
