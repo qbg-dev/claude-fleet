@@ -49,9 +49,10 @@ if [ -z "$PROJECT_ROOT" ]; then
   PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 fi
 
-PROJECT_NAME="$(basename "$PROJECT_ROOT")"
+PROJECT_NAME="$(basename "$PROJECT_ROOT" | sed 's/-w-.*$//')"
 WORKER_DIR="$PROJECT_ROOT/.claude/workers/$WORKER"
-REGISTRY="$PROJECT_ROOT/.claude/workers/registry.json"
+source "$HOME/.claude-ops/lib/resolve-registry.sh"
+REGISTRY=$(resolve_registry "$PROJECT_ROOT")
 BRANCH="worker/$WORKER"
 WORKTREE_DIR="$PROJECT_ROOT/../${PROJECT_NAME}-w-$WORKER"
 [ -n "$CUSTOM_WORKTREE" ] && WORKTREE_DIR="$CUSTOM_WORKTREE"
@@ -123,32 +124,15 @@ elif [ ! -d "$WORKTREE_DIR" ]; then
   git -C "$PROJECT_ROOT" worktree add "$WORKTREE_DIR" -b "$BRANCH" 2>/dev/null
 fi
 
-# Symlink registry.json to canonical (main repo) — centralized, not per-worktree
-CANONICAL_REGISTRY="$PROJECT_ROOT/.claude/workers/registry.json"
-WORKTREE_REGISTRY="$WORKTREE_DIR/.claude/workers/registry.json"
-if [ -f "$CANONICAL_REGISTRY" ] && [ "$WORKTREE_DIR" != "$PROJECT_ROOT" ]; then
-  mkdir -p "$(dirname "$WORKTREE_REGISTRY")"
-  if [ -f "$WORKTREE_REGISTRY" ] && [ ! -L "$WORKTREE_REGISTRY" ]; then
-    rm "$WORKTREE_REGISTRY"
-  fi
-  if [ ! -e "$WORKTREE_REGISTRY" ]; then
-    ln -s "$CANONICAL_REGISTRY" "$WORKTREE_REGISTRY"
-  fi
-fi
+# Registry symlinks no longer needed — fleet-global registry at ~/.claude/fleet/{project}/registry.json
 
-# Copy untracked config files that worktrees don't inherit from git
-# Always overwrite .mcp.json so worktrees pick up fixes (e.g. absolute bun path)
-for UNTRACKED_CFG in .mcp.json; do
-  if [ -f "$PROJECT_ROOT/$UNTRACKED_CFG" ]; then
-    SRC_CFG="$PROJECT_ROOT/$UNTRACKED_CFG"
-    DST_CFG="$WORKTREE_DIR/$UNTRACKED_CFG"
-    SRC_REAL="$(cd "$(dirname "$SRC_CFG")" && pwd -P)/$(basename "$SRC_CFG")"
-    DST_REAL="$(cd "$(dirname "$DST_CFG")" && pwd -P 2>/dev/null || dirname "$DST_CFG")/$(basename "$DST_CFG")"
-    if [ "$SRC_REAL" != "$DST_REAL" ]; then
-      cp "$SRC_CFG" "$DST_CFG"
-    fi
-  fi
-done
+# Symlink .mcp.json to project root (single source of truth for MCP config)
+_MCP_SRC="$PROJECT_ROOT/.mcp.json"
+_MCP_DST="$WORKTREE_DIR/.mcp.json"
+if [ -f "$_MCP_SRC" ] && [ "$PROJECT_ROOT" != "$WORKTREE_DIR" ]; then
+  rm -f "$_MCP_DST" 2>/dev/null
+  ln -sf "$_MCP_SRC" "$_MCP_DST"
+fi
 
 # Install post-merge hook in main repo (rebase notification after chief-of-staff merges)
 # Try project-local hook first, then upstream generic
@@ -164,32 +148,25 @@ if [ -f "$POST_MERGE_SRC" ]; then
   fi
 fi
 
-# Install post-commit hook in worktree for auto-notification
-# Try project-local hook first, then upstream generic
-HOOK_SRC="$PROJECT_ROOT/.claude/scripts/worker-post-commit-hook.sh"
-if [ ! -f "$HOOK_SRC" ]; then
-  HOOK_SRC="${HOME}/.claude-ops/scripts/worker-post-commit-hook.sh"
-fi
-if [ -f "$HOOK_SRC" ]; then
-  # Worktrees share the main repo's .git/hooks, so we need worktree-specific hooks
-  WORKTREE_GIT_DIR=$(git -C "$WORKTREE_DIR" rev-parse --git-dir 2>/dev/null)
+# Install hooks in worktree's git dir (not the main repo's .git/hooks).
+# For worktrees, `git rev-parse --git-dir` returns a path like
+# /path/to/main/.git/worktrees/<name> — hooks go there, not in .git/hooks.
+# Use --absolute-git-dir to avoid relative path issues.
+WORKTREE_GIT_DIR=$(git -C "$WORKTREE_DIR" rev-parse --absolute-git-dir 2>/dev/null || \
+                   git -C "$WORKTREE_DIR" rev-parse --git-dir 2>/dev/null || echo "")
+if [ -n "$WORKTREE_GIT_DIR" ]; then
   HOOKS_DIR="$WORKTREE_GIT_DIR/hooks"
   mkdir -p "$HOOKS_DIR"
-  cp "$HOOK_SRC" "$HOOKS_DIR/post-commit"
-  chmod +x "$HOOKS_DIR/post-commit"
-fi
 
-# Install commit-msg hook for auto-trailers (Worker:, Cycle:)
-COMMIT_MSG_SRC="$PROJECT_ROOT/.claude/scripts/worker-commit-msg-hook.sh"
-if [ ! -f "$COMMIT_MSG_SRC" ]; then
-  COMMIT_MSG_SRC="${HOME}/.claude-ops/scripts/worker-commit-msg-hook.sh"
-fi
-if [ -f "$COMMIT_MSG_SRC" ]; then
-  WORKTREE_GIT_DIR=${WORKTREE_GIT_DIR:-$(git -C "$WORKTREE_DIR" rev-parse --git-dir 2>/dev/null)}
-  HOOKS_DIR="${WORKTREE_GIT_DIR}/hooks"
-  mkdir -p "$HOOKS_DIR"
-  cp "$COMMIT_MSG_SRC" "$HOOKS_DIR/commit-msg"
-  chmod +x "$HOOKS_DIR/commit-msg"
+  # post-commit hook (auto-notification)
+  HOOK_SRC="$PROJECT_ROOT/.claude/scripts/worker-post-commit-hook.sh"
+  [ ! -f "$HOOK_SRC" ] && HOOK_SRC="${HOME}/.claude-ops/scripts/worker-post-commit-hook.sh"
+  [ -f "$HOOK_SRC" ] && cp "$HOOK_SRC" "$HOOKS_DIR/post-commit" && chmod +x "$HOOKS_DIR/post-commit"
+
+  # commit-msg hook (auto-trailers)
+  COMMIT_MSG_SRC="$PROJECT_ROOT/.claude/scripts/worker-commit-msg-hook.sh"
+  [ ! -f "$COMMIT_MSG_SRC" ] && COMMIT_MSG_SRC="${HOME}/.claude-ops/scripts/worker-commit-msg-hook.sh"
+  [ -f "$COMMIT_MSG_SRC" ] && cp "$COMMIT_MSG_SRC" "$HOOKS_DIR/commit-msg" && chmod +x "$HOOKS_DIR/commit-msg"
 fi
 
 # Seed file (generated via bun from TS single source of truth)
