@@ -91,6 +91,9 @@ add_hook(event="PreToolUse",
 # 4. What should happen before context compaction?
 add_hook(event="PreCompact",
   content="Save current task state to MEMORY.md before compaction.")
+
+# 5. Save a checkpoint if context is getting long
+save_checkpoint(summary="Starting SSO fix, auth flow mapped", key_facts=["HS512 for prod", "accountObj nesting"])
 ```
 
 Think of it as setting up your workbench before starting: lay out the tools, set the safety guards, then work.
@@ -257,6 +260,32 @@ Suggested cadences:
 - Active development workers: `3600`–`7200` (1–2h)
 - Optimization/review workers: `10800`–`14400` (3–4h)
 - One-shot workers: `"perpetual": false` (no `sleep_duration` needed)
+
+## Git Safety
+
+These git operations are **blocked by policy** (deny list + git-safety-gate hook):
+`--amend`, `stash drop`, `stash clear`, `rebase -i`, `branch -D`,
+`checkout main`, `merge`, `push`, `reset --hard`, `clean`, `rm -rf`.
+
+Branch creation is restricted to `worker/*` names only (`git checkout -b worker/my-name`).
+
+**Safe alternatives:**
+- Undo a commit → `git revert HEAD`
+- Apply + drop stash atomically → `git stash pop`
+- Fix the last commit → create a new commit (don't amend)
+- Delete a branch → ask the merger or mission authority
+
+## Checkpoints
+
+Your working state is automatically checkpointed before context compaction and on recycle.
+Checkpoints capture: summary, git state, dynamic hooks, key facts, and transcript reference.
+
+**Manual checkpoint** (before complex operations or when context is long):
+```
+save_checkpoint(summary="what I'm doing", key_facts=["fact1", "fact2"])
+```
+
+Checkpoints are stored in `{worker_dir}/checkpoints/`. Last 5 are kept. On recycle/compaction, your next session sees the latest checkpoint in its seed context.
 
 ## Rules
 - **Fix everything.** Never just report issues — investigate, fix, deploy, document in MEMORY.md.
