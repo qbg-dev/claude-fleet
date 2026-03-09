@@ -3133,7 +3133,7 @@ server.registerTool(
   "deep_review",
   {
     description:
-      "Launch a multi-pass deep review pipeline. Material is ADDITIVE — combine scope (git diff) and content (files) in a single review, or use either alone. `scope` auto-detects: branch name=diff since branch, SHA=commit, 'uncommitted'=working changes, 'pr:N'=pull request. Default focus: diff-only=8 code areas, content-only=4 content areas, mixed=6 balanced areas. Creates DEDICATED tmux session with coordinator + worker panes. Voting within focus groups (≥2/passes).",
+      "Launch a multi-pass deep review pipeline (v2: SOTA upgrades). Workers follow investigation protocols with structured attack vectors, confidence scoring, and chain-of-thought evidence. Context pre-pass gathers static analysis, dependency graphs, and test coverage. Judge agent does adversarial validation. Material is ADDITIVE — combine scope (git diff) and content (files). `scope` auto-detects: branch=diff since branch, SHA=commit, 'uncommitted'=working changes, 'pr:N'=PR. Graduated voting uses confidence + votes (not binary). Creates dedicated tmux session.",
     inputSchema: {
       scope: z
         .string()
@@ -3163,6 +3163,14 @@ server.registerTool(
         .array(z.string())
         .optional()
         .describe("Custom focus areas. Overrides auto-detect. Diff: 8 areas, content: 4 areas, mixed: 6 areas."),
+      no_judge: z
+        .boolean()
+        .optional()
+        .describe("Skip the adversarial judge validation stage (faster but less precise). Default: false."),
+      no_context: z
+        .boolean()
+        .optional()
+        .describe("Skip context pre-pass (static analysis, dependency graph, test coverage). Default: false."),
     },
   },
   async ({
@@ -3173,6 +3181,8 @@ server.registerTool(
     session_name,
     notify,
     focus,
+    no_judge,
+    no_context,
   }: {
     scope?: string;
     content?: string | string[];
@@ -3181,6 +3191,8 @@ server.registerTool(
     session_name?: string;
     notify?: string;
     focus?: string[];
+    no_judge?: boolean;
+    no_context?: boolean;
   }) => {
     try {
       const scriptPath = join(CLAUDE_OPS, "scripts", "deep-review.sh");
@@ -3214,6 +3226,12 @@ server.registerTool(
       }
       if (focus?.length) {
         args.push("--focus", focus.join(","));
+      }
+      if (no_judge) {
+        args.push("--no-judge");
+      }
+      if (no_context) {
+        args.push("--no-context");
       }
 
       const launchResult = spawnSync("bash", [scriptPath, ...args], {

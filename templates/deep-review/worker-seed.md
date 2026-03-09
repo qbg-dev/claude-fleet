@@ -40,21 +40,55 @@ Read the material at: `{{MATERIAL_FILE}}`
 
 This material has been shuffled into a unique order for your pass to encourage diverse reasoning paths.
 
-## Instructions
+## Pre-gathered context
 
-1. Read the material file above
-2. For code diffs: also read the **full source file** for each changed file to understand context
-3. For documents/plans: read any referenced files (code, configs, docs) for context
-4. Review with these lenses:
-   - **Correctness**: Does code do what it's supposed to? Are claims accurate? Any contradictions?
-   - **Security**: Vulnerabilities? Untrusted input handled safely?
-   - **Robustness**: What happens when things go wrong? Missing edge cases?
-   - **Design**: Right place? Right abstraction? Maintainable?
-   - **Completeness**: Anything missing? Partial migration? Unstated assumptions?
-   - **Feasibility**: Can this actually be done as described? What's underestimated?
-5. For each finding, verify it by reading surrounding code or referenced material — don't report based on the material alone
-6. Write findings to: `{{OUTPUT_FILE}}`
-7. **After writing findings**, create the sentinel file: `{{DONE_FILE}}`
+If these files exist in `{{SESSION_DIR}}`, read them BEFORE reviewing — they contain verified signals:
+
+- **`static-analysis.txt`** — compiler/linter errors for changed files. These are ground truth — if tsc reports an error, it's real.
+- **`dep-graph.json`** — for each changed file: who imports it (`imported_by`), what it imports (`imports`), recent churn (`churn_30d`). High import count = high blast radius.
+- **`test-coverage.json`** — which changed files have test files and which don't. Untested files are riskier.
+
+Use these actively: compiler errors are confirmed bugs worth tracing. High-churn, high-import, untested files deserve extra scrutiny.
+
+## Investigation protocol
+
+Follow these steps IN ORDER. Do not skip steps.
+
+### Step 1: Scan material and build a hit list (~2 min)
+
+Read your material file. For each changed file or section, note:
+- What changed (function, logic, config, prose)
+- Your suspicion level (high/medium/low) based on your specialization
+- Whether pre-gathered context flags it (compiler error? high churn? no tests? many callers?)
+
+This is internal triage — don't write findings yet.
+
+### Step 2: Deep investigation — top 5 suspects (~5-8 min)
+
+For each high-suspicion item from your hit list:
+
+a. **Read the FULL source file** (not just the diff hunk) — understand the surrounding code
+b. **Read at least 1 caller** of any changed function (check `dep-graph.json` for `imported_by`, or grep)
+c. **Check**: does the change break any caller's assumptions? (signature change, different return value, new error case)
+d. **Check**: does the change introduce a new state that error handlers don't cover?
+e. **Check**: is there an existing guard/validation that already handles this? (avoid false positives)
+f. For documents/plans: read any referenced files (code, configs) to verify claims
+
+### Step 3: Structured attack vectors for {{SPECIALIZATION}}
+
+{{ATTACK_VECTORS}}
+
+### Step 4: Write findings with chain-of-thought evidence
+
+For EACH finding, your `evidence` field MUST include:
+- The specific code you read (file:line) or document section you checked
+- The reasoning chain: "X calls Y, Y assumes Z, but the change makes Z false because..."
+- Why this is reachable / not dead code (for code findings)
+- What you checked to rule out false positives (e.g., "checked for existing guard at line N — none found")
+
+Write findings to: `{{OUTPUT_FILE}}`
+
+**After writing findings**, create the sentinel file: `{{DONE_FILE}}`
 
 ## Output format
 
@@ -70,9 +104,11 @@ Write a JSON file with this exact structure:
       "location": "path/to/file.ts:42 OR 'Section: heading' OR 'overall'",
       "severity": "critical|high|medium|low|note",
       "kind": "bug|security|performance|design|ux|completeness|gap|risk|error|ambiguity|alternative|improvement",
+      "confidence": 0.0-1.0,
+      "confidence_reasoning": "Brief justification for your confidence level",
       "title": "Short title (under 80 chars)",
       "description": "Clear explanation of the issue and its impact",
-      "evidence": "The specific code snippet or quote showing the issue",
+      "evidence": "Chain-of-thought: what you read, what you traced, why it's real (file:lines checked)",
       "suggestion": "Concrete recommendation for how to fix or address it",
       "effort": "trivial|small|medium|large"
     }
@@ -85,6 +121,13 @@ Write a JSON file with this exact structure:
 **Code findings**: bug, security, performance, design, ux, completeness, improvement
 **Content findings**: gap, risk, error, ambiguity, alternative, improvement
 Use whichever kind best describes your finding — both sets are valid regardless of material type.
+
+### Confidence calibration
+
+- **0.9–1.0**: You verified in source code / document. The issue is unambiguously present. You traced the code path or checked the facts.
+- **0.7–0.89**: Code/document strongly suggests an issue, but you couldn't fully verify one step (e.g., couldn't find the caller, not sure about runtime behavior).
+- **0.5–0.69**: Suspicious pattern matching known vulnerability/gap patterns, but you didn't fully trace the path or verify the claim.
+- **Below 0.5**: Don't report it. Too speculative.
 
 ### Severity guide
 
@@ -104,10 +147,12 @@ echo "done" > {{DONE_FILE}}
 
 ## Rules
 
-- **Be thorough**: This is a deep review. Read full files. Trace code paths or implications. Check callers, callees, and references.
-- **Be concrete**: Every finding needs location, evidence, and a specific suggestion. "This could be improved" is not a finding.
+- **Be thorough**: This is a deep review. Read full files. Trace code paths. Check callers, callees, references. Use the investigation protocol.
+- **Be concrete**: Every finding needs location, evidence chain, confidence score, and a specific suggestion. "This could be improved" is not a finding.
+- **Prove it**: Your evidence field must show WHAT you read and WHY you concluded it's a real issue. Include file:line references. Rule out false positives explicitly.
 - **Prioritize impact**: A critical finding matters more than a low-severity improvement. But report both.
 - **No pure style nits**: Don't report naming, formatting, whitespace, or comment style. But DO report misleading names that cause bugs.
 - **Context matters**: A missing null check in a hot code path is high severity. The same check in a one-time setup is low.
-- **Specialization depth**: Spend extra time on your focus area ({{SPECIALIZATION}}).
+- **Specialization depth**: Spend extra time on your focus area ({{SPECIALIZATION}}), using the attack vectors provided.
+- **Confidence honesty**: Don't inflate confidence. 0.7 means "I'm fairly sure but couldn't verify everything." 0.9+ means "I read the code and confirmed it."
 - When finished writing findings AND the sentinel file, say "PASS {{PASS_NUMBER}} COMPLETE" and stop.

@@ -43,25 +43,66 @@ Group findings that refer to the same issue:
 
 For each bucket, record which pass numbers reported it.
 
-### Phase 4: Majority voting
+### Phase 4: Graduated voting
 
 **Vote within each focus group.** Workers are grouped by specialization: passes 1–{{PASSES_PER_FOCUS}} share focus area #1, passes {{PASSES_PER_FOCUS}}+1–{{PASSES_PER_FOCUS}}×2 share focus area #2, etc.
 
-**Keep only findings reported by ≥2 of {{PASSES_PER_FOCUS}} workers within the same focus group.** Single-pass findings are likely noise. Cross-group corroboration (different focus areas flagging the same issue) also counts — any ≥2 workers total agreeing is sufficient.
+Workers now report a `confidence` score (0.0–1.0) per finding. Use BOTH vote count AND confidence for filtering:
 
-Record the vote count for each surviving bucket.
+**Tiers:**
+- **Auto-confirm**: ≥2 workers in the same focus group agree AND average confidence ≥ 0.7. Also: any ≥2 workers total (cross-group corroboration) with avg confidence ≥ 0.7.
+- **Candidate**: ≥2 workers agree (any confidence), OR 1 specialist with confidence ≥ 0.8 in their focus area.
+- **Weak signal**: 1 worker with confidence 0.5–0.79. Goes to specialist-only section.
+- **Reject**: 1 worker with confidence < 0.5. Drop silently.
 
-Exception: If {{PASSES_PER_FOCUS}} is 1 (only one worker per focus), voting is impossible. In that case, keep ALL findings but mark them as "unvoted" — they must pass extra scrutiny in the validation phase.
+When {{PASSES_PER_FOCUS}} is 1: voting relies entirely on confidence thresholds. Findings with confidence ≥ 0.8 are candidates; 0.5–0.79 are weak signals; below 0.5 are rejected. Cross-group corroboration still promotes to auto-confirm.
 
-Exception: If a single-pass finding is from a worker whose specialization matches the finding's category (e.g., security specialist finds a security issue), flag it as "specialist-only" — don't auto-reject, but mark it for manual review.
+Record the vote count, average confidence, and tier for each bucket.
 
 ### Phase 5: Merge descriptions
 
 For each surviving bucket, synthesize the clearest description from all contributing passes. Pick the best title, most precise location, and most actionable suggestion. Determine the consensus `kind` and `severity`.
 
+### Phase 5.5: Judge — adversarial validation
+
+**If `{{SESSION_DIR}}/run-judge.sh` exists**, launch the adversarial judge:
+
+1. Write all auto-confirm and candidate findings to `{{SESSION_DIR}}/candidates.json`:
+```json
+[
+  {
+    "id": 1,
+    "tier": "auto-confirm|candidate",
+    "votes": 3,
+    "avg_confidence": 0.85,
+    "location": "...",
+    "severity": "...",
+    "kind": "...",
+    "title": "...",
+    "description": "...",
+    "evidence": "...",
+    "suggestion": "..."
+  }
+]
+```
+
+2. Launch the judge: `bash {{SESSION_DIR}}/run-judge.sh`
+
+3. Poll for `{{SESSION_DIR}}/judge.done` every 10 seconds (5 min timeout):
+```bash
+ls {{SESSION_DIR}}/judge.done 2>/dev/null | wc -l
+```
+
+4. Read `{{SESSION_DIR}}/judged.json`. Apply verdicts:
+   - `confirmed` → keep (judge agrees it's real)
+   - `downgraded` → lower severity as judge suggests
+   - `rejected` → drop if judge confidence > 0.7 (strong rejection). Keep with warning if judge confidence ≤ 0.7 (weak rejection — judge wasn't sure either).
+
+5. If `run-judge.sh` doesn't exist or judge times out, skip this phase and proceed.
+
 ### Phase 6: Validate
 
-For each surviving finding:
+For findings that survived the judge (or all findings if no judge ran):
 1. Read the actual source file or document section at the reported location
 2. Verify the issue exists and is real
 3. For code bugs/security: verify the code path is reachable
@@ -122,7 +163,7 @@ Format:
 ## Critical & High — Bugs & Security (auto-fixed)
 
 ### 1. [severity] Title — location
-**Votes**: N/{{PASSES_PER_FOCUS}} | **Kind**: bug/security
+**Votes**: N/{{PASSES_PER_FOCUS}} | **Confidence**: 0.XX | **Kind**: bug/security | **Judge**: confirmed/downgraded/skipped
 **Description**: ...
 **Fix applied**: Yes/No — description of fix
 
@@ -131,7 +172,7 @@ Format:
 ## Performance Issues
 
 ### N. [severity] Title — location
-**Votes**: N/{{PASSES_PER_FOCUS}} | **Effort**: trivial/small/medium/large
+**Votes**: N/{{PASSES_PER_FOCUS}} | **Confidence**: 0.XX | **Effort**: trivial/small/medium/large
 **Description**: ...
 **Fix applied**: Yes/No
 
@@ -140,7 +181,7 @@ Format:
 ## Content Findings (Gaps, Risks, Errors)
 
 ### N. [severity] Title — section
-**Votes**: N/{{PASSES_PER_FOCUS}} | **Kind**: gap/risk/error/ambiguity/alternative
+**Votes**: N/{{PASSES_PER_FOCUS}} | **Confidence**: 0.XX | **Kind**: gap/risk/error/ambiguity/alternative
 **Description**: ...
 **Suggestion**: ...
 

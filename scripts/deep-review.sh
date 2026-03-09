@@ -43,6 +43,27 @@ CUSTOM_FOCUS=""
 CONTENT_FILES=""
 REVIEW_SPEC=""
 SCOPE=""
+NO_JUDGE=false
+NO_CONTEXT=false
+
+# ── Attack vectors per specialization ──────────────────────
+get_attack_vectors() {
+  case "$1" in
+    security)     echo "Trace every user-controlled input (URL params, request body, headers, JWT claims, cookie values) to where it is used in SQL queries, shell commands, file paths, or HTML output. Check: parameterized queries or raw string interpolation? Ownership checks on resource access (IDOR)? Rate limits on LLM-invoking endpoints? Auth on every route? CSRF protection? Error messages leaking internal details?" ;;
+    logic)        echo "For each changed conditional branch: what if the condition is inverted? Off-by-one? What if input is empty, null, undefined, NaN, or an unexpected type? Are all switch/if-else branches covered? Is there implicit fallthrough? Does the change affect loop termination? Are comparisons correct (=== vs ==, < vs <=)?" ;;
+    error-handling) echo "For each try/catch: what specific exceptions can the try block throw? Does the catch handle all of them? Is there a finally block that should exist? Are there async operations without .catch()? Are error messages leaked to the client (should return generic message, log real error)? Does error recovery leave the system in a consistent state?" ;;
+    data-integrity) echo "Check all writes: are they atomic? Is there rollback on failure? Could concurrent writes race? Is cache invalidated after writes? Are there silent truncations (string length, number overflow)? Non-atomic read-modify-write patterns? Missing database transactions?" ;;
+    performance)  echo "Check for: N+1 query patterns (loop with DB call inside). Unbounded result sets (missing LIMIT/pagination). Unnecessary re-renders or re-computations. Blocking I/O on hot paths. Memory leaks (event listeners not cleaned up, growing arrays). Missing indexes on queried columns. Large payloads without streaming." ;;
+    ux-impact)    echo "Check for: missing loading states during async operations. Error messages that are unhelpful or expose internals. Race conditions visible to users (double-click, stale data). Accessibility gaps (missing aria labels, keyboard nav). Misleading UI text or labels. State not cleared on navigation. Missing confirmation for destructive actions." ;;
+    architecture) echo "Check for: circular dependencies between modules. God functions doing too many things. Abstraction leaks (implementation details exposed to callers). Wrong layer (business logic in routes, DB queries in UI). Tight coupling that makes testing hard. Missing separation of concerns." ;;
+    completeness) echo "Check for: partial migrations (old pattern in some files, new in others). Missing error states or edge cases. TODO/FIXME left behind. Incomplete cleanup of removed features. Missing documentation for public APIs. Untested code paths." ;;
+    correctness)  echo "Check for: logical consistency — do claims match the evidence? Contradictions between sections. Factual accuracy — are numbers, dates, versions correct? Unstated assumptions that may be wrong. Circular reasoning. Conclusions that don't follow from premises." ;;
+    feasibility)  echo "Check for: implementation complexity underestimated. Dependencies on systems/APIs/people not accounted for. Resource requirements (time, compute, cost) not realistic. Blockers not identified. Ordering issues — does step 3 depend on step 5? Scope creep risks." ;;
+    risks)        echo "Check for: single points of failure. What happens if an external dependency goes down? Failure modes not discussed. Security implications of the proposed approach. Operational burden of maintaining this. Rollback strategy if things go wrong." ;;
+    improvement)  echo "Look for: real improvements to reliability, readability, or maintainability. Patterns that could be simplified. Duplicated logic that could be extracted. Missing abstractions that would reduce complexity. Better error messages or logging." ;;
+    *)            echo "Review thoroughly using your specialization lens. Look for issues that a generalist might miss. Trace implications across the codebase." ;;
+  esac
+}
 
 # Default focus areas
 DEFAULT_DIFF_FOCUS=(
@@ -83,6 +104,8 @@ while [[ $# -gt 0 ]]; do
     --session-name) CUSTOM_SESSION_NAME="$2"; shift 2 ;;
     --notify)  NOTIFY_TARGET="$2"; shift 2 ;;
     --focus)   CUSTOM_FOCUS="$2"; shift 2 ;;
+    --no-judge)  NO_JUDGE=true; shift ;;
+    --no-context) NO_CONTEXT=true; shift ;;
     # Legacy aliases
     --base)        SCOPE="$2"; shift 2 ;;
     --commit)      SCOPE="$2"; shift 2 ;;
@@ -106,6 +129,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --session-name NAME  Custom tmux session name"
       echo "  --notify TARGET      Notify on completion (worker name or 'user')"
       echo "  --focus LIST         Comma-separated focus areas (overrides auto-detect)"
+      echo "  --no-judge           Skip adversarial judge validation"
+      echo "  --no-context         Skip context pre-pass (static analysis, deps)"
       echo "                       Diff: security,logic,error-handling,data-integrity,architecture,performance,ux-impact,completeness"
       echo "                       Content: correctness,completeness,feasibility,risks"
       echo "                       Mixed: security,logic,correctness,completeness,feasibility,risks"
@@ -309,6 +334,139 @@ MATERIAL_TYPES_STR=$(IFS='+'; echo "${MATERIAL_TYPES[*]}")
 DIFF_LINES=$(wc -l < "$MATERIAL_FILE" | tr -d ' ')
 echo "Material: $DIFF_LINES lines ($DIFF_DESC)"
 
+# ── Context pre-pass (Phase 3: context engineering) ──────────
+if $HAS_DIFF && ! $NO_CONTEXT; then
+  echo "Gathering context for changed files..."
+
+  # Extract changed file paths from material
+  CHANGED_FILES=$(grep -E '^diff --git a/' "$MATERIAL_FILE" 2>/dev/null | sed 's|diff --git a/||;s| b/.*||' | sort -u)
+  CHANGED_COUNT=$(echo "$CHANGED_FILES" | grep -c . 2>/dev/null || echo 0)
+
+  if [ "$CHANGED_COUNT" -gt 0 ]; then
+    # 1. Static analysis — tsc errors for changed files
+    echo "  Running static analysis..."
+    SA_FILE="$SESSION_DIR/static-analysis.txt"
+    if command -v npx &>/dev/null && [ -f "$PROJECT_ROOT/tsconfig.json" ]; then
+      cd "$PROJECT_ROOT"
+      TSC_OUT=$(npx tsc --noEmit 2>&1 || true)
+      # Filter to only errors in changed files
+      while IFS= read -r cfile; do
+        echo "$TSC_OUT" | grep -F "$cfile" >> "$SA_FILE" 2>/dev/null || true
+      done <<< "$CHANGED_FILES"
+      if [ -s "$SA_FILE" ]; then
+        SA_LINES=$(wc -l < "$SA_FILE" | tr -d ' ')
+        echo "    TypeScript: $SA_LINES error lines"
+      else
+        echo "# No TypeScript errors in changed files" > "$SA_FILE"
+        echo "    TypeScript: clean"
+      fi
+    else
+      echo "# No tsconfig.json found — static analysis skipped" > "$SA_FILE"
+      echo "    (no tsconfig.json, skipped)"
+    fi
+
+    # 2. Dependency graph — imports and callers
+    echo "  Building dependency graph..."
+    DEP_FILE="$SESSION_DIR/dep-graph.json"
+    python3 << 'DEPEOF' - "$PROJECT_ROOT" "$CHANGED_FILES" "$DEP_FILE"
+import sys, json, os, subprocess, re
+
+project_root = sys.argv[1]
+changed_files = [f.strip() for f in sys.argv[2].strip().split('\n') if f.strip()]
+out_path = sys.argv[3]
+
+graph = {}
+for cf in changed_files:
+    entry = {"imported_by": [], "imports": [], "churn_30d": 0}
+
+    # Find callers (files that import this one)
+    basename = os.path.splitext(os.path.basename(cf))[0]
+    try:
+        result = subprocess.run(
+            ["grep", "-rn", "--include=*.ts", "--include=*.tsx", "--include=*.js",
+             f"from.*['\"].*{basename}['\"]", project_root],
+            capture_output=True, text=True, timeout=10
+        )
+        for line in result.stdout.strip().split('\n'):
+            if line and cf not in line:  # Don't count self-imports
+                parts = line.split(':', 2)
+                if len(parts) >= 2:
+                    rel = os.path.relpath(parts[0], project_root)
+                    entry["imported_by"].append(f"{rel}:{parts[1]}")
+        entry["imported_by"] = entry["imported_by"][:20]  # Cap at 20
+    except Exception:
+        pass
+
+    # Find imports (what this file imports)
+    full_path = os.path.join(project_root, cf)
+    if os.path.exists(full_path):
+        try:
+            with open(full_path) as f:
+                content = f.read()
+            imports = re.findall(r'from\s+[\'"]([^\'"]+)[\'"]', content)
+            entry["imports"] = imports[:20]
+        except Exception:
+            pass
+
+    # Git churn (commits in last 30 days)
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", "--since=30 days ago", "--", cf],
+            capture_output=True, text=True, timeout=5, cwd=project_root
+        )
+        entry["churn_30d"] = len([l for l in result.stdout.strip().split('\n') if l])
+    except Exception:
+        pass
+
+    graph[cf] = entry
+
+with open(out_path, 'w') as f:
+    json.dump(graph, f, indent=2)
+print(f"    {len(graph)} files mapped")
+DEPEOF
+
+    # 3. Test coverage — check for test file siblings
+    echo "  Checking test coverage..."
+    TEST_FILE="$SESSION_DIR/test-coverage.json"
+    python3 << 'TESTEOF' - "$PROJECT_ROOT" "$CHANGED_FILES" "$TEST_FILE"
+import sys, json, os, glob
+
+project_root = sys.argv[1]
+changed_files = [f.strip() for f in sys.argv[2].strip().split('\n') if f.strip()]
+out_path = sys.argv[3]
+
+coverage = {}
+for cf in changed_files:
+    basename = os.path.splitext(os.path.basename(cf))[0]
+    # Check common test file patterns
+    test_patterns = [
+        f"**/tests/**/{basename}.test.*",
+        f"**/tests/**/{basename}.spec.*",
+        f"**/__tests__/{basename}.*",
+        f"**/{basename}.test.*",
+        f"**/{basename}.spec.*",
+    ]
+    found_tests = []
+    for pattern in test_patterns:
+        matches = glob.glob(os.path.join(project_root, pattern), recursive=True)
+        for m in matches:
+            found_tests.append(os.path.relpath(m, project_root))
+
+    coverage[cf] = {
+        "has_tests": len(found_tests) > 0,
+        "test_files": found_tests[:5]
+    }
+
+tested = sum(1 for v in coverage.values() if v["has_tests"])
+with open(out_path, 'w') as f:
+    json.dump(coverage, f, indent=2)
+print(f"    {tested}/{len(coverage)} files have tests")
+TESTEOF
+
+    echo "  Context gathering complete."
+  fi
+fi
+
 # ── Split material + generate randomized orderings ───────────
 echo "Generating $TOTAL_WORKERS randomized orderings..."
 
@@ -374,6 +532,9 @@ for i in $(seq 1 "$TOTAL_WORKERS"); do
   PASS_IN_FOCUS=$(( (i - 1) % PASSES_PER_FOCUS + 1 ))
   FOCUS="${FOCUS_AREAS[$FOCUS_IDX]}"
 
+  # Resolve attack vectors for this specialization
+  AV="$(get_attack_vectors "$FOCUS")"
+
   sed \
     -e "s|{{PASS_NUMBER}}|$i|g" \
     -e "s|{{PASS_IN_FOCUS}}|$PASS_IN_FOCUS|g" \
@@ -387,6 +548,14 @@ for i in $(seq 1 "$TOTAL_WORKERS"); do
     -e "s|{{SPECIALIZATION}}|$FOCUS|g" \
     -e "s|{{SPEC}}|$REVIEW_SPEC|g" \
     "$TEMPLATE_DIR/worker-seed.md" > "$SESSION_DIR/worker-$i-seed.md"
+
+  # Attack vectors may contain special chars — use python for safe substitution
+  python3 -c "
+import sys
+with open(sys.argv[1]) as f: content = f.read()
+content = content.replace('{{ATTACK_VECTORS}}', sys.argv[2])
+with open(sys.argv[1], 'w') as f: f.write(content)
+" "$SESSION_DIR/worker-$i-seed.md" "$AV"
 done
 
 sed \
@@ -421,6 +590,22 @@ cd "$PROJECT_ROOT"
 exec claude --model $COORD_MODEL --dangerously-skip-permissions "\$(cat '$SESSION_DIR/coordinator-seed.md')"
 CEOF
 chmod +x "$SESSION_DIR/run-coordinator.sh"
+
+# ── Generate judge template + wrapper (Phase 4) ──────────────
+if ! $NO_JUDGE && [ -f "$TEMPLATE_DIR/judge-seed.md" ]; then
+  sed \
+    -e "s|{{SESSION_DIR}}|$SESSION_DIR|g" \
+    -e "s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g" \
+    -e "s|{{NUM_PASSES}}|$TOTAL_WORKERS|g" \
+    "$TEMPLATE_DIR/judge-seed.md" > "$SESSION_DIR/judge-seed.md"
+
+  cat > "$SESSION_DIR/run-judge.sh" << JEOF
+#!/usr/bin/env bash
+cd "$PROJECT_ROOT"
+exec claude --model $WORKER_MODEL --dangerously-skip-permissions "\$(cat '$SESSION_DIR/judge-seed.md')"
+JEOF
+  chmod +x "$SESSION_DIR/run-judge.sh"
+fi
 
 # ── Create dedicated tmux session ────────────────────────────
 NUM_WORKER_WINDOWS=$(( (TOTAL_WORKERS + 3) / 4 ))
@@ -502,6 +687,14 @@ echo ""
 echo "  Attach: tmux switch-client -t $REVIEW_SESSION"
 echo "          tmux a -t $REVIEW_SESSION"
 echo ""
-echo "  Voting: ≥2/$PASSES_PER_FOCUS within each focus group"
+echo "  Voting: graduated (confidence + votes)"
+if ! $NO_JUDGE && [ -f "$SESSION_DIR/run-judge.sh" ]; then
+echo "  Judge: enabled (adversarial validation)"
+else
+echo "  Judge: disabled"
+fi
+if [ -f "$SESSION_DIR/dep-graph.json" ]; then
+echo "  Context: pre-gathered (static analysis, deps, tests)"
+fi
 echo "  Report: $SESSION_DIR/report.md"
 echo "════════════════════════════════════════════════════════════"
