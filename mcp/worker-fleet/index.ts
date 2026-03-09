@@ -3555,7 +3555,7 @@ Routing:
 - "user": escalate to the human operator (triage queue + desktop notification, NOT via Fleet Mail).
 - Raw pane ID (e.g. "%42"): tmux-only delivery, no durable storage.
 
-Escalate to user when: (1) design/architecture decisions need human judgment, (2) security or auth changes arise, (3) business logic changes affect end users, (4) new product surface area, (5) removing functionality, (6) external coordination needed, (7) blocked and need product direction. When in doubt, escalate.`,
+Escalate to operator when: (1) design/architecture decisions need human judgment, (2) security or auth changes arise, (3) business logic changes affect end users, (4) new product surface area, (5) removing functionality, (6) external coordination needed, (7) blocked and need product direction. When in doubt, escalate.`,
     inputSchema: {
       to: z.string().describe('Recipient: worker name, "report", "direct_reports", "all", "user", or raw pane ID "%NN"'),
       subject: z.string().describe("Email subject line (5-15 words)"),
@@ -3571,7 +3571,7 @@ Escalate to user when: (1) design/architecture decisions need human judgment, (2
     to: string; subject: string; body: string; cc?: string[]; thread_id?: string;
     in_reply_to?: string; reply_by?: string; labels?: string[];
   }) => {
-    // User escalation path: send via Fleet Mail to "user" account + desktop notification
+    // Operator escalation path: send via Fleet Mail to "user" account + desktop notification
     if (to === "user") {
       let msgId = "";
       try {
@@ -3584,7 +3584,7 @@ Escalate to user when: (1) design/architecture decisions need human judgment, (2
         });
         msgId = result?.id || "";
       } catch (e: any) {
-        return { content: [{ type: "text" as const, text: `Error sending to user via Fleet Mail: ${e.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error sending to operator via Fleet Mail: ${e.message}` }], isError: true };
       }
       // Desktop notification (best-effort)
       try {
@@ -3593,7 +3593,7 @@ Escalate to user when: (1) design/architecture decisions need human judgment, (2
           { timeout: 5000, shell: "/bin/bash" }
         );
       } catch {}
-      return withLint({ content: [{ type: "text" as const, text: `Sent to user via Fleet Mail [${msgId}] + desktop notification` }] });
+      return withLint({ content: [{ type: "text" as const, text: `Sent to operator via Fleet Mail [${msgId}] + desktop notification` }] });
     }
 
     // Raw pane ID — tmux-only, no Fleet Mail

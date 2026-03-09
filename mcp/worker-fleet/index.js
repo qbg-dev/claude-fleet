@@ -22415,7 +22415,7 @@ Routing:
 - "user": escalate to the human operator (triage queue + desktop notification, NOT via Fleet Mail).
 - Raw pane ID (e.g. "%42"): tmux-only delivery, no durable storage.
 
-Escalate to user when: (1) design/architecture decisions need human judgment, (2) security or auth changes arise, (3) business logic changes affect end users, (4) new product surface area, (5) removing functionality, (6) external coordination needed, (7) blocked and need product direction. When in doubt, escalate.`,
+Escalate to operator when: (1) design/architecture decisions need human judgment, (2) security or auth changes arise, (3) business logic changes affect end users, (4) new product surface area, (5) removing functionality, (6) external coordination needed, (7) blocked and need product direction. When in doubt, escalate.`,
   inputSchema: {
     to: exports_external.string().describe('Recipient: worker name, "report", "direct_reports", "all", "user", or raw pane ID "%NN"'),
     subject: exports_external.string().describe("Email subject line (5-15 words)"),
@@ -22445,12 +22445,12 @@ Escalate to user when: (1) design/architecture decisions need human judgment, (2
       });
       msgId = result?.id || "";
     } catch (e) {
-      return { content: [{ type: "text", text: `Error sending to user via Fleet Mail: ${e.message}` }], isError: true };
+      return { content: [{ type: "text", text: `Error sending to operator via Fleet Mail: ${e.message}` }], isError: true };
     }
     try {
       execSync(`terminal-notifier -title "Worker Escalation" -message ${JSON.stringify(`[${WORKER_NAME}] ${subject}`)} -sound default 2>/dev/null || osascript -e 'display notification ${JSON.stringify(`[${WORKER_NAME}] ${subject}`)} with title "Worker Escalation" sound name "default"'`, { timeout: 5000, shell: "/bin/bash" });
     } catch {}
-    return withLint({ content: [{ type: "text", text: `Sent to user via Fleet Mail [${msgId}] + desktop notification` }] });
+    return withLint({ content: [{ type: "text", text: `Sent to operator via Fleet Mail [${msgId}] + desktop notification` }] });
   }
   if (to.startsWith("%")) {
     if (!isPaneAlive(to)) {

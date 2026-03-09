@@ -69,7 +69,9 @@ _bus_resolve_dir() {
     pr=$(_bus_resolve_main_repo)
   fi
   if [ -n "$pr" ]; then
-    mkdir -p "$pr/.claude/bus" 2>/dev/null || true
+    if [ "${EVENT_BUS_ENABLED:-true}" = "true" ]; then
+      mkdir -p "$pr/.claude/bus" 2>/dev/null || true
+    fi
     echo "$pr/.claude/bus"
   else
     echo "$HOME/.claude-ops/bus"  # last resort only
@@ -89,6 +91,7 @@ EVENT_BUS_ENABLED="${EVENT_BUS_ENABLED:-true}"
 # ── Internal helpers ─────────────────────────────────────────────────
 
 _bus_ensure_dirs() {
+  [ "${EVENT_BUS_ENABLED:-true}" != "true" ] && return
   mkdir -p "$BUS_CURSORS_DIR" "$BUS_DLQ_DIR" 2>/dev/null || true
 }
 

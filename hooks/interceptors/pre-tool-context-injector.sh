@@ -18,7 +18,7 @@ trap 'echo "{}"; exit 0' ERR
 exec 2>/dev/null  # suppress stderr — Claude Code treats any stderr as hook error
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-ops/lib/event-bus.sh" ] && source "$HOME/.claude-ops/lib/event-bus.sh"
+[ -f "$HOME/.claude-ops/lib/event-bus.sh" ] && EVENT_BUS_ENABLED=false source "$HOME/.claude-ops/lib/event-bus.sh"
 CONTEXT_INJECTOR_MAX_MATCHES="${CONTEXT_INJECTOR_MAX_MATCHES:-3}"
 INBOX_ENABLED="${INBOX_ENABLED:-true}"
 INBOX_SCAN_WINDOW_SEC="${INBOX_SCAN_WINDOW_SEC:-1800}"

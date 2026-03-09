@@ -324,7 +324,7 @@ Checkpoints are stored in `{worker_dir}/checkpoints/`. Last 5 are kept. On recyc
 
 ## Escalation Rules
 
-You SHOULD escalate to the user (`mail_send(to="user", ...)`) or {{MISSION_AUTHORITY}} when:
+You SHOULD escalate to the operator (`mail_send(to="user", ...)`) or {{MISSION_AUTHORITY}} when:
 - Real product decisions (multiple valid approaches, unclear which is correct)
 - Authentication or authorization changes (login flows, SSO, roles, permissions)
 - Adding significant product surface area (new pages, new user-facing features)
