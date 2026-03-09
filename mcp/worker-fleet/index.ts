@@ -2,11 +2,12 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 21 tools (fine-grained, one action per tool):
+ * 22 tools (fine-grained, one action per tool):
  *   Tasks (3):      task_create, task_update, task_list
  *   State (2):      get_worker_state, update_state
  *   Hooks (3):      add_hook, complete_hook, remove_hook
  *   Lifecycle (1):  recycle (gated on dynamic hooks, watchdog-deferred for perpetual workers)
+ *   Checkpoint (1): save_checkpoint
  *   Fleet (7):      create_worker, register_worker, deregister_worker, move_worker, standby_worker, fleet_template, fleet_help
  *   Review (1):     deep_review
  *   Mail (4):       mail_send, mail_inbox, mail_read, mail_help
@@ -23,7 +24,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync,
-  readdirSync, statSync,
+  readdirSync, statSync, unlinkSync, symlinkSync,
   lstatSync, rmSync, copyFileSync, cpSync,
 } from "fs";
 import { join, basename } from "path";
@@ -765,15 +766,53 @@ ${loadSeedContext(branch, _missionAuth)}`;
     seed += `\n\n## Handoff from Previous Cycle\n\n${handoff}`;
   }
 
-  // Also check for handoff.md on disk
-  const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
-  if (!handoff && existsSync(handoffPath)) {
+  // Read checkpoint from previous cycle (replaces handoff.md)
+  const checkpointLatest = join(WORKERS_DIR, WORKER_NAME, "checkpoints", "latest.json");
+  if (!handoff && existsSync(checkpointLatest)) {
     try {
-      const handoffContent = readFileSync(handoffPath, "utf-8").trim();
-      if (handoffContent) {
-        seed += `\n\n## Handoff from Previous Cycle\n\n${handoffContent}`;
+      const cpRaw = readFileSync(checkpointLatest, "utf-8").trim();
+      const cp = JSON.parse(cpRaw);
+      let cpBlock = `\n\n## Checkpoint from Previous Cycle\n\n`;
+      cpBlock += `**Summary**: ${cp.summary || "No summary"}\n`;
+      if (cp.git_state?.branch) {
+        cpBlock += `**Git**: ${cp.git_state.branch} @ ${cp.git_state.sha || "?"} (${cp.git_state.dirty_count || 0} dirty, ${cp.git_state.staged_count || 0} staged)\n`;
       }
-    } catch {}
+      if (cp.key_facts?.length > 0) {
+        cpBlock += `**Key facts**:\n${cp.key_facts.map((f: string) => `- ${f}`).join("\n")}\n`;
+      }
+      if (cp.dynamic_hooks?.length > 0) {
+        const pending = cp.dynamic_hooks.filter((h: any) => !h.completed);
+        if (pending.length > 0) {
+          cpBlock += `**Pending hooks**: ${pending.map((h: any) => `${h.id} (${h.event}: ${h.description})`).join(", ")}\n`;
+        }
+      }
+      if (cp.transcript_ref) {
+        cpBlock += `\nTranscript: ${cp.transcript_ref}\n`;
+      }
+      seed += cpBlock;
+    } catch {
+      // Fall back to legacy handoff.md
+      const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
+      if (existsSync(handoffPath)) {
+        try {
+          const handoffContent = readFileSync(handoffPath, "utf-8").trim();
+          if (handoffContent) {
+            seed += `\n\n## Handoff from Previous Cycle\n\n${handoffContent}`;
+          }
+        } catch {}
+      }
+    }
+  } else if (!handoff) {
+    // Legacy fallback: read handoff.md if no checkpoint exists
+    const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
+    if (existsSync(handoffPath)) {
+      try {
+        const handoffContent = readFileSync(handoffPath, "utf-8").trim();
+        if (handoffContent) {
+          seed += `\n\n## Handoff from Previous Cycle\n\n${handoffContent}`;
+        }
+      } catch {}
+    }
   }
 
   return seed;
@@ -1531,18 +1570,71 @@ server.registerTool(
       ? join(HOME, ".claude/projects", pathSlug, `${sessionId}.jsonl`)
       : null;
 
-    // 3. Write handoff.md (includes session transcript reference)
-    const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
-    if (message || transcriptPath) {
+    // 3. Write checkpoint (replaces handoff.md)
+    const checkpointDir = join(WORKERS_DIR, WORKER_NAME, "checkpoints");
+    mkdirSync(checkpointDir, { recursive: true });
+    try {
+      // Capture git state
+      let gitState: any = {};
       try {
-        let handoffContent = message || "";
+        const branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8", timeout: 5000, cwd: getWorktreeDir() }).trim();
+        const sha = execSync("git rev-parse --short HEAD", { encoding: "utf-8", timeout: 5000, cwd: getWorktreeDir() }).trim();
+        const porcelain = execSync("git status --porcelain", { encoding: "utf-8", timeout: 5000, cwd: getWorktreeDir() }).trim();
+        const lines = porcelain ? porcelain.split("\n") : [];
+        const staged = lines.filter((l: string) => /^[MADRC]/.test(l)).length;
+        const dirty = lines.filter((l: string) => /^.[MADRC?]/.test(l)).length;
+        gitState = { branch, sha, dirty_count: dirty, staged_count: staged };
+      } catch {}
+
+      // Capture dynamic hooks
+      const hooks = [...dynamicHooks.values()].map(h => ({
+        id: h.id, event: h.event, description: h.description,
+        blocking: h.blocking, completed: h.completed,
+      }));
+
+      const checkpoint = {
+        timestamp: new Date().toISOString(),
+        type: "recycle" as const,
+        summary: message || "Recycle without summary",
+        git_state: gitState,
+        dynamic_hooks: hooks,
+        key_facts: [] as string[],
+        transcript_ref: transcriptPath || "",
+      };
+
+      const ts = new Date().toISOString().replace(/[:.]/g, "").replace("T", "T").slice(0, 15) + "Z";
+      const filename = `checkpoint-${ts}.json`;
+      const filepath = join(checkpointDir, filename);
+      writeFileSync(filepath, JSON.stringify(checkpoint, null, 2) + "\n");
+
+      // Update latest symlink
+      const latestLink = join(checkpointDir, "latest.json");
+      try { unlinkSync(latestLink); } catch {}
+      try { symlinkSync(filename, latestLink); } catch {}
+
+      // GC: keep last 5
+      try {
+        const allCheckpoints = readdirSync(checkpointDir)
+          .filter(f => f.startsWith("checkpoint-") && f.endsWith(".json") && f !== "latest.json")
+          .sort();
+        if (allCheckpoints.length > 5) {
+          for (const old of allCheckpoints.slice(0, allCheckpoints.length - 5)) {
+            try { unlinkSync(join(checkpointDir, old)); } catch {}
+          }
+        }
+      } catch {}
+
+      // Legacy compat: also write handoff.md for any tools that still read it
+      const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
+      if (message) {
+        let handoffContent = message;
         if (transcriptPath) {
           handoffContent += `\n\nIf you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: ${transcriptPath}`;
         }
         writeFileSync(handoffPath, handoffContent.trim() + "\n");
-      } catch (e: any) {
-        return { content: [{ type: "text" as const, text: `Error writing handoff: ${e.message}` }], isError: true };
       }
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error writing checkpoint: ${e.message}` }], isError: true };
     }
 
     // 4. Notify parent/operator of cycle completion
@@ -1694,7 +1786,7 @@ rm -f "${recycleScript}"
         content: [{
           type: "text" as const,
           text: `Recycling initiated. Watchdog will respawn in ${effectiveSleep}s (~${wakeStr}).\n` +
-            `Handoff: ${message ? "written to handoff.md" : "none"}\n` +
+            `Checkpoint: ${message ? "saved to checkpoints/" : "none"}\n` +
             `Transcript: ${transcriptPath || "unknown"}\n` +
             `Status: sleeping (until ${sleepUntil})\n` +
             `Do NOT send any more tool calls — /exit will be sent shortly.` +
@@ -1805,7 +1897,7 @@ rm -f "${recycleScript}" "$LAUNCH_CMD_FILE"
       content: [{
         type: "text" as const,
         text: `Recycling initiated. You will be restarted in ~10 seconds.\n` +
-          `Handoff: ${message ? "written to handoff.md" : "none"}\n` +
+          `Checkpoint: ${message ? "saved to checkpoints/" : "none"}\n` +
           `Transcript: ${transcriptPath || "unknown"}\n` +
           `Seed: ${seedFile}\n` +
           `Do NOT send any more tool calls — /exit will be sent shortly.` +
@@ -3096,6 +3188,100 @@ server.registerTool(
         isError: true,
       };
     }
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// CHECKPOINT TOOLS (1) — save_checkpoint
+// ═══════════════════════════════════════════════════════════════════
+
+server.registerTool(
+  "save_checkpoint",
+  {
+    description: "Save a checkpoint of your current working state. Automatically captures git state and dynamic hooks. Use before complex operations, when context is getting long, or to preserve state across recycles. Checkpoints are auto-saved before context compaction and on recycle.",
+    inputSchema: {
+      summary: z.string().describe("Brief description of what you're working on and current progress"),
+      key_facts: z.array(z.string()).optional().describe("Important facts to preserve across context boundaries (max 10)"),
+    },
+  },
+  async ({ summary, key_facts }) => {
+    const checkpointDir = join(WORKERS_DIR, WORKER_NAME, "checkpoints");
+    mkdirSync(checkpointDir, { recursive: true });
+
+    // Capture git state
+    let gitState: any = {};
+    try {
+      const branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8", timeout: 5000 }).trim();
+      const sha = execSync("git rev-parse --short HEAD", { encoding: "utf-8", timeout: 5000 }).trim();
+      const porcelain = execSync("git status --porcelain", { encoding: "utf-8", timeout: 5000 }).trim();
+      const lines = porcelain ? porcelain.split("\n") : [];
+      const staged = lines.filter(l => /^[MADRC]/.test(l)).length;
+      const dirty = lines.filter(l => /^.[MADRC?]/.test(l)).length;
+      gitState = { branch, sha, dirty_count: dirty, staged_count: staged };
+    } catch {}
+
+    // Capture dynamic hooks
+    let hooks: any[] = [];
+    try {
+      hooks = [...dynamicHooks.values()].map(h => ({
+        id: h.id, event: h.event, description: h.description,
+        blocking: h.blocking, completed: h.completed,
+      }));
+    } catch {}
+
+    // Get transcript reference
+    let transcriptRef = "";
+    try {
+      const worktreeDir = getWorktreeDir();
+      const pathSlug = worktreeDir.replace(/\//g, "-").replace(/^-/, "-");
+      // Find most recent session jsonl
+      const projectDir = join(HOME, ".claude/projects", pathSlug);
+      if (existsSync(projectDir)) {
+        const files = readdirSync(projectDir).filter(f => f.endsWith(".jsonl")).sort().reverse();
+        if (files.length > 0) {
+          transcriptRef = join(projectDir, files[0]);
+        }
+      }
+    } catch {}
+
+    const checkpoint = {
+      timestamp: new Date().toISOString(),
+      type: "manual" as const,
+      summary,
+      git_state: gitState,
+      dynamic_hooks: hooks,
+      key_facts: (key_facts || []).slice(0, 10),
+      transcript_ref: transcriptRef,
+    };
+
+    const ts = new Date().toISOString().replace(/[:.]/g, "").replace("T", "T").slice(0, 15) + "Z";
+    const filename = `checkpoint-${ts}.json`;
+    const filepath = join(checkpointDir, filename);
+    writeFileSync(filepath, JSON.stringify(checkpoint, null, 2) + "\n");
+
+    // Update latest symlink
+    const latestLink = join(checkpointDir, "latest.json");
+    try { unlinkSync(latestLink); } catch {}
+    try { symlinkSync(filename, latestLink); } catch {}
+
+    // GC: keep only last 5 checkpoints
+    try {
+      const allCheckpoints = readdirSync(checkpointDir)
+        .filter(f => f.startsWith("checkpoint-") && f.endsWith(".json") && f !== "latest.json")
+        .sort();
+      if (allCheckpoints.length > 5) {
+        for (const old of allCheckpoints.slice(0, allCheckpoints.length - 5)) {
+          try { unlinkSync(join(checkpointDir, old)); } catch {}
+        }
+      }
+    } catch {}
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Checkpoint saved: ${filepath}\nGit: ${gitState.branch || "?"} @ ${gitState.sha || "?"} (${gitState.dirty_count || 0} dirty, ${gitState.staged_count || 0} staged)\nHooks: ${hooks.length} active\nFacts: ${(key_facts || []).length} saved`,
+      }],
+    };
   }
 );
 

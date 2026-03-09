@@ -122,6 +122,55 @@ WORKER_NAME="${BRANCH#worker/}"
 MAIN_ROOT=$(resolve_main_root)
 WORKER_DIR="$MAIN_ROOT/.claude/workers/$WORKER_NAME"
 
+# ── Auto-checkpoint before compaction ──────────────────────────────────────
+CHECKPOINT_DIR="$WORKER_DIR/checkpoints"
+mkdir -p "$CHECKPOINT_DIR"
+_CP_TS=$(date -u +%Y%m%dT%H%M%SZ)
+_CP_FILE="$CHECKPOINT_DIR/checkpoint-${_CP_TS}.json"
+
+# Capture git state
+_CP_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+_CP_SHA=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")
+_CP_PORCELAIN=$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null || echo "")
+_CP_DIRTY=$(echo "$_CP_PORCELAIN" | grep -c '^.[MADRC?]' 2>/dev/null || echo "0")
+_CP_STAGED=$(echo "$_CP_PORCELAIN" | grep -c '^[MADRC]' 2>/dev/null || echo "0")
+
+# Read dynamic hooks if available
+_CP_HOOKS="[]"
+_HOOKS_FILE="/tmp/claude-hooks-${WORKER_NAME}.json"
+if [ -f "$_HOOKS_FILE" ]; then
+  _CP_HOOKS=$(jq '[.[] | {id, event, description, blocking, completed}]' "$_HOOKS_FILE" 2>/dev/null || echo "[]")
+fi
+
+# Write checkpoint JSON
+jq -n \
+  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg summary "Auto-checkpoint before context compaction" \
+  --arg branch "$_CP_BRANCH" \
+  --arg sha "$_CP_SHA" \
+  --argjson dirty "${_CP_DIRTY:-0}" \
+  --argjson staged "${_CP_STAGED:-0}" \
+  --argjson hooks "$_CP_HOOKS" \
+  '{
+    timestamp: $ts,
+    type: "pre-compact",
+    summary: $summary,
+    git_state: {branch: $branch, sha: $sha, dirty_count: $dirty, staged_count: $staged},
+    dynamic_hooks: $hooks,
+    key_facts: [],
+    transcript_ref: ""
+  }' > "$_CP_FILE" 2>/dev/null || true
+
+# Update latest symlink
+ln -sf "checkpoint-${_CP_TS}.json" "$CHECKPOINT_DIR/latest.json" 2>/dev/null || true
+
+# GC: keep last 5 checkpoints
+_CP_ALL=$(ls -1 "$CHECKPOINT_DIR"/checkpoint-*.json 2>/dev/null | grep -v latest.json | sort)
+_CP_COUNT=$(echo "$_CP_ALL" | grep -c . 2>/dev/null || echo "0")
+if [ "$_CP_COUNT" -gt 5 ]; then
+  echo "$_CP_ALL" | head -n $((_CP_COUNT - 5)) | while read -r f; do rm -f "$f" 2>/dev/null; done
+fi
+
 # ── Output ───────────────────────────────────────────────────────────────────
 
 echo ""
@@ -132,6 +181,27 @@ echo "### Identity"
 echo "You are worker **${WORKER_NAME}**. Worktree: \`$(pwd)\`. Branch: \`worker/${WORKER_NAME}\`."
 echo "Worker config directory: \`${WORKER_DIR}/\`"
 echo ""
+
+# Last checkpoint summary
+_LATEST_CP="$CHECKPOINT_DIR/latest.json"
+if [ -f "$_LATEST_CP" ]; then
+  _CP_SUMMARY=$(jq -r '.summary // "none"' "$_LATEST_CP" 2>/dev/null || echo "")
+  _CP_GIT_BRANCH=$(jq -r '.git_state.branch // "?"' "$_LATEST_CP" 2>/dev/null || echo "?")
+  _CP_GIT_SHA=$(jq -r '.git_state.sha // "?"' "$_LATEST_CP" 2>/dev/null || echo "?")
+  _CP_GIT_DIRTY=$(jq -r '.git_state.dirty_count // 0' "$_LATEST_CP" 2>/dev/null || echo "0")
+  _CP_GIT_STAGED=$(jq -r '.git_state.staged_count // 0' "$_LATEST_CP" 2>/dev/null || echo "0")
+  if [ -n "$_CP_SUMMARY" ] && [ "$_CP_SUMMARY" != "none" ]; then
+    echo "### Last Checkpoint"
+    echo "Summary: \"${_CP_SUMMARY}\""
+    echo "Git: ${_CP_GIT_BRANCH} @ ${_CP_GIT_SHA} (${_CP_GIT_DIRTY} dirty, ${_CP_GIT_STAGED} staged)"
+    _CP_KEY_FACTS=$(jq -r '.key_facts[]? // empty' "$_LATEST_CP" 2>/dev/null || true)
+    if [ -n "$_CP_KEY_FACTS" ]; then
+      echo "Key facts:"
+      echo "$_CP_KEY_FACTS" | while read -r fact; do echo "  - $fact"; done
+    fi
+    echo ""
+  fi
+fi
 
 # State — registry.json only (state.json is deprecated)
 REGISTRY_FILE="$MAIN_ROOT/.claude/workers/registry.json"
