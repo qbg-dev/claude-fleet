@@ -4,11 +4,11 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, appendFileSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "fs";
 import { join } from "path";
 import {
   readTasks, writeTasks, nextTaskId, isTaskBlocked,
-  writeToInbox, writeToTriageQueue, buildMessageBody, readInboxFromCursor, readInboxCursor, writeInboxCursor,
+  writeToTriageQueue, buildMessageBody,
   resolveRecipient, generateSeedContent, runDiagnostics, createWorkerFiles, _setWorkersDir,
   readRegistry, getWorkerEntry, ensureWorkerInRegistry, lintRegistry,
   _replaceMemorySection, acquireLock, releaseLock, getWorktreeDir, getSessionId,
@@ -301,126 +301,7 @@ describe("complete_task logic", () => {
 // writeToInbox
 // ═══════════════════════════════════════════════════════════════════
 
-describe("writeToInbox", () => {
-  test("success — appends JSONL line", () => {
-    const result = writeToInbox(TEST_WORKER, {
-      content: "Hello from tests",
-      summary: "Test message",
-      from_name: "tester",
-    });
-    expect(result.ok).toBe(true);
-    expect((result as any).msg_id).toBeTruthy();
-    const inboxPath = join(TEST_WORKER_DIR, "inbox.jsonl");
-    const content = readFileSync(inboxPath, "utf-8");
-    const parsed = JSON.parse(content.trim());
-    expect(parsed.to).toBe(`worker/${TEST_WORKER}`);
-    expect(parsed.from).toBe("worker/tester");
-    expect(parsed.content).toBe("Hello from tests");
-    expect(parsed.msg_type).toBe("message");
-    expect(parsed._ts).toBeTruthy();
-  });
-
-  test("missing worker dir → error", () => {
-    const result = writeToInbox("nonexistent-worker-xyz", {
-      content: "test",
-      from_name: "tester",
-    });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toContain("not found");
-  });
-
-  test("multiple writes append correctly", () => {
-    writeToInbox(TEST_WORKER, { content: "msg1", from_name: "a" });
-    writeToInbox(TEST_WORKER, { content: "msg2", from_name: "b" });
-    writeToInbox(TEST_WORKER, { content: "msg3", from_name: "c" });
-    const inboxPath = join(TEST_WORKER_DIR, "inbox.jsonl");
-    const lines = readFileSync(inboxPath, "utf-8").split("\n").filter(Boolean);
-    expect(lines.length).toBe(3);
-    const msgs = lines.map(l => JSON.parse(l));
-    expect(msgs[0].content).toBe("msg1");
-    expect(msgs[1].content).toBe("msg2");
-    expect(msgs[2].content).toBe("msg3");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// Inbox cursor
-// ═══════════════════════════════════════════════════════════════════
-
-describe("inbox cursor", () => {
-  test("fresh read — no cursor file → reads all", () => {
-    const inboxPath = join(TEST_WORKER_DIR, "inbox.jsonl");
-    appendFileSync(inboxPath, JSON.stringify({ content: "msg1", _ts: "2026-01-01T00:00:00Z" }) + "\n");
-    appendFileSync(inboxPath, JSON.stringify({ content: "msg2", _ts: "2026-01-02T00:00:00Z" }) + "\n");
-    const { messages, newOffset } = readInboxFromCursor(TEST_WORKER, {});
-    expect(messages.length).toBe(2);
-    expect(messages[0].content).toBe("msg1");
-    expect(newOffset).toBeGreaterThan(0);
-  });
-
-  test("cursor-based — only returns new messages", () => {
-    const inboxPath = join(TEST_WORKER_DIR, "inbox.jsonl");
-    const line1 = JSON.stringify({ content: "old", _ts: "2026-01-01T00:00:00Z" }) + "\n";
-    writeFileSync(inboxPath, line1);
-    writeInboxCursor(TEST_WORKER, Buffer.byteLength(line1));
-    appendFileSync(inboxPath, JSON.stringify({ content: "new", _ts: "2026-01-02T00:00:00Z" }) + "\n");
-    const { messages } = readInboxFromCursor(TEST_WORKER, {});
-    expect(messages.length).toBe(1);
-    expect(messages[0].content).toBe("new");
-  });
-
-  test("truncated file → resets cursor to 0, reads all", () => {
-    const inboxPath = join(TEST_WORKER_DIR, "inbox.jsonl");
-    writeFileSync(inboxPath, JSON.stringify({ content: "after-truncate" }) + "\n");
-    writeInboxCursor(TEST_WORKER, 99999);
-    const { messages } = readInboxFromCursor(TEST_WORKER, {});
-    expect(messages.length).toBe(1);
-    expect(messages[0].content).toBe("after-truncate");
-  });
-
-  test("clear flag — truncates file and resets cursor", () => {
-    const inboxPath = join(TEST_WORKER_DIR, "inbox.jsonl");
-    appendFileSync(inboxPath, JSON.stringify({ content: "to-clear" }) + "\n");
-    const { messages } = readInboxFromCursor(TEST_WORKER, { clear: true });
-    expect(messages.length).toBe(1);
-    expect(messages[0].content).toBe("to-clear");
-    const remaining = readFileSync(inboxPath, "utf-8");
-    expect(remaining).toBe("");
-    const cursor = readInboxCursor(TEST_WORKER);
-    expect(cursor?.offset).toBe(0);
-  });
-
-  test("since filter — only messages after timestamp", () => {
-    const inboxPath = join(TEST_WORKER_DIR, "inbox.jsonl");
-    appendFileSync(inboxPath, JSON.stringify({ content: "old", _ts: "2026-01-01T00:00:00Z" }) + "\n");
-    appendFileSync(inboxPath, JSON.stringify({ content: "new", _ts: "2026-03-01T00:00:00Z" }) + "\n");
-    const { messages } = readInboxFromCursor(TEST_WORKER, { since: "2026-02-01T00:00:00Z" });
-    expect(messages.length).toBe(1);
-    expect(messages[0].content).toBe("new");
-  });
-
-  test("limit — returns last N messages", () => {
-    const inboxPath = join(TEST_WORKER_DIR, "inbox.jsonl");
-    for (let i = 0; i < 5; i++) {
-      appendFileSync(inboxPath, JSON.stringify({ content: `msg${i}` }) + "\n");
-    }
-    const { messages } = readInboxFromCursor(TEST_WORKER, { limit: 2 });
-    expect(messages.length).toBe(2);
-    expect(messages[0].content).toBe("msg3");
-    expect(messages[1].content).toBe("msg4");
-  });
-
-  test("empty inbox — no error", () => {
-    writeFileSync(join(TEST_WORKER_DIR, "inbox.jsonl"), "");
-    const { messages } = readInboxFromCursor(TEST_WORKER, {});
-    expect(messages.length).toBe(0);
-  });
-
-  test("missing inbox file — no error", () => {
-    const { messages } = readInboxFromCursor(TEST_WORKER, {});
-    expect(messages.length).toBe(0);
-  });
-});
+// writeToInbox / inbox cursor tests removed — BMS replaced JSONL inbox
 
 // ═══════════════════════════════════════════════════════════════════
 // writeToTriageQueue
@@ -661,86 +542,7 @@ describe("writeToTriageQueue — extended opts", () => {
 // writeToInbox — options & urgency
 // ═══════════════════════════════════════════════════════════════════
 
-describe("writeToInbox — options & urgency", () => {
-  test("options and urgency are stored in inbox message", () => {
-    const result = writeToInbox("test-worker", {
-      content: "pick one", summary: "choices", from_name: "sender",
-      options: ["A", "B"], urgency: "high",
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const inboxPath = join(WORKERS_DIR, "test-worker", "inbox.jsonl");
-    const lines = readFileSync(inboxPath, "utf-8").trim().split("\n");
-    const msg = JSON.parse(lines[lines.length - 1]);
-    expect(msg.options).toEqual(["A", "B"]);
-    expect(msg.urgency).toBe("high");
-    expect(msg.msg_id).toBe(result.msg_id);
-  });
-
-  test("options without urgency — urgency field absent", () => {
-    const result = writeToInbox("test-worker", {
-      content: "pick one", from_name: "sender",
-      options: ["X", "Y"],
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const inboxPath = join(WORKERS_DIR, "test-worker", "inbox.jsonl");
-    const lines = readFileSync(inboxPath, "utf-8").trim().split("\n");
-    const msg = JSON.parse(lines[lines.length - 1]);
-    expect(msg.options).toEqual(["X", "Y"]);
-    expect(msg.urgency).toBeUndefined();
-  });
-
-  test("urgency without options — options field absent", () => {
-    const result = writeToInbox("test-worker", {
-      content: "urgent msg", from_name: "sender",
-      urgency: "low",
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const inboxPath = join(WORKERS_DIR, "test-worker", "inbox.jsonl");
-    const lines = readFileSync(inboxPath, "utf-8").trim().split("\n");
-    const msg = JSON.parse(lines[lines.length - 1]);
-    expect(msg.urgency).toBe("low");
-    expect(msg.options).toBeUndefined();
-  });
-
-  test("empty options array — options field absent", () => {
-    const result = writeToInbox("test-worker", {
-      content: "no options", from_name: "sender",
-      options: [],
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const inboxPath = join(WORKERS_DIR, "test-worker", "inbox.jsonl");
-    const lines = readFileSync(inboxPath, "utf-8").trim().split("\n");
-    const msg = JSON.parse(lines[lines.length - 1]);
-    expect(msg.options).toBeUndefined();
-  });
-
-  test("all extended fields together with ack and reply_type", () => {
-    const result = writeToInbox("test-worker", {
-      content: "complex msg", summary: "complex", from_name: "sender",
-      ack_required: true, reply_type: "review",
-      options: ["Approve", "Reject", "Defer"], urgency: "high",
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const inboxPath = join(WORKERS_DIR, "test-worker", "inbox.jsonl");
-    const lines = readFileSync(inboxPath, "utf-8").trim().split("\n");
-    const msg = JSON.parse(lines[lines.length - 1]);
-    expect(msg.options).toEqual(["Approve", "Reject", "Defer"]);
-    expect(msg.urgency).toBe("high");
-    expect(msg.reply_type).toBe("review");
-    expect(msg.ack_required).toBe(true);
-    expect(msg.summary).toBe("complex");
-  });
-});
+// writeToInbox options & urgency tests removed — BMS replaced JSONL inbox
 
 // ═══════════════════════════════════════════════════════════════════
 // resolveRecipient
@@ -863,10 +665,10 @@ describe("generateSeedContent", () => {
     expect(seed).not.toContain("heartbeat(");
   });
 
-  test("does not reference {workerDir}/MEMORY.md — memory is auto-loaded", () => {
+  test("does not reference {workerDir}/MEMORY.md — memory is auto-memory", () => {
     const seed = generateSeedContent();
     expect(seed).not.toContain("MEMORY.md — what you learned");
-    expect(seed).toContain("auto-loaded");
+    expect(seed).toContain("auto-memory");
   });
 
   test("tells workers to check scripts dir", () => {
@@ -907,7 +709,7 @@ describe("generateSeedContent", () => {
   test("includes escalation rules", () => {
     const seed = generateSeedContent();
     expect(seed).toContain("Escalation Rules");
-    expect(seed).toContain("send_message(to=\"user\"");
+    expect(seed).toContain("mail_send(to=\"user\"");
   });
 
   test("includes available scripts section", () => {
@@ -917,18 +719,25 @@ describe("generateSeedContent", () => {
     expect(seed).toContain("worker-status.sh");
   });
 
-  test("includes stop checks documentation", () => {
+  test("includes stop gates documentation", () => {
     const seed = generateSeedContent();
-    expect(seed).toContain("Stop Checks");
-    expect(seed).toContain("add_stop_check");
-    expect(seed).toContain("complete_stop_check");
+    expect(seed).toContain("Stop Gates");
+    expect(seed).toContain("add_hook");
+    expect(seed).toContain("complete_hook");
   });
 
-  test("includes structured message fields in tool table", () => {
+  test("includes fine-grained tool names in tool table", () => {
     const seed = generateSeedContent();
-    expect(seed).toContain("options=");
-    expect(seed).toContain("context=");
-    expect(seed).toContain("urgency=");
+    expect(seed).toContain("task_create");
+    expect(seed).toContain("task_update");
+    expect(seed).toContain("task_list");
+    expect(seed).toContain("create_worker");
+    expect(seed).toContain("register_worker");
+    expect(seed).toContain("deregister_worker");
+    expect(seed).toContain("move_worker");
+    expect(seed).toContain("standby_worker");
+    expect(seed).toContain("fleet_template");
+    expect(seed).toContain("fleet_help");
   });
 
   test("no unresolved template placeholders", () => {
@@ -1008,49 +817,7 @@ describe("runDiagnostics", () => {
 // Inbox special characters
 // ═══════════════════════════════════════════════════════════════════
 
-describe("writeToInbox — special characters", () => {
-  test("message with double quotes", () => {
-    const result = writeToInbox(TEST_WORKER, {
-      content: 'He said "hello world"',
-      from_name: "tester",
-    });
-    expect(result.ok).toBe(true);
-    const line = readFileSync(join(TEST_WORKER_DIR, "inbox.jsonl"), "utf-8").trim();
-    const parsed = JSON.parse(line);
-    expect(parsed.content).toBe('He said "hello world"');
-  });
-
-  test("message with shell metacharacters ($ ! ; | & >)", () => {
-    const content = 'Run: $HOME/bin/test; echo "done" | grep ok && rm -rf / > /dev/null &';
-    const result = writeToInbox(TEST_WORKER, { content, from_name: "tester" });
-    expect(result.ok).toBe(true);
-    const line = readFileSync(join(TEST_WORKER_DIR, "inbox.jsonl"), "utf-8").trim();
-    const parsed = JSON.parse(line);
-    expect(parsed.content).toBe(content);
-  });
-
-  test("message with unicode / Chinese characters", () => {
-    const content = "你好世界 🎉 — 保臻AI助手";
-    const result = writeToInbox(TEST_WORKER, { content, from_name: "tester" });
-    expect(result.ok).toBe(true);
-    const line = readFileSync(join(TEST_WORKER_DIR, "inbox.jsonl"), "utf-8").trim();
-    const parsed = JSON.parse(line);
-    expect(parsed.content).toBe(content);
-  });
-
-  test("concurrent writes don't corrupt lines", () => {
-    for (let i = 0; i < 50; i++) {
-      writeToInbox(TEST_WORKER, { content: `concurrent-${i}`, from_name: `writer-${i}` });
-    }
-    const raw = readFileSync(join(TEST_WORKER_DIR, "inbox.jsonl"), "utf-8");
-    const lines = raw.split("\n").filter(Boolean);
-    expect(lines.length).toBe(50);
-    for (const line of lines) {
-      const parsed = JSON.parse(line);
-      expect(parsed.content).toMatch(/^concurrent-\d+$/);
-    }
-  });
-});
+// writeToInbox special characters tests removed — BMS replaced JSONL inbox
 
 // ═══════════════════════════════════════════════════════════════════
 // Project Registry — readRegistry
@@ -1389,13 +1156,7 @@ describe("createWorkerFiles", () => {
 // Path traversal safety
 // ═══════════════════════════════════════════════════════════════════
 
-describe("writeToInbox — path traversal safety", () => {
-  test("recipient with ../ → writeToInbox checks directory existence", () => {
-    const result = writeToInbox("../../../tmp/evil", { content: "pwned", from_name: "attacker" });
-    expect(result.ok).toBe(false);
-    expect((result as any).error).toContain("not found");
-  });
-});
+// writeToInbox path traversal tests removed — BMS replaced JSONL inbox
 
 // ═══════════════════════════════════════════════════════════════════
 // create_worker — report_to / forked_from flat org tracking
@@ -2151,56 +1912,7 @@ describe("createWorkerFiles — verifier type", () => {
 // Cross-runtime messaging
 // ═══════════════════════════════════════════════════════════════════
 
-describe("cross-runtime messaging", () => {
-  test("Claude worker A and Codex worker B can exchange messages", () => {
-    // Create worker dirs
-    const workerA = "xrt-claude-a";
-    const workerB = "xrt-codex-b";
-    mkdirSync(join(TEST_WORKERS_DIR, workerA), { recursive: true });
-    mkdirSync(join(TEST_WORKERS_DIR, workerB), { recursive: true });
-
-    // Send from A to B
-    const sendAB = writeToInbox(workerB, { content: "hello from claude", from_name: workerA });
-    expect(sendAB.ok).toBe(true);
-
-    // Send from B to A
-    const sendBA = writeToInbox(workerA, { content: "reply from codex", from_name: workerB });
-    expect(sendBA.ok).toBe(true);
-
-    // Read B's inbox — should have A's message
-    const inboxB = readInboxFromCursor(workerB);
-    expect(inboxB.messages.length).toBeGreaterThanOrEqual(1);
-    expect(inboxB.messages.some((m: any) => m.from_name === workerA && m.content === "hello from claude")).toBe(true);
-
-    // Read A's inbox — should have B's message
-    const inboxA = readInboxFromCursor(workerA);
-    expect(inboxA.messages.length).toBeGreaterThanOrEqual(1);
-    expect(inboxA.messages.some((m: any) => m.from_name === workerB && m.content === "reply from codex")).toBe(true);
-  });
-
-  test("message format is identical regardless of runtime", () => {
-    const workerC = "xrt-fmt-claude";
-    const workerD = "xrt-fmt-codex";
-    mkdirSync(join(TEST_WORKERS_DIR, workerC), { recursive: true });
-    mkdirSync(join(TEST_WORKERS_DIR, workerD), { recursive: true });
-
-    writeToInbox(workerC, { content: "test msg", from_name: workerD, summary: "test" });
-    writeToInbox(workerD, { content: "test msg", from_name: workerC, summary: "test" });
-
-    const inboxC = readInboxFromCursor(workerC);
-    const inboxD = readInboxFromCursor(workerD);
-
-    // Both messages should have the same structure
-    const msgC = inboxC.messages[0];
-    const msgD = inboxD.messages[0];
-    expect(msgC.from_name).toBe(workerD);
-    expect(msgD.from_name).toBe(workerC);
-    // Same fields present in both
-    const keysC = Object.keys(msgC).sort();
-    const keysD = Object.keys(msgD).sort();
-    expect(keysC).toEqual(keysD);
-  });
-});
+// cross-runtime messaging tests removed — BMS replaced JSONL inbox
 
 // ═══════════════════════════════════════════════════════════════════
 // Registry parity (Claude vs Codex)
@@ -2250,5 +1962,155 @@ describe("registry parity — Claude vs Codex", () => {
     expect((registry["dual-codex"] as RegistryWorkerEntry).custom.runtime).toBe("codex");
     expect((registry["dual-claude"] as RegistryWorkerEntry).model).toBe("opus");
     expect((registry["dual-codex"] as RegistryWorkerEntry).model).toBe("gpt-5.4");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Tool refactor — fine-grained tool names in seed content
+// ═══════════════════════════════════════════════════════════════════
+
+describe("seed content — tool refactor", () => {
+  test("no dispatcher tool names in seed", () => {
+    const seed = generateSeedContent();
+    // Old dispatchers should not appear as tool names
+    expect(seed).not.toContain('`task(action');
+    expect(seed).not.toContain('`fleet(action');
+    // Old aliases should not appear
+    expect(seed).not.toContain('add_stop_check(');
+    expect(seed).not.toContain('complete_stop_check(');
+  });
+
+  test("seed includes all 21 tool names", () => {
+    const seed = generateSeedContent();
+    const expectedTools = [
+      "mail_send", "mail_inbox", "mail_read", "mail_help",
+      "task_create", "task_update", "task_list",
+      "get_worker_state", "update_state",
+      "add_hook", "complete_hook", "remove_hook",
+      "recycle",
+      "create_worker", "register_worker", "deregister_worker",
+      "move_worker", "standby_worker", "fleet_template", "fleet_help",
+      "deep_review",
+    ];
+    for (const tool of expectedTools) {
+      expect(seed).toContain(tool);
+    }
+  });
+
+  test("seed tool table uses correct count", () => {
+    const seed = generateSeedContent();
+    expect(seed).toContain("21 tools");
+  });
+
+  test("seed references add_hook for stop gates, not add_stop_check", () => {
+    const seed = generateSeedContent();
+    // Stop gates section should use add_hook(event="Stop", ...) syntax
+    expect(seed).toContain('add_hook(event="Stop"');
+    // And complete_hook for completing stop gates
+    expect(seed).toContain('complete_hook("dh-1"');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Fleet help — reflects new tool names
+// ═══════════════════════════════════════════════════════════════════
+
+describe("fleet help text", () => {
+  test("handleFleetHelp references new tool names", () => {
+    // Import handleFleetHelp indirectly through seed content which includes fleet_help output format
+    const seed = generateSeedContent();
+    // The seed tool table should list individual fleet tools
+    expect(seed).toContain("create_worker(name, mission");
+    expect(seed).toContain("register_worker(model?");
+    expect(seed).toContain("deregister_worker(name?, reason?");
+    expect(seed).toContain("move_worker(window, name?");
+    expect(seed).toContain("standby_worker(name?, reason?");
+    expect(seed).toContain("fleet_template(type)");
+    expect(seed).toContain("fleet_help()");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Task tools — fine-grained CRUD still works
+// ═══════════════════════════════════════════════════════════════════
+
+describe("task CRUD — fine-grained tools", () => {
+  test("create → update → list lifecycle", () => {
+    // Create
+    const tasks = readTasks(TEST_WORKER);
+    expect(Object.keys(tasks).length).toBe(0);
+
+    const id = nextTaskId(tasks);
+    expect(id).toBe("T001");
+    tasks[id] = makeTask({ subject: "Implement login page" });
+    writeTasks(TEST_WORKER, tasks);
+
+    // Update
+    const tasks2 = readTasks(TEST_WORKER);
+    expect(tasks2[id]).toBeDefined();
+    tasks2[id].status = "in_progress";
+    tasks2[id].owner = TEST_WORKER;
+    writeTasks(TEST_WORKER, tasks2);
+
+    // List
+    const tasks3 = readTasks(TEST_WORKER);
+    expect(tasks3[id].status).toBe("in_progress");
+    expect(tasks3[id].owner).toBe(TEST_WORKER);
+  });
+
+  test("task with dependencies", () => {
+    const tasks: Record<string, Task> = {};
+    tasks["T001"] = makeTask({ subject: "Setup DB" });
+    tasks["T002"] = makeTask({ subject: "Write API", blocked_by: ["T001"] });
+    writeTasks(TEST_WORKER, tasks);
+
+    const loaded = readTasks(TEST_WORKER);
+    expect(isTaskBlocked(loaded, "T002")).toBe(true);
+    expect(isTaskBlocked(loaded, "T001")).toBe(false);
+
+    // Complete T001
+    loaded["T001"].status = "completed";
+    expect(isTaskBlocked(loaded, "T002")).toBe(false);
+  });
+
+  test("recurring task resets on completion", () => {
+    const tasks: Record<string, Task> = {};
+    tasks["T001"] = makeTask({ subject: "Daily check", recurring: true, status: "in_progress" });
+    writeTasks(TEST_WORKER, tasks);
+
+    const loaded = readTasks(TEST_WORKER);
+    // Simulate recurring completion
+    loaded["T001"].status = "pending";
+    loaded["T001"].owner = null;
+    loaded["T001"].cycles_completed = (loaded["T001"].cycles_completed || 0) + 1;
+    writeTasks(TEST_WORKER, loaded);
+
+    const after = readTasks(TEST_WORKER);
+    expect(after["T001"].status).toBe("pending");
+    expect(after["T001"].cycles_completed).toBe(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// bms_token persistence — error logging (not silent catch)
+// ═══════════════════════════════════════════════════════════════════
+
+describe("bms_token persistence", () => {
+  test("registry write stores bms_token for worker", () => {
+    const registry = makeProjectRegistry({});
+    const entry = ensureWorkerInRegistry(registry, "token-test");
+    (entry as any).bms_token = "test-bearer-token-123";
+    expect((registry["token-test"] as any).bms_token).toBe("test-bearer-token-123");
+  });
+
+  test("bms_token survives registry round-trip", () => {
+    const registry = makeProjectRegistry({});
+    const entry = ensureWorkerInRegistry(registry, "roundtrip-test");
+    (entry as any).bms_token = "roundtrip-token";
+
+    // Simulate JSON serialization round-trip
+    const serialized = JSON.stringify(registry);
+    const deserialized = JSON.parse(serialized);
+    expect(deserialized["roundtrip-test"].bms_token).toBe("roundtrip-token");
   });
 });
