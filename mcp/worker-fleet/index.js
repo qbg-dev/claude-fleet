@@ -20732,7 +20732,20 @@ Remaining hooks: ${_pendingHooksSummary()}.`
     }]
   };
 });
-server.registerTool("recycle", { description: "Restart yourself in the same tmux pane to get a fresh context window. Three modes: (1) Default (cold restart): exits current session, generates a new seed file with the handoff message, and launches a brand-new Claude session. (2) resume=true (hot restart): resume same session ID \u2014 preserves full conversation history but reloads MCP config. (3) Perpetual workers with sleep_duration: exits session and lets the watchdog respawn after sleep_duration seconds (no immediate relaunch). Use sleep_seconds to override sleep_duration for this cycle. Blocked by pending dynamic hooks unless force=true.", inputSchema: {
+server.registerTool("recycle", { description: `Restart yourself in the same tmux pane to get a fresh context window.
+
+Three modes:
+  (1) Default (cold restart): exits current session, generates a new seed file with the handoff message, and launches a brand-new Claude session.
+  (2) resume=true (hot restart): resume same session ID \u2014 preserves full conversation history but reloads MCP config.
+  (3) Perpetual workers with sleep_duration: exits session and lets the watchdog respawn after sleep_duration seconds (no immediate relaunch). Use sleep_seconds to override sleep_duration for this cycle.
+
+When to use which:
+  - Context window getting long, task ongoing \u2192 cold restart (default). Handoff message carries state forward.
+  - MCP config or .mcp.json changed, need to reload tools/env \u2192 hot restart (resume=true). Keeps conversation, just reloads MCP.
+  - Perpetual cycle complete, nothing urgent \u2192 let sleep/watchdog handle it (just call recycle with a handoff message).
+  - Stuck or corrupted state, need clean slate \u2192 cold restart with minimal handoff.
+
+Blocked by pending dynamic hooks unless force=true.`, inputSchema: {
   message: exports_external.string().optional().describe("Handoff context for the next instance. Include: what was accomplished, what remains, any blockers or decisions needed. Written to handoff.md and injected into the next session's seed"),
   resume: exports_external.boolean().optional().describe("If true, hot-restart: resume the same session (keeps conversation history, reloads MCP/model config). If false (default), cold-restart with a fresh seed"),
   force: exports_external.boolean().optional().describe("If true, bypass the stop-check gate. Use only when pending checks are genuinely not applicable to the current cycle"),
