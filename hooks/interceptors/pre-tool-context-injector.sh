@@ -32,8 +32,11 @@ INPUT=$(cat)
 
 # Parse input via jq (replaces python3 json.load)
 hook_parse_input "$INPUT"
-# Subagents get full context from parent's Agent prompt — skip injection
-_is_subagent && { echo '{}'; exit 0; }
+# Subagents: skip full injection (inbox/policy/phase), but inject agent_id so they can use stop checks
+if _is_subagent; then
+  hook_context "Your subagent agent_id is: ${_HOOK_AGENT_ID}. Use it with add_stop_check(agent_id=\"${_HOOK_AGENT_ID}\") to register verification gates scoped to you."
+  exit 0
+fi
 SESSION_ID="$_HOOK_SESSION_ID"
 TOOL_NAME="$_HOOK_TOOL_NAME"
 TOOL_INPUT="$_HOOK_TOOL_INPUT"

@@ -20,8 +20,23 @@ INPUT=$(cat)
 
 # Parse session ID
 hook_parse_input "$INPUT"
-# Subagents stop freely — they return results to their parent
-_is_subagent && { hook_pass; exit 0; }
+# Subagents: skip task/inbox/pane checks, but honor their own stop checks
+if _is_subagent; then
+  _sc_file="/tmp/claude-stop-checks-${WORKER_NAME:-unknown}.json"
+  if [ -f "$_sc_file" ]; then
+    _sc_pending=$(jq --arg aid "$_HOOK_AGENT_ID" \
+      '[.checks[] | select(.completed == false and .agent_id == $aid)] | length' \
+      "$_sc_file" 2>/dev/null || echo "0")
+    if [ "$_sc_pending" -gt 0 ]; then
+      _sc_list=$(jq -r --arg aid "$_HOOK_AGENT_ID" \
+        '.checks[] | select(.completed == false and .agent_id == $aid) | "  [\(.id)] \(.description)"' \
+        "$_sc_file" 2>/dev/null || echo "  (could not read checks)")
+      hook_block "$(printf '## Subagent: %s pending stop check(s)\n\n%s\n\nComplete each with complete_stop_check(id) before stopping.' "$_sc_pending" "$_sc_list")"
+      exit 0
+    fi
+  fi
+  hook_pass; exit 0
+fi
 SESSION_ID="$_HOOK_SESSION_ID"
 [ -z "$SESSION_ID" ] && { hook_pass; exit 0; }
 
@@ -129,11 +144,12 @@ _status=$(jq -r '.status // "running"' "$_wstate" 2>/dev/null || echo "running")
 [ "$_status" = "stopped" ] && { hook_pass; exit 0; }
 
 # ── Stop checks gate (file-persisted by MCP add_stop_check) ──
+# Parent scope: checks without agent_id (own checks) + checks with agent_id (waiting for subagent)
 _sc_file="/tmp/claude-stop-checks-${_wname}.json"
 if [ -f "$_sc_file" ]; then
   _sc_pending=$(jq '[.checks[] | select(.completed == false)] | length' "$_sc_file" 2>/dev/null || echo "0")
   if [ "$_sc_pending" -gt 0 ]; then
-    _sc_list=$(jq -r '.checks[] | select(.completed == false) | "  [\(.id)] \(.description)"' "$_sc_file" 2>/dev/null || echo "  (could not read checks)")
+    _sc_list=$(jq -r '.checks[] | select(.completed == false) | "  [\(.id)] \(.description)" + (if .agent_id then " (waiting for subagent \(.agent_id))" else "" end)' "$_sc_file" 2>/dev/null || echo "  (could not read checks)")
     hook_block "$(printf '## %s: %s pending stop check(s)\n\nYou registered verification items that are not yet completed:\n\n%s\n\nComplete each check, then call complete_stop_check(id) before stopping.\nOr: recycle(force=true) to bypass.\n\nEscape: touch %s/allow-stop' "$_wname" "$_sc_pending" "$_sc_list" "$_SESSION_DIR")"
     exit 0
   fi
