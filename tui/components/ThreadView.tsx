@@ -90,7 +90,7 @@ export function ThreadList({
 
 export function ThreadDetail({ thread }: { thread: any }) {
   const { state } = useAppState();
-  const { directory } = state;
+  const { directory, replyMode, replyInput } = state;
 
   const msgs = thread.messages || [];
   const subject = thread.subject || msgs[0]?.subject || "(no subject)";
@@ -132,9 +132,24 @@ export function ThreadDetail({ thread }: { thread: any }) {
         })}
       </Box>
 
-      <Box>
-        <Text color={colors.gray} dim>Esc close  r reply</Text>
-      </Box>
+      {/* Inline reply or action hints */}
+      {replyMode ? (
+        <Box flexDirection="column">
+          <Text color={colors.gray}>{"\u2500".repeat(60)}</Text>
+          <Box>
+            <Text color={colors.blue} bold>{"Reply\u25b8 "}</Text>
+            <Text color={colors.white}>{replyInput}</Text>
+            <Text color={colors.muted}>{"\u2588"}</Text>
+            <Text color={colors.gray} dim>{"  "}Enter send  Esc cancel</Text>
+          </Box>
+        </Box>
+      ) : (
+        <Box>
+          <Text color={colors.gray} dim>
+            <Text bold>r</Text>eply <Text bold>e</Text>archive <Text bold>u</Text>back <Text bold>V</Text>split
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }

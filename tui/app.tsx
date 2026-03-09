@@ -195,7 +195,9 @@ export function App({
         }
 
         if (verb === "vsplit" || verb === "hsplit") {
-          const worker = parts[1] || "user";
+          // Default to current pane's worker (not "user") for same-inbox split
+          const currentPaneWorker = stateRef.current.panes[stateRef.current.activePaneIndex]?.worker || "user";
+          const worker = parts[1] || currentPaneWorker;
           dispatch({
             type: "ADD_PANE",
             worker,
@@ -391,12 +393,26 @@ export function App({
           refreshPane(s.activePaneIndex);
         } else if (action === "reply") {
           // Open detail if not already open, then enter reply mode
-          if (!pane.openMessage) {
-            try {
-              const full = await fetchMessage(token, msg.id);
-              dispatch({ type: "OPEN_MESSAGE", message: full || msg });
-            } catch {
-              dispatch({ type: "OPEN_MESSAGE", message: msg });
+          if (!pane.openMessage && !pane.openThread) {
+            // For inbox/sent, open the message first
+            if (pane.tab === "inbox" || pane.tab === "sent") {
+              try {
+                const full = await fetchMessage(token, msg.id);
+                dispatch({ type: "OPEN_MESSAGE", message: full || msg });
+              } catch {
+                dispatch({ type: "OPEN_MESSAGE", message: msg });
+              }
+            } else if (pane.tab === "threads") {
+              // Open the thread first
+              const thread = pane.threads[pane.selectedIndex];
+              if (thread) {
+                try {
+                  const full = await fetchThread(token, thread.id);
+                  dispatch({ type: "OPEN_THREAD", thread: full || thread });
+                } catch {
+                  dispatch({ type: "OPEN_THREAD", thread });
+                }
+              }
             }
           }
           dispatch({ type: "ENTER_REPLY" });
@@ -425,23 +441,43 @@ export function App({
   );
 
   // ── Send reply ──
+  // Works for both message detail and thread detail (replies to last message)
   const sendReply = useCallback(async () => {
     const s = stateRef.current;
     const pane = s.panes[s.activePaneIndex];
-    const msg = pane.openMessage || pane.messages[pane.selectedIndex];
-    if (!msg || !s.replyInput.trim()) return;
+    if (!s.replyInput.trim()) return;
+
+    // Determine which message to reply to
+    let msg: any = pane.openMessage;
+    if (!msg && pane.openThread) {
+      // Reply to last message in thread
+      const msgs = pane.openThread.messages || [];
+      msg = msgs[msgs.length - 1];
+    }
+    if (!msg) {
+      msg = pane.messages[pane.selectedIndex];
+    }
+    if (!msg) return;
 
     const token = getToken(pane.worker);
     const fromId =
       typeof msg.from === "string" ? msg.from : msg.from?.id || msg.fromId;
+    const threadId = msg.threadId || pane.openThread?.id;
+    const subject = msg.subject || pane.openThread?.subject || "";
 
     try {
-      await sendMessage(token, [fromId], `Re: ${msg.subject || ""}`, s.replyInput.trim(), {
-        threadId: msg.threadId,
+      await sendMessage(token, [fromId], `Re: ${subject}`, s.replyInput.trim(), {
+        threadId,
         inReplyTo: msg.id,
       });
       dispatch({ type: "EXIT_REPLY" });
       dispatch({ type: "SET_STATUS", message: "Reply sent" });
+      // Refresh the thread if we're in thread view
+      if (pane.openThread && threadId) {
+        fetchThread(token, threadId).then((full) => {
+          dispatch({ type: "OPEN_THREAD", thread: full || pane.openThread });
+        }).catch(() => {});
+      }
       refreshPane(s.activePaneIndex);
     } catch (e: any) {
       dispatch({
@@ -810,6 +846,16 @@ export function App({
       // I — mark read/unread toggle
       if (input === "I") {
         handleMessageAction("markread");
+        return;
+      }
+
+      // V — quick vsplit (same worker, independent navigation)
+      if (input === "V") {
+        const currentWorker = s.panes[s.activePaneIndex]?.worker || "user";
+        dispatch({ type: "ADD_PANE", worker: currentWorker, direction: "vertical" });
+        const newIdx = s.panes.length;
+        setTimeout(() => refreshPane(newIdx), 100);
+        dispatch({ type: "SET_STATUS", message: "Split \u2502" });
         return;
       }
 

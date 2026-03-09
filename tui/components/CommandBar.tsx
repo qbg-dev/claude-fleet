@@ -57,8 +57,9 @@ export function CommandBar() {
         <Text dim>j</Text>/<Text dim>k</Text> move{"  "}
         <Text dim>Enter</Text> open{"  "}
         <Text dim>1-4</Text> tab{"  "}
-        <Text dim>e</Text> archive{"  "}
         <Text dim>r</Text> reply{"  "}
+        <Text dim>e</Text> archive{"  "}
+        <Text dim>V</Text> split{"  "}
         <Text dim>:</Text> cmd{"  "}
         <Text dim>?</Text> help
         {state.panes.length > 1 && (

@@ -30,19 +30,20 @@ const SECTIONS = [
   {
     title: "Actions (Gmail-style)",
     keys: [
-      ["r", "Reply inline (below message)"],
+      ["r", "Reply inline (message or thread)"],
       ["e / a", "Archive message"],
       ["s", "Star/unstar"],
       ["d / #", "Trash message"],
       ["u", "Back to list (close detail)"],
       ["I (shift-i)", "Toggle read/unread"],
+      ["V", "Quick vsplit (same inbox)"],
       ["R", "Force refresh"],
     ],
   },
   {
     title: "Commands (:)",
     keys: [
-      [":vsplit [worker]", "Vertical split"],
+      [":vsplit [worker]", "Split (inherits current inbox)"],
       [":hsplit [worker]", "Horizontal split"],
       [":close", "Close split pane"],
       [":send <to> <subj>", "Send message"],
