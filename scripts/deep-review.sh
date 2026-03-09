@@ -312,7 +312,11 @@ if $HAS_CONTENT; then
   IFS=',' read -ra _CONTENT_ARRAY <<< "$CONTENT_FILES"
   CONTENT_FILE_LIST=""
   for cf in "${_CONTENT_ARRAY[@]}"; do
+    # Strip whitespace and quotes that may sneak in from JSON/MCP parsing
+    cf=$(echo "$cf" | sed 's/^[[:space:]"]*//;s/[[:space:]"]*$//')
     cf="${cf/#\~/$HOME}"
+    # Resolve relative paths against PROJECT_ROOT
+    [[ "$cf" != /* ]] && cf="$PROJECT_ROOT/$cf"
     if [ ! -f "$cf" ]; then
       echo "ERROR: Content file not found: $cf" >&2
       rm -rf "$SESSION_DIR"
@@ -335,6 +339,7 @@ DIFF_LINES=$(wc -l < "$MATERIAL_FILE" | tr -d ' ')
 echo "Material: $DIFF_LINES lines ($DIFF_DESC)"
 
 # ── Context pre-pass (Phase 3: context engineering) ──────────
+# Entire pre-pass is best-effort — failures here should never abort the review
 if $HAS_DIFF && ! $NO_CONTEXT; then
   echo "Gathering context for changed files..."
 
@@ -342,13 +347,14 @@ if $HAS_DIFF && ! $NO_CONTEXT; then
   CHANGED_FILES=$(grep -E '^diff --git a/' "$MATERIAL_FILE" 2>/dev/null | sed 's|diff --git a/||;s| b/.*||' | sort -u)
   CHANGED_COUNT=$(echo "$CHANGED_FILES" | grep -c . 2>/dev/null || echo 0)
 
-  if [ "$CHANGED_COUNT" -gt 0 ]; then
-    # 1. Static analysis — tsc errors for changed files
+  if [ "$CHANGED_COUNT" -gt 0 ]; then (
+    # Run in subshell so set -e doesn't abort the main script on pre-pass failures
+    # 1. Static analysis — tsc errors for changed files (best-effort, non-fatal)
     echo "  Running static analysis..."
     SA_FILE="$SESSION_DIR/static-analysis.txt"
     if command -v npx &>/dev/null && [ -f "$PROJECT_ROOT/tsconfig.json" ]; then
       cd "$PROJECT_ROOT"
-      TSC_OUT=$(npx tsc --noEmit 2>&1 || true)
+      TSC_OUT=$(timeout 30 npx tsc --noEmit 2>&1 || true)
       # Filter to only errors in changed files
       while IFS= read -r cfile; do
         echo "$TSC_OUT" | grep -F "$cfile" >> "$SA_FILE" 2>/dev/null || true
@@ -464,6 +470,7 @@ print(f"    {tested}/{len(coverage)} files have tests")
 TESTEOF
 
     echo "  Context gathering complete."
+  ) || echo "  WARN: Context pre-pass had errors (non-fatal, continuing)"
   fi
 fi
 

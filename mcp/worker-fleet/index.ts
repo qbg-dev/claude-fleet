@@ -23,7 +23,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync,
-  readdirSync, statSync, unlinkSync, symlinkSync,
+  readdirSync, statSync, unlinkSync, symlinkSync, renameSync,
   lstatSync, rmSync, copyFileSync, cpSync,
 } from "fs";
 import { join, basename } from "path";
@@ -67,12 +67,13 @@ function _captureHooksSnapshot(): Array<{ id: string; event: string; description
   }));
 }
 
-/** Generate timestamp-based filename: checkpoint-20260309T143022Z.json */
+/** Generate timestamp-based filename with millisecond precision to avoid same-second collisions.
+ *  Format: checkpoint-20260309T143022123Z.json */
 function _timestampFilename(): string {
-  return `checkpoint-${new Date().toISOString().replace(/[:.]/g, "").slice(0, 15)}Z.json`;
+  return `checkpoint-${new Date().toISOString().replace(/[:.]/g, "").slice(0, 18)}Z.json`;
 }
 
-/** Write checkpoint, update latest symlink, GC to keep last N */
+/** Write checkpoint, update latest symlink atomically, GC to keep last N */
 function _writeCheckpoint(
   checkpointDir: string,
   checkpoint: Record<string, unknown>,
@@ -83,15 +84,23 @@ function _writeCheckpoint(
   const filepath = join(checkpointDir, filename);
   writeFileSync(filepath, JSON.stringify(checkpoint, null, 2) + "\n");
 
-  // Update latest symlink
+  // Update latest symlink atomically: write to temp then rename (avoids brief ENOENT window).
   const latestLink = join(checkpointDir, "latest.json");
-  try { unlinkSync(latestLink); } catch {}
-  try { symlinkSync(filename, latestLink); } catch {}
+  const latestTmp = join(checkpointDir, "latest.json.tmp");
+  try {
+    try { unlinkSync(latestTmp); } catch {}
+    symlinkSync(filename, latestTmp);
+    renameSync(latestTmp, latestLink);
+  } catch {
+    // Fallback: non-atomic (original behavior)
+    try { unlinkSync(latestLink); } catch {}
+    try { symlinkSync(filename, latestLink); } catch {}
+  }
 
-  // GC: keep last N
+  // GC: keep last N. Note: checkpoint-*.json glob never matches 'latest.json' (different prefix).
   try {
     const all = readdirSync(checkpointDir)
-      .filter(f => f.startsWith("checkpoint-") && f.endsWith(".json") && f !== "latest.json")
+      .filter(f => f.startsWith("checkpoint-") && f.endsWith(".json"))
       .sort();
     if (all.length > keepCount) {
       for (const old of all.slice(0, all.length - keepCount)) {
@@ -3079,16 +3088,34 @@ server.registerTool(
         args.push("--no-context");
       }
 
+      // Validate content files exist before spawning (fast fail with clear message)
+      if (content) {
+        const paths = Array.isArray(content) ? content : content.split(",");
+        for (const p of paths) {
+          const resolved = p.trim().replace(/^~/, HOME);
+          const abs = resolved.startsWith("/") ? resolved : join(PROJECT_ROOT, resolved);
+          if (!existsSync(abs)) {
+            throw new Error(`Content file not found: ${p.trim()} (resolved: ${abs})`);
+          }
+        }
+      }
+
       const launchResult = spawnSync("bash", [scriptPath, ...args], {
         encoding: "utf-8",
         cwd: PROJECT_ROOT,
         env: { ...process.env, PROJECT_ROOT },
-        timeout: 60_000,
+        timeout: 120_000, // 2 min — context pre-pass (tsc + deps) can be slow
       });
 
-      if (launchResult.status !== 0) {
+      if (launchResult.status !== 0 && launchResult.status !== null) {
         const stderr = launchResult.stderr?.slice(0, 1000) || "";
         throw new Error(`deep-review.sh failed (exit ${launchResult.status}): ${stderr}`);
+      }
+      if (launchResult.status === null) {
+        // Killed by signal (timeout or OOM)
+        const signal = launchResult.signal || "unknown";
+        const stderr = launchResult.stderr?.slice(0, 500) || "";
+        throw new Error(`deep-review.sh killed by ${signal} (likely timeout — try --no-context to skip static analysis, or reduce scope). ${stderr}`);
       }
 
       const stdout = launchResult.stdout || "";
@@ -3205,7 +3232,7 @@ server.registerTool(
 // HTTP proxy to Fleet Mail server (Rust + Dolt, runs on kevinster via SSH tunnel).
 // Each worker auto-provisions an account on first use. Tokens cached in registry.json.
 
-const FLEET_MAIL_URL = process.env.FLEET_MAIL_URL || process.env.FLEET_MAIL_URL || "http://127.0.0.1:8025";
+const FLEET_MAIL_URL = process.env.FLEET_MAIL_URL ?? "http://127.0.0.1:8025";
 
 /** Cached Fleet Mail unread count — refreshed by mail_inbox calls and background poll */
 let _fleetMailUnreadCount = 0;
