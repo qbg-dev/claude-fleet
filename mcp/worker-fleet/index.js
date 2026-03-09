@@ -21461,6 +21461,16 @@ async function handleFleetCreate(params) {
         execSync(`git -C "${PROJECT_ROOT}" worktree add "${worktreeDir}" "${workerBranch}"`, { encoding: "utf-8", timeout: 1e4 });
       }
       worktreeReady = true;
+      const wtMcp = join(worktreeDir, ".mcp.json");
+      const baseMcp = join(PROJECT_ROOT, ".mcp.json");
+      if (existsSync(baseMcp)) {
+        try {
+          unlinkSync(wtMcp);
+        } catch {}
+        try {
+          symlinkSync(baseMcp, wtMcp);
+        } catch {}
+      }
       const setupScript = join(PROJECT_ROOT, ".claude/scripts/worker/setup-worktree.sh");
       if (existsSync(setupScript)) {
         try {

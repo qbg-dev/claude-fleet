@@ -2369,6 +2369,13 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
         execSync(`git -C "${PROJECT_ROOT}" worktree add "${worktreeDir}" "${workerBranch}"`, { encoding: "utf-8", timeout: 10000 });
       }
       worktreeReady = true;
+      // Symlink .mcp.json to project root (single source of truth for MCP config)
+      const wtMcp = join(worktreeDir, ".mcp.json");
+      const baseMcp = join(PROJECT_ROOT, ".mcp.json");
+      if (existsSync(baseMcp)) {
+        try { unlinkSync(wtMcp); } catch {}
+        try { symlinkSync(baseMcp, wtMcp); } catch {}
+      }
       // Symlink gitignored essential files (.env, users.json, projects.json) from main repo
       const setupScript = join(PROJECT_ROOT, ".claude/scripts/worker/setup-worktree.sh");
       if (existsSync(setupScript)) {
