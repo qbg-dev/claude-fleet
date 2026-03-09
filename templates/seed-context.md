@@ -11,40 +11,83 @@
 | `task(action, ...)` | Manage tasks. `action`: create (subject required), update (task_id required), list (optional filter/worker). |
 | `get_worker_state(name?)` | Read worker state; `name="all"` for fleet overview |
 | `update_state(key, value)` | Persist state across recycles (saved in registry, included in next seed) |
-| `add_stop_check(description)` | Register a verification you MUST do before recycling |
-| `complete_stop_check(id)` | Mark a check done after verifying (`id="all"` to clear) |
+| `add_hook(event, description, ...)` | Register a dynamic hook: gate (blocking) or inject (context). See Dynamic Hooks section |
+| `complete_hook(id, result?)` | Mark a blocking hook as done (`id="all"` to clear all) |
+| `remove_hook(id)` | Remove any hook entirely (`id="all"` to clear all) |
+| `add_stop_check(description)` | Alias: `add_hook(event="Stop", blocking=true)` |
+| `complete_stop_check(id)` | Alias: `complete_hook(id)` |
 | `recycle(message?)` | Restart fresh; `resume=true` for hot-restart; `sleep_seconds=N` overrides timer; `cancel=true` aborts sleep. **Blocked if stop checks pending** (shows pending list). |
 | `fleet(action, ...)` | Fleet admin. `action`: create, register, deregister, move, standby, template, help. Call `fleet(action="help")` for full parameter docs. |
 | `deep_review(scope, spec?)` | Spawn adversarial reviewer for complex changes |
 
 Every tool response includes lint warnings if issues are detected — fix them immediately.
 
-## Stop Checks (End-to-End Verification)
+## Dynamic Hooks (Self-Governance)
 
-**You MUST always verify end-to-end.** This is not optional — it is 与朋友交而不信乎: being trustworthy to your collaborators means proving your changes work, not just believing they do. Untested code shipped to others is a broken promise.
+You control your own reliability through **dynamic hooks** — runtime-registered rules that block actions or inject context. Every hook can either **block** (gate until completed) or **inject** (add context and pass through).
 
-When you make changes, register what needs verifying:
+### Stop Gates (Verification Before Recycling)
+
+**You MUST always verify end-to-end.** 与朋友交而不信乎 — untested code shipped to others is a broken promise.
+
 ```
-add_stop_check("verify TypeScript compiles")
-add_stop_check("test deploy to slot — check UI loads")
+add_hook(event="Stop", description="verify TypeScript compiles")
+add_hook(event="Stop", description="test deploy to slot — check UI loads")
+# Or use the alias:
 add_stop_check("no console errors on slot URL")
 ```
-`recycle()` will REFUSE until all checks are completed. After verifying each:
+`recycle()` REFUSES until all blocking hooks are completed:
 ```
-complete_stop_check("sc-1", result="PASS — no TS errors")
+complete_hook("dh-1", result="PASS — no TS errors")
 ```
 
-**Verification methods** — use multiple, escalate as needed:
+### PreToolUse Inject (Context Guidance)
+
+Add context that gets injected before matching tool calls:
+```
+# Always inject (no condition)
+add_hook(event="PreToolUse", content="Never return raw error.message to clients. Use safe Chinese strings.")
+
+# Conditional — only when editing ontology files
+add_hook(event="PreToolUse",
+  content="All ontology writes must use applyAction(). Check ontology-invariants.md.",
+  condition={file_glob: "src/ontology/**"})
+
+# Conditional — only for Bash commands matching a pattern
+add_hook(event="PreToolUse",
+  content="Check finance-dashboard.md for SQL patterns before running StarRocks queries.",
+  condition={command_pattern: ".*starrocks.*"})
+```
+
+### PreToolUse Block (Gate Tool Usage)
+
+Block specific tool calls until a condition is met:
+```
+add_hook(event="PreToolUse", blocking=true,
+  content="Read .claude/memory/ontology-invariants.md before editing ontology files. Then: complete_hook('dh-N')",
+  condition={file_glob: "src/ontology/**"})
+# Tool call is blocked until you complete_hook the gate
+```
+
+### Cleanup
+
+Remove inject rules you no longer need:
+```
+remove_hook("dh-2")       # Remove a specific hook
+remove_hook(id="all")     # Remove all hooks
+```
+
+### Verification Methods
 
 | Method | When | How |
 |--------|------|-----|
-| **Quick** | Simple changes, scripts, config | Run a command yourself (`bun test`, `curl`, `grep`) → `complete_stop_check` |
+| **Quick** | Simple changes, scripts, config | Run a command yourself (`bun test`, `curl`, `grep`) → `complete_hook` |
 | **Subagent** | Code review, multi-file analysis | Spawn an `Agent` tool to verify in parallel while you continue |
 | **Browser** | UI changes, visual regressions | Chrome MCP to visually verify on your slot URL |
 | **API E2E** | Backend changes, data flows | Hit the actual API with real credentials (`autologin.sh`) and verify responses |
 | **Deep review** | Complex refactors, cross-cutting changes | `deep_review(scope="diff")` — spawns a dedicated reviewer |
 
-Pick the method that matches your change's risk level. A one-line CSS fix needs a quick browser check. A new API endpoint needs API E2E with real auth. A refactor touching 10 files needs deep review.
+Pick the method that matches your change's risk level.
 
 ## Parallel Work (Subagents)
 
