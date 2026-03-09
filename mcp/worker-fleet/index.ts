@@ -42,6 +42,68 @@ let WORKERS_DIR = join(PROJECT_ROOT, ".claude/workers");
 function _setWorkersDir(dir: string) { WORKERS_DIR = dir; }
 const HARNESS_LOCK_DIR = join(CLAUDE_OPS, "state/locks");
 
+// ── Shared Helpers ───────────────────────────────────────────────────
+
+/** Capture current git branch, SHA, dirty/staged counts */
+function _captureGitState(cwd?: string): { branch?: string; sha?: string; dirty_count: number; staged_count: number } {
+  try {
+    const opts = { encoding: "utf-8" as const, timeout: 5000, cwd: cwd || getWorktreeDir() };
+    const branch = execSync("git rev-parse --abbrev-ref HEAD", opts).trim();
+    const sha = execSync("git rev-parse --short HEAD", opts).trim();
+    const porcelain = execSync("git status --porcelain", opts).trim();
+    const lines = porcelain ? porcelain.split("\n") : [];
+    const staged = lines.filter((l: string) => /^[MADRC]/.test(l)).length;
+    const dirty = lines.filter((l: string) => /^.[MADRC?]/.test(l)).length;
+    return { branch, sha, dirty_count: dirty, staged_count: staged };
+  } catch {
+    return { dirty_count: 0, staged_count: 0 };
+  }
+}
+
+/** Capture dynamic hooks snapshot for checkpoint */
+function _captureHooksSnapshot(): Array<{ id: string; event: string; description: string; blocking: boolean; completed: boolean }> {
+  return [...dynamicHooks.values()].map(h => ({
+    id: h.id, event: h.event, description: h.description,
+    blocking: h.blocking, completed: h.completed,
+  }));
+}
+
+/** Generate timestamp-based filename: checkpoint-20260309T143022Z.json */
+function _timestampFilename(): string {
+  return `checkpoint-${new Date().toISOString().replace(/[:.]/g, "").slice(0, 15)}Z.json`;
+}
+
+/** Write checkpoint, update latest symlink, GC to keep last N */
+function _writeCheckpoint(
+  checkpointDir: string,
+  checkpoint: Record<string, unknown>,
+  keepCount = 5,
+): string {
+  mkdirSync(checkpointDir, { recursive: true });
+  const filename = _timestampFilename();
+  const filepath = join(checkpointDir, filename);
+  writeFileSync(filepath, JSON.stringify(checkpoint, null, 2) + "\n");
+
+  // Update latest symlink
+  const latestLink = join(checkpointDir, "latest.json");
+  try { unlinkSync(latestLink); } catch {}
+  try { symlinkSync(filename, latestLink); } catch {}
+
+  // GC: keep last N
+  try {
+    const all = readdirSync(checkpointDir)
+      .filter(f => f.startsWith("checkpoint-") && f.endsWith(".json") && f !== "latest.json")
+      .sort();
+    if (all.length > keepCount) {
+      for (const old of all.slice(0, all.length - keepCount)) {
+        try { unlinkSync(join(checkpointDir, old)); } catch {}
+      }
+    }
+  } catch {}
+
+  return filepath;
+}
+
 /** Load shared seed context template, interpolate placeholders */
 function loadSeedContext(branch: string, missionAuthority: string): string {
   const tmplPath = join(CLAUDE_OPS, "templates/seed-context.md");
@@ -78,7 +140,6 @@ function detectWorkerName(): string {
 
 const WORKER_NAME = detectWorkerName();
 
-// ── Stop Checks (in-memory + file-persisted) ────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 // DYNAMIC HOOKS — unified gate + inject system
 // ═══════════════════════════════════════════════════════════════════
@@ -127,7 +188,9 @@ function _persistHooks(): void {
       return;
     }
     writeFileSync(HOOKS_FILE, JSON.stringify({ worker: WORKER_NAME, hooks }, null, 2));
-  } catch {}
+  } catch (e) {
+    console.error(`[_persistHooks] Failed to write ${HOOKS_FILE}: ${e}`);
+  }
 }
 
 // On startup, restore from file (survives MCP restart via recycle resume)
@@ -1028,6 +1091,10 @@ server.registerTool(
       const id = nextTaskId(tasks);
       const now = new Date().toISOString();
       const blockedByList = blocked_by ? blocked_by.split(",").map(s => s.trim()).filter(Boolean) : [];
+      const missingDeps = blockedByList.filter(dep => !tasks[dep]);
+      if (missingDeps.length > 0) {
+        return { content: [{ type: "text" as const, text: `Error: blocked_by references non-existent task(s): ${missingDeps.join(", ")}` }], isError: true };
+      }
       const task: Task = {
         subject, description: description || "", activeForm: active_form || `Working on: ${subject}`,
         status: "pending", priority: (priority as Task["priority"]) || "medium",
@@ -1036,11 +1103,14 @@ server.registerTool(
       };
       tasks[id] = task;
       if (blocks) {
-        for (const targetId of blocks.split(",").map(s => s.trim()).filter(Boolean)) {
-          if (tasks[targetId]) {
-            const existing = tasks[targetId].blocked_by || [];
-            if (!existing.includes(id)) tasks[targetId].blocked_by = [...existing, id];
-          }
+        const blockIds = blocks.split(",").map(s => s.trim()).filter(Boolean);
+        const missingBlocks = blockIds.filter(id => !tasks[id]);
+        if (missingBlocks.length > 0) {
+          return { content: [{ type: "text" as const, text: `Error: blocks references non-existent task(s): ${missingBlocks.join(", ")}` }], isError: true };
+        }
+        for (const targetId of blockIds) {
+          const existing = tasks[targetId].blocked_by || [];
+          if (!existing.includes(id)) tasks[targetId].blocked_by = [...existing, id];
         }
       }
       writeTasks(WORKER_NAME, tasks);
@@ -1100,12 +1170,21 @@ server.registerTool(
       if (owner && !status) { task.owner = owner; changes.push(`owner → ${owner}`); }
       if (add_blocked_by) {
         const ids = add_blocked_by.split(",").map(s => s.trim()).filter(Boolean);
+        const missing = ids.filter(id => !tasks[id]);
+        if (missing.length > 0) {
+          return { content: [{ type: "text" as const, text: `Error: blocked_by references non-existent task(s): ${missing.join(", ")}` }], isError: true };
+        }
         task.blocked_by = [...new Set([...(task.blocked_by || []), ...ids])]; changes.push(`blocked by: ${ids.join(",")}`);
       }
       if (add_blocks) {
         const ids = add_blocks.split(",").map(s => s.trim()).filter(Boolean);
+        const missing = ids.filter(id => !tasks[id]);
+        if (missing.length > 0) {
+          return { content: [{ type: "text" as const, text: `Error: add_blocks references non-existent task(s): ${missing.join(", ")}` }], isError: true };
+        }
         for (const targetId of ids) {
-          if (tasks[targetId]) { const existing = tasks[targetId].blocked_by || []; if (!existing.includes(task_id)) tasks[targetId].blocked_by = [...existing, task_id]; }
+          const existing = tasks[targetId].blocked_by || [];
+          if (!existing.includes(task_id)) tasks[targetId].blocked_by = [...existing, task_id];
         }
         changes.push(`blocks: ${ids.join(",")}`);
       }
@@ -1574,7 +1653,6 @@ server.registerTool(
   }
 );
 
-// add_stop_check / complete_stop_check aliases removed — use add_hook(event="Stop", blocking=true) / complete_hook() directly
 
 // ═══════════════════════════════════════════════════════════════════
 // LIFECYCLE TOOLS (4) — recycle, heartbeat, check_config, reload
@@ -1649,27 +1727,10 @@ server.registerTool(
       : null;
 
     // 3. Write checkpoint (replaces handoff.md)
-    const checkpointDir = join(WORKERS_DIR, WORKER_NAME, "checkpoints");
-    mkdirSync(checkpointDir, { recursive: true });
     try {
-      // Capture git state
-      let gitState: any = {};
-      try {
-        const branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8", timeout: 5000, cwd: getWorktreeDir() }).trim();
-        const sha = execSync("git rev-parse --short HEAD", { encoding: "utf-8", timeout: 5000, cwd: getWorktreeDir() }).trim();
-        const porcelain = execSync("git status --porcelain", { encoding: "utf-8", timeout: 5000, cwd: getWorktreeDir() }).trim();
-        const lines = porcelain ? porcelain.split("\n") : [];
-        const staged = lines.filter((l: string) => /^[MADRC]/.test(l)).length;
-        const dirty = lines.filter((l: string) => /^.[MADRC?]/.test(l)).length;
-        gitState = { branch, sha, dirty_count: dirty, staged_count: staged };
-      } catch {}
-
-      // Capture dynamic hooks
-      const hooks = [...dynamicHooks.values()].map(h => ({
-        id: h.id, event: h.event, description: h.description,
-        blocking: h.blocking, completed: h.completed,
-      }));
-
+      const checkpointDir = join(WORKERS_DIR, WORKER_NAME, "checkpoints");
+      const gitState = _captureGitState();
+      const hooks = _captureHooksSnapshot();
       const checkpoint = {
         timestamp: new Date().toISOString(),
         type: "recycle" as const,
@@ -1679,28 +1740,7 @@ server.registerTool(
         key_facts: [] as string[],
         transcript_ref: transcriptPath || "",
       };
-
-      const ts = new Date().toISOString().replace(/[:.]/g, "").replace("T", "T").slice(0, 15) + "Z";
-      const filename = `checkpoint-${ts}.json`;
-      const filepath = join(checkpointDir, filename);
-      writeFileSync(filepath, JSON.stringify(checkpoint, null, 2) + "\n");
-
-      // Update latest symlink
-      const latestLink = join(checkpointDir, "latest.json");
-      try { unlinkSync(latestLink); } catch {}
-      try { symlinkSync(filename, latestLink); } catch {}
-
-      // GC: keep last 5
-      try {
-        const allCheckpoints = readdirSync(checkpointDir)
-          .filter(f => f.startsWith("checkpoint-") && f.endsWith(".json") && f !== "latest.json")
-          .sort();
-        if (allCheckpoints.length > 5) {
-          for (const old of allCheckpoints.slice(0, allCheckpoints.length - 5)) {
-            try { unlinkSync(join(checkpointDir, old)); } catch {}
-          }
-        }
-      } catch {}
+      _writeCheckpoint(checkpointDir, checkpoint);
 
       // Legacy compat: also write handoff.md for any tools that still read it
       const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
@@ -3258,35 +3298,14 @@ server.registerTool(
   },
   async ({ summary, key_facts }) => {
     const checkpointDir = join(WORKERS_DIR, WORKER_NAME, "checkpoints");
-    mkdirSync(checkpointDir, { recursive: true });
-
-    // Capture git state
-    let gitState: any = {};
-    try {
-      const branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8", timeout: 5000 }).trim();
-      const sha = execSync("git rev-parse --short HEAD", { encoding: "utf-8", timeout: 5000 }).trim();
-      const porcelain = execSync("git status --porcelain", { encoding: "utf-8", timeout: 5000 }).trim();
-      const lines = porcelain ? porcelain.split("\n") : [];
-      const staged = lines.filter(l => /^[MADRC]/.test(l)).length;
-      const dirty = lines.filter(l => /^.[MADRC?]/.test(l)).length;
-      gitState = { branch, sha, dirty_count: dirty, staged_count: staged };
-    } catch {}
-
-    // Capture dynamic hooks
-    let hooks: any[] = [];
-    try {
-      hooks = [...dynamicHooks.values()].map(h => ({
-        id: h.id, event: h.event, description: h.description,
-        blocking: h.blocking, completed: h.completed,
-      }));
-    } catch {}
+    const gitState = _captureGitState();
+    const hooks = _captureHooksSnapshot();
 
     // Get transcript reference
     let transcriptRef = "";
     try {
       const worktreeDir = getWorktreeDir();
       const pathSlug = worktreeDir.replace(/\//g, "-").replace(/^-/, "-");
-      // Find most recent session jsonl
       const projectDir = join(HOME, ".claude/projects", pathSlug);
       if (existsSync(projectDir)) {
         const files = readdirSync(projectDir).filter(f => f.endsWith(".jsonl")).sort().reverse();
@@ -3306,27 +3325,7 @@ server.registerTool(
       transcript_ref: transcriptRef,
     };
 
-    const ts = new Date().toISOString().replace(/[:.]/g, "").replace("T", "T").slice(0, 15) + "Z";
-    const filename = `checkpoint-${ts}.json`;
-    const filepath = join(checkpointDir, filename);
-    writeFileSync(filepath, JSON.stringify(checkpoint, null, 2) + "\n");
-
-    // Update latest symlink
-    const latestLink = join(checkpointDir, "latest.json");
-    try { unlinkSync(latestLink); } catch {}
-    try { symlinkSync(filename, latestLink); } catch {}
-
-    // GC: keep only last 5 checkpoints
-    try {
-      const allCheckpoints = readdirSync(checkpointDir)
-        .filter(f => f.startsWith("checkpoint-") && f.endsWith(".json") && f !== "latest.json")
-        .sort();
-      if (allCheckpoints.length > 5) {
-        for (const old of allCheckpoints.slice(0, allCheckpoints.length - 5)) {
-          try { unlinkSync(join(checkpointDir, old)); } catch {}
-        }
-      }
-    } catch {}
+    const filepath = _writeCheckpoint(checkpointDir, checkpoint);
 
     return {
       content: [{
@@ -3871,6 +3870,7 @@ export {
   runDiagnostics, createWorkerFiles, _setWorkersDir,
   readRegistry, getWorkerEntry, withRegistryLocked, ensureWorkerInRegistry,
   lintRegistry, _replaceMemorySection, getReportTo, canUpdateWorker,
+  _captureGitState, _captureHooksSnapshot, _timestampFilename, _writeCheckpoint,
   WORKER_NAME, WORKERS_DIR, HARNESS_LOCK_DIR, REGISTRY_PATH,
   type Task, type DiagnosticIssue,
   type RegistryConfig, type RegistryWorkerEntry, type ProjectRegistry,

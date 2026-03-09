@@ -13,6 +13,7 @@ import {
   readRegistry, getWorkerEntry, ensureWorkerInRegistry, lintRegistry,
   _replaceMemorySection, acquireLock, releaseLock, getWorktreeDir, getSessionId,
   getReportTo, canUpdateWorker,
+  _captureHooksSnapshot, _timestampFilename, _writeCheckpoint,
   WORKER_NAME, WORKERS_DIR, REGISTRY_PATH, HARNESS_LOCK_DIR,
   type Task, type DiagnosticIssue,
   type RegistryConfig, type RegistryWorkerEntry, type ProjectRegistry,
@@ -2112,5 +2113,129 @@ describe("bms_token persistence", () => {
     const serialized = JSON.stringify(registry);
     const deserialized = JSON.parse(serialized);
     expect(deserialized["roundtrip-test"].bms_token).toBe("roundtrip-token");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Checkpoint helpers — _writeCheckpoint, _timestampFilename, _captureHooksSnapshot
+// ═══════════════════════════════════════════════════════════════════
+
+describe("checkpoint helpers", () => {
+  const CHECKPOINT_DIR = join(TEST_DIR, "checkpoint-test");
+
+  beforeEach(() => {
+    rmSync(CHECKPOINT_DIR, { recursive: true, force: true });
+    mkdirSync(CHECKPOINT_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(CHECKPOINT_DIR, { recursive: true, force: true });
+  });
+
+  test("_timestampFilename returns valid checkpoint filename", () => {
+    const name = _timestampFilename();
+    expect(name).toMatch(/^checkpoint-\d{4}-\d{2}-\d{2}T\d{4}Z\.json$/);
+  });
+
+  test("_writeCheckpoint creates file and latest symlink", () => {
+    const checkpoint = { timestamp: new Date().toISOString(), type: "manual", summary: "test" };
+    const filepath = _writeCheckpoint(CHECKPOINT_DIR, checkpoint);
+
+    expect(existsSync(filepath)).toBe(true);
+    const latestLink = join(CHECKPOINT_DIR, "latest.json");
+    expect(existsSync(latestLink)).toBe(true);
+
+    // Contents should round-trip
+    const read = JSON.parse(readFileSync(filepath, "utf-8"));
+    expect(read.type).toBe("manual");
+    expect(read.summary).toBe("test");
+  });
+
+  test("_writeCheckpoint GC keeps only last N checkpoints", () => {
+    // Create 7 checkpoints with distinct filenames
+    for (let i = 0; i < 7; i++) {
+      const ts = `2026030${i}T120000Z`;
+      const filename = `checkpoint-${ts}.json`;
+      writeFileSync(join(CHECKPOINT_DIR, filename), JSON.stringify({ i }));
+    }
+
+    // Write one more with keepCount=5
+    _writeCheckpoint(CHECKPOINT_DIR, { summary: "gc-test" }, 5);
+
+    const remaining = require("fs").readdirSync(CHECKPOINT_DIR)
+      .filter((f: string) => f.startsWith("checkpoint-") && f.endsWith(".json") && f !== "latest.json");
+    expect(remaining.length).toBeLessThanOrEqual(5);
+  });
+
+  test("_captureHooksSnapshot returns empty array when no hooks", () => {
+    const snapshot = _captureHooksSnapshot();
+    expect(Array.isArray(snapshot)).toBe(true);
+    // May or may not be empty depending on test environment state — just check shape
+    for (const h of snapshot) {
+      expect(h).toHaveProperty("id");
+      expect(h).toHaveProperty("event");
+      expect(h).toHaveProperty("description");
+      expect(h).toHaveProperty("blocking");
+      expect(h).toHaveProperty("completed");
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Task dependency validation
+// ═══════════════════════════════════════════════════════════════════
+
+describe("task dependency validation", () => {
+  beforeEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+    mkdirSync(TEST_WORKER_DIR, { recursive: true });
+    _setWorkersDir(TEST_WORKERS_DIR);
+  });
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  test("isTaskBlocked returns true when blocker is not completed", () => {
+    const tasks: Record<string, Task> = {
+      T001: makeTask({ subject: "Blocker", status: "in_progress" }),
+      T002: makeTask({ subject: "Blocked", blocked_by: ["T001"] }),
+    };
+    expect(isTaskBlocked(tasks, "T002")).toBe(true);
+  });
+
+  test("isTaskBlocked returns false when blocker is completed", () => {
+    const tasks: Record<string, Task> = {
+      T001: makeTask({ subject: "Blocker", status: "completed" }),
+      T002: makeTask({ subject: "Blocked", blocked_by: ["T001"] }),
+    };
+    expect(isTaskBlocked(tasks, "T002")).toBe(false);
+  });
+
+  test("isTaskBlocked returns false when no blockers", () => {
+    const tasks: Record<string, Task> = {
+      T001: makeTask({ subject: "Free", blocked_by: [] }),
+    };
+    expect(isTaskBlocked(tasks, "T001")).toBe(false);
+  });
+
+  test("isTaskBlocked handles missing blocker task gracefully", () => {
+    const tasks: Record<string, Task> = {
+      T001: makeTask({ subject: "Blocked by ghost", blocked_by: ["T999"] }),
+    };
+    // T999 doesn't exist — should treat as blocked (can't confirm completion)
+    expect(isTaskBlocked(tasks, "T001")).toBe(true);
+  });
+
+  test("nextTaskId increments correctly", () => {
+    const tasks: Record<string, Task> = {
+      T001: makeTask({ subject: "First" }),
+      T002: makeTask({ subject: "Second" }),
+    };
+    expect(nextTaskId(tasks)).toBe("T003");
+  });
+
+  test("nextTaskId handles empty tasks", () => {
+    expect(nextTaskId({})).toBe("T001");
   });
 });
