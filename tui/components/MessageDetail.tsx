@@ -107,16 +107,17 @@ export function MessageDetail({ message }: { message: any }) {
   return (
     <Box
       flexDirection="column"
-      borderStyle="single"
-      borderColor={colors.gray}
       paddingX={1}
-      paddingY={0}
       overflow="hidden"
     >
-      {/* Subject line */}
+      {/* Thin separator from list above */}
+      <Text color={colors.gray}>{"\u2500".repeat(70)}</Text>
+
+      {/* Combined header: indicators + subject + from→to + time */}
       <Box>
-        {isStarred && <Text color={colors.yellow}>{"\u2605 "}</Text>}
-        {isUnread && <Text color={colors.blue} bold>{"\u25cf "}</Text>}
+        {isStarred && <Text color={colors.yellow}>{"\u2605"}</Text>}
+        {isUnread && <Text color={colors.blue} bold>{"\u25cf"}</Text>}
+        {(isStarred || isUnread) && <Text> </Text>}
         <Text bold color={colors.white}>
           {message.subject || "(no subject)"}
         </Text>
@@ -127,56 +128,37 @@ export function MessageDetail({ message }: { message: any }) {
             </Text>
           ))}
       </Box>
-
-      {/* From/To/Time header */}
       <Box>
-        <Text color={colors.cyan} bold>{from}</Text>
+        <Text color={colors.cyan}>{from}</Text>
         {to && (
           <>
-            <Text color={colors.muted}>{" \u2192 "}</Text>
+            <Text color={colors.muted}>{"\u2192"}</Text>
             <Text color={colors.magenta}>{to}</Text>
           </>
         )}
-        <Text color={colors.gray}>{"  \u00b7  "}{time}</Text>
-      </Box>
-
-      {/* Divider */}
-      <Box marginTop={0}>
-        <Text color={colors.gray}>{"\u2500".repeat(70)}</Text>
+        <Text color={colors.gray}>{" "}{time}</Text>
       </Box>
 
       {/* Body */}
-      <Box flexDirection="column" paddingY={0} overflow="hidden">
+      <Box flexDirection="column" overflow="hidden">
         {renderMarkdownLines(message.body || "")}
       </Box>
 
-      {/* Inline reply input */}
+      {/* Inline reply or action hints */}
       {replyMode ? (
-        <Box flexDirection="column" marginTop={0}>
+        <Box flexDirection="column">
+          <Text color={colors.gray}>{"\u2500".repeat(70)}</Text>
           <Box>
-            <Text color={colors.gray}>{"\u2500".repeat(70)}</Text>
-          </Box>
-          <Box>
-            <Text color={colors.blue} bold>{"Reply \u25b8 "}</Text>
+            <Text color={colors.blue} bold>{"Reply\u25b8 "}</Text>
             <Text color={colors.white}>{replyInput}</Text>
             <Text color={colors.muted}>{"\u2588"}</Text>
-          </Box>
-          <Box>
-            <Text color={colors.gray} dim>
-              {"  "}Enter send{"  "}Esc cancel
-            </Text>
+            <Text color={colors.gray} dim>{"  "}Enter send  Esc cancel</Text>
           </Box>
         </Box>
       ) : (
-        <Box marginTop={0}>
+        <Box>
           <Text color={colors.gray} dim>
-            {"  "}
-            <Text bold>r</Text> reply{"  "}
-            <Text bold>e</Text> archive{"  "}
-            <Text bold>s</Text> star{"  "}
-            <Text bold>d</Text> trash{"  "}
-            <Text bold>u</Text> back{"  "}
-            <Text bold>I</Text> read/unread
+            <Text bold>r</Text>eply <Text bold>e</Text>archive <Text bold>s</Text>tar <Text bold>d</Text>el <Text bold>u</Text>back <Text bold>I</Text>read
           </Text>
         </Box>
       )}

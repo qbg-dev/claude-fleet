@@ -68,16 +68,12 @@ export function HelpOverlay({ rows, cols }: { rows: number; cols: number }) {
       paddingY={1}
     >
       <Box justifyContent="center">
-        <Text bold color={colors.blue}>
-          harness-tui v2.0 — Keybindings
-        </Text>
-      </Box>
-      <Box justifyContent="center" marginBottom={1}>
-        <Text color={colors.muted}>Press ? or Esc to close</Text>
+        <Text bold color={colors.blue}>harness-tui — Keys</Text>
+        <Text color={colors.muted}>{" (? or Esc to close)"}</Text>
       </Box>
 
       {SECTIONS.map((sec) => (
-        <Box key={sec.title} flexDirection="column" marginBottom={1}>
+        <Box key={sec.title} flexDirection="column">
           <Box>
             <Text bold color={colors.white}>
               {sec.title}

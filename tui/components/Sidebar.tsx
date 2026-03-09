@@ -98,9 +98,9 @@ export function Sidebar({ width }: { width: number }) {
       })}
 
       {sorted.length > 0 && (
-        <Box paddingX={1} marginTop={1}>
-          <Text color={colors.gray}>
-            {"\u2500\u2500\u2500 you \u2500\u2500\u2500"}
+        <Box paddingX={1}>
+          <Text color={colors.gray} dim>
+            {"\u2500\u2500 you \u2500\u2500\u2500"}
           </Text>
         </Box>
       )}

@@ -41,20 +41,17 @@ export function FleetPanel() {
   ).length;
 
   return (
-    <Box flexDirection="column" paddingX={1} paddingY={1}>
+    <Box flexDirection="column" paddingX={1}>
       <Box>
-        <Text bold color={colors.blue}>
-          Fleet
-        </Text>
+        <Text bold color={colors.blue}>Fleet</Text>
         <Text color={colors.muted}>
-          {"  "}
-          {active} active
-          {sleeping ? ` \u00b7 ${sleeping} sleeping` : ""}
-          {idle ? ` \u00b7 ${idle} idle` : ""}
+          {" "}{active} active
+          {sleeping ? ` ${sleeping} sleep` : ""}
+          {idle ? ` ${idle} idle` : ""}
         </Text>
       </Box>
 
-      <Box marginTop={1} flexDirection="column">
+      <Box flexDirection="column">
         {/* Header */}
         <Box>
           <Text color={colors.muted} dim>

@@ -42,7 +42,7 @@ export function Pane({
       flexDirection="column"
       flexGrow={0}
       flexShrink={0}
-      borderStyle={isActive ? "double" : "single"}
+      borderStyle="single"
       borderColor={isActive ? colors.blue : colors.gray}
       height={height}
       width={width}
@@ -50,7 +50,7 @@ export function Pane({
       <TabBar active={tab} workerName={worker} msgCount={msgCount} />
 
       {loading && (
-        <Box paddingX={2} paddingY={1}>
+        <Box paddingX={1}>
           <Text color={colors.muted}>Loading...</Text>
         </Box>
       )}

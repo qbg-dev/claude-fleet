@@ -48,9 +48,9 @@ export function MessageList({
 
   if (!messages.length) {
     return (
-      <Box paddingX={2} paddingY={1}>
+      <Box paddingX={1}>
         <Text color={colors.muted}>
-          {isSent ? "No sent messages." : "No messages in inbox."}
+          {isSent ? "No sent messages." : "Inbox empty."}
         </Text>
       </Box>
     );

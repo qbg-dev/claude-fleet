@@ -31,7 +31,7 @@ export function ThreadList({
 
   if (!threads.length) {
     return (
-      <Box paddingX={2} paddingY={1}>
+      <Box paddingX={1}>
         <Text color={colors.muted}>No threads.</Text>
       </Box>
     );
@@ -98,22 +98,13 @@ export function ThreadDetail({ thread }: { thread: any }) {
   return (
     <Box
       flexDirection="column"
-      borderStyle="single"
-      borderColor={colors.gray}
       paddingX={1}
+      overflow="hidden"
     >
+      <Text color={colors.gray}>{"\u2500".repeat(60)}</Text>
       <Box>
-        <Text bold color={colors.white}>
-          {subject}
-        </Text>
-      </Box>
-      <Box>
-        <Text color={colors.muted}>
-          {msgs.length} message{msgs.length !== 1 ? "s" : ""} in thread
-        </Text>
-      </Box>
-      <Box marginTop={1}>
-        <Text color={colors.gray}>{"\u2500".repeat(60)}</Text>
+        <Text bold color={colors.white}>{subject}</Text>
+        <Text color={colors.muted}>{" "}{msgs.length} msg{msgs.length !== 1 ? "s" : ""}</Text>
       </Box>
 
       <Box flexDirection="column">
@@ -121,19 +112,17 @@ export function ThreadDetail({ thread }: { thread: any }) {
           const from = senderName(m, directory);
           const time = timeAgo(m.internalDate);
           return (
-            <Box key={m.id || i} flexDirection="column" marginTop={i > 0 ? 1 : 0}>
+            <Box key={m.id || i} flexDirection="column">
               {i > 0 && (
                 <Text color={colors.gray} dim>
                   {"\u254c".repeat(60)}
                 </Text>
               )}
               <Box>
-                <Text bold color={colors.cyan}>
-                  {from}
-                </Text>
+                <Text color={colors.cyan}>{from}</Text>
                 <Text color={colors.gray}> {time}</Text>
               </Box>
-              <Box marginTop={0} paddingLeft={1}>
+              <Box paddingLeft={1}>
                 <Text color={colors.lightGray}>
                   {(m.body || m.snippet || "").slice(0, 500)}
                 </Text>
@@ -143,10 +132,8 @@ export function ThreadDetail({ thread }: { thread: any }) {
         })}
       </Box>
 
-      <Box marginTop={1}>
-        <Text color={colors.muted} dim>
-          Esc close
-        </Text>
+      <Box>
+        <Text color={colors.gray} dim>Esc close  r reply</Text>
       </Box>
     </Box>
   );
