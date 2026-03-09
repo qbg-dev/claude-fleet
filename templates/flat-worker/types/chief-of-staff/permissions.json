@@ -1,7 +1,7 @@
 {
   "model": "opus",
   "permission_mode": "bypassPermissions",
-  "disallowed_tools": [
+  "denyList": [
     "Bash(git checkout main*)",
     "Bash(git merge*)",
     "Bash(git push*)",
@@ -9,6 +9,8 @@
     "Bash(git clean*)",
     "Bash(rm -rf*)",
     "Bash(sudo *)",
+    "Bash(*deploy*)",
+    "Bash(*scripts/deploy*)",
     "Bash(git commit --amend*)",
     "Bash(git stash drop*)",
     "Bash(git stash clear*)",

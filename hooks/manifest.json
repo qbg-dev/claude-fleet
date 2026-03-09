@@ -52,6 +52,14 @@
       "description": "Enforces per-worker tool permission policies (disallowedTools)"
     },
     {
+      "id": "git-safety-gate",
+      "event": "PreToolUse",
+      "path": "~/.claude-ops/hooks/gates/git-safety-gate.sh",
+      "required": true,
+      "category": "core",
+      "description": "Blocks dangerous git operations (amend, branch -D, rebase -i) and enforces worker/* branch naming"
+    },
+    {
       "id": "pre-tool-context-injector",
       "event": "PreToolUse",
       "path": "~/.claude-ops/hooks/interceptors/pre-tool-context-injector.sh",
@@ -226,6 +234,14 @@
 
     {"_comment": "── Dynamic hook dispatcher (ALL events) ──"},
 
+    {
+      "id": "git-hooks-installer",
+      "event": "SessionStart",
+      "path": "~/.claude-ops/hooks/interceptors/git-hooks-installer.sh",
+      "required": true,
+      "category": "core",
+      "description": "Auto-installs git hooks from manifest on every session start"
+    },
     {
       "id": "dynamic-hooks-session-start",
       "event": "SessionStart",
