@@ -263,10 +263,10 @@ else
   (( _warnings++ ))
 fi
 _sc_mcp="$CLAUDE_OPS_DIR/mcp/worker-fleet/index.ts"
-if [ -f "$_sc_mcp" ] && grep -q 'add_stop_check' "$_sc_mcp"; then
-  ok "  worker-fleet MCP defines add_stop_check"
+if [ -f "$_sc_mcp" ] && grep -q 'add_hook' "$_sc_mcp"; then
+  ok "  worker-fleet MCP defines add_hook"
 else
-  warn "  worker-fleet MCP missing add_stop_check tool"
+  warn "  worker-fleet MCP missing add_hook tool"
   (( _warnings++ ))
 fi
 if [ -f "$_sc_mcp" ] && grep -q '_persistStopChecks' "$_sc_mcp"; then

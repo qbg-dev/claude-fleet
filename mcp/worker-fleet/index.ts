@@ -2,12 +2,12 @@
 /**
  * worker-fleet MCP server — Tools for worker fleet coordination.
  *
- * 12 tools (consolidated from 22):
- *   Tasks (1):      task (action: create/update/list)
+ * 21 tools (fine-grained, one action per tool):
+ *   Tasks (3):      task_create, task_update, task_list
  *   State (2):      get_worker_state, update_state
- *   Hooks (5):      add_hook, complete_hook, remove_hook, add_stop_check (alias), complete_stop_check (alias)
+ *   Hooks (3):      add_hook, complete_hook, remove_hook
  *   Lifecycle (1):  recycle (gated on dynamic hooks, watchdog-deferred for perpetual workers)
- *   Fleet (1):      fleet (action: create/register/deregister/move/standby/template/help)
+ *   Fleet (7):      create_worker, register_worker, deregister_worker, move_worker, standby_worker, fleet_template, fleet_help
  *   Review (1):     deep_review
  *   Mail (4):       mail_send, mail_inbox, mail_read, mail_help
  *
@@ -969,151 +969,160 @@ const server = new McpServer({
 // ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
-// TASK TOOL (consolidated: create + update + list)
+// TASK TOOLS (3): task_create, task_update, task_list
 // ═══════════════════════════════════════════════════════════════════
 
 server.registerTool(
-  "task",
-  { description: "Manage your task queue. Actions:\n- create: Add a new task (requires subject)\n- update: Change task status/fields (requires task_id)\n- list: View tasks (optional filter/worker)", inputSchema: {
-    action: z.enum(["create", "update", "list"]).describe("Operation to perform"),
-    // create params
-    subject: z.string().optional().describe("[create] Task title in imperative form"),
-    description: z.string().optional().describe("[create/update] Task description or notes"),
-    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("[create/update] Execution priority (default: medium)"),
-    active_form: z.string().optional().describe("[create/update] Present-continuous label for status displays"),
-    blocks: z.string().optional().describe("[create] Comma-separated task IDs that cannot start until this completes"),
-    blocked_by: z.string().optional().describe("[create] Comma-separated task IDs that must complete first"),
-    recurring: z.boolean().optional().describe("[create] If true, auto-resets to pending after completion"),
-    // update params
-    task_id: z.string().optional().describe("[update] Task identifier (e.g. 'T001')"),
-    status: z.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("[update] Target status"),
-    owner: z.string().optional().describe("[update] Reassign to a different worker"),
-    add_blocked_by: z.string().optional().describe("[update] Comma-separated task IDs to add as blockers"),
-    add_blocks: z.string().optional().describe("[update] Comma-separated task IDs to block with this task"),
-    // list params
-    filter: z.enum(["all", "pending", "in_progress", "blocked"]).optional().describe("[list] Filter by status (default: all)"),
-    worker: z.string().optional().describe("[list] Whose tasks (omit=self, 'all'=fleet-wide)"),
+  "task_create",
+  { description: "Add a new task to your queue.", inputSchema: {
+    subject: z.string().describe("Task title in imperative form"),
+    description: z.string().optional().describe("Task description or notes"),
+    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Execution priority (default: medium)"),
+    active_form: z.string().optional().describe("Present-continuous label for status displays"),
+    blocks: z.string().optional().describe("Comma-separated task IDs that cannot start until this completes"),
+    blocked_by: z.string().optional().describe("Comma-separated task IDs that must complete first"),
+    recurring: z.boolean().optional().describe("If true, auto-resets to pending after completion"),
   } },
-  async ({ action, subject, description, priority, active_form, blocks, blocked_by, recurring, task_id, status, owner, add_blocked_by, add_blocks, filter, worker }) => {
+  async ({ subject, description, priority, active_form, blocks, blocked_by, recurring }) => {
     try {
-      // ── CREATE ──
-      if (action === "create") {
-        if (!subject) return { content: [{ type: "text" as const, text: "Error: 'subject' required for create" }], isError: true };
-        const tasks = readTasks(WORKER_NAME);
-        const id = nextTaskId(tasks);
-        const now = new Date().toISOString();
-        const blockedByList = blocked_by ? blocked_by.split(",").map(s => s.trim()).filter(Boolean) : [];
-        const task: Task = {
-          subject, description: description || "", activeForm: active_form || `Working on: ${subject}`,
-          status: "pending", priority: (priority as Task["priority"]) || "medium",
-          recurring: recurring || false, blocked_by: blockedByList, metadata: {},
-          cycles_completed: 0, owner: null, created_at: now, completed_at: null,
-        };
-        tasks[id] = task;
-        if (blocks) {
-          for (const targetId of blocks.split(",").map(s => s.trim()).filter(Boolean)) {
-            if (tasks[targetId]) {
-              const existing = tasks[targetId].blocked_by || [];
-              if (!existing.includes(id)) tasks[targetId].blocked_by = [...existing, id];
-            }
+      const tasks = readTasks(WORKER_NAME);
+      const id = nextTaskId(tasks);
+      const now = new Date().toISOString();
+      const blockedByList = blocked_by ? blocked_by.split(",").map(s => s.trim()).filter(Boolean) : [];
+      const task: Task = {
+        subject, description: description || "", activeForm: active_form || `Working on: ${subject}`,
+        status: "pending", priority: (priority as Task["priority"]) || "medium",
+        recurring: recurring || false, blocked_by: blockedByList, metadata: {},
+        cycles_completed: 0, owner: null, created_at: now, completed_at: null,
+      };
+      tasks[id] = task;
+      if (blocks) {
+        for (const targetId of blocks.split(",").map(s => s.trim()).filter(Boolean)) {
+          if (tasks[targetId]) {
+            const existing = tasks[targetId].blocked_by || [];
+            if (!existing.includes(id)) tasks[targetId].blocked_by = [...existing, id];
           }
         }
-        writeTasks(WORKER_NAME, tasks);
-        let suffix = ` [${task.priority}]`;
-        if (recurring) suffix += " (recurring)";
-        if (blockedByList.length > 0) suffix += ` (after: ${blockedByList.join(",")})`;
-        if (blocks) suffix += ` (blocks: ${blocks})`;
-        return withLint({ content: [{ type: "text" as const, text: `Added ${id}: ${subject}${suffix}` }] });
       }
+      writeTasks(WORKER_NAME, tasks);
+      let suffix = ` [${task.priority}]`;
+      if (recurring) suffix += " (recurring)";
+      if (blockedByList.length > 0) suffix += ` (after: ${blockedByList.join(",")})`;
+      if (blocks) suffix += ` (blocks: ${blocks})`;
+      return withLint({ content: [{ type: "text" as const, text: `Added ${id}: ${subject}${suffix}` }] });
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+);
 
-      // ── UPDATE ──
-      if (action === "update") {
-        if (!task_id) return { content: [{ type: "text" as const, text: "Error: 'task_id' required for update" }], isError: true };
-        const tasks = readTasks(WORKER_NAME);
-        const task = tasks[task_id];
-        if (!task) return { content: [{ type: "text" as const, text: `Error: Task ${task_id} not found` }], isError: true };
-        const changes: string[] = [];
-        const now = new Date().toISOString();
-        if (status) {
-          if (status === "in_progress") {
-            if (task.status === "completed") return { content: [{ type: "text" as const, text: `Error: Task ${task_id} already completed` }], isError: true };
-            if (task.status === "deleted") return { content: [{ type: "text" as const, text: `Error: Task ${task_id} has been deleted` }], isError: true };
-            if (isTaskBlocked(tasks, task_id)) {
-              const blockers = (task.blocked_by || []).filter(d => tasks[d]?.status !== "completed");
-              return { content: [{ type: "text" as const, text: `Error: Task ${task_id} blocked by: ${blockers.join(", ")}` }], isError: true };
-            }
-            task.status = "in_progress"; task.owner = owner || WORKER_NAME; changes.push("claimed");
-          } else if (status === "completed") {
-            if (task.recurring) {
-              task.status = "pending"; task.owner = null; task.completed_at = null;
-              task.last_completed_at = now; task.cycles_completed = (task.cycles_completed || 0) + 1;
-              changes.push(`completed (recurring — reset to pending, cycle #${task.cycles_completed})`);
-            } else { task.status = "completed"; task.completed_at = now; changes.push("completed"); }
-          } else if (status === "deleted") { task.status = "deleted"; task.deleted_at = now; changes.push("deleted"); }
-          else if (status === "pending") { task.status = "pending"; changes.push("set to pending"); }
-        }
-        if (subject) { task.subject = subject; changes.push("subject updated"); }
-        if (description !== undefined) { task.description = description; changes.push("description updated"); }
-        if (active_form) { task.activeForm = active_form; changes.push("activeForm updated"); }
-        if (priority) { task.priority = priority; changes.push(`priority → ${priority}`); }
-        if (owner && !status) { task.owner = owner; changes.push(`owner → ${owner}`); }
-        if (add_blocked_by) {
-          const ids = add_blocked_by.split(",").map(s => s.trim()).filter(Boolean);
-          task.blocked_by = [...new Set([...(task.blocked_by || []), ...ids])]; changes.push(`blocked by: ${ids.join(",")}`);
-        }
-        if (add_blocks) {
-          const ids = add_blocks.split(",").map(s => s.trim()).filter(Boolean);
-          for (const targetId of ids) {
-            if (tasks[targetId]) { const existing = tasks[targetId].blocked_by || []; if (!existing.includes(task_id)) tasks[targetId].blocked_by = [...existing, task_id]; }
+server.registerTool(
+  "task_update",
+  { description: "Update a task's status or fields.", inputSchema: {
+    task_id: z.string().describe("Task identifier (e.g. 'T001')"),
+    status: z.enum(["pending", "in_progress", "completed", "deleted"]).optional().describe("Target status"),
+    subject: z.string().optional().describe("Updated task title"),
+    description: z.string().optional().describe("Updated description or notes"),
+    priority: z.enum(["critical", "high", "medium", "low"]).optional().describe("Updated priority"),
+    active_form: z.string().optional().describe("Updated present-continuous label"),
+    owner: z.string().optional().describe("Reassign to a different worker"),
+    add_blocked_by: z.string().optional().describe("Comma-separated task IDs to add as blockers"),
+    add_blocks: z.string().optional().describe("Comma-separated task IDs to block with this task"),
+  } },
+  async ({ task_id, status, subject, description, priority, active_form, owner, add_blocked_by, add_blocks }) => {
+    try {
+      const tasks = readTasks(WORKER_NAME);
+      const task = tasks[task_id];
+      if (!task) return { content: [{ type: "text" as const, text: `Error: Task ${task_id} not found` }], isError: true };
+      const changes: string[] = [];
+      const now = new Date().toISOString();
+      if (status) {
+        if (status === "in_progress") {
+          if (task.status === "completed") return { content: [{ type: "text" as const, text: `Error: Task ${task_id} already completed` }], isError: true };
+          if (task.status === "deleted") return { content: [{ type: "text" as const, text: `Error: Task ${task_id} has been deleted` }], isError: true };
+          if (isTaskBlocked(tasks, task_id)) {
+            const blockers = (task.blocked_by || []).filter(d => tasks[d]?.status !== "completed");
+            return { content: [{ type: "text" as const, text: `Error: Task ${task_id} blocked by: ${blockers.join(", ")}` }], isError: true };
           }
-          changes.push(`blocks: ${ids.join(",")}`);
-        }
-        if (changes.length === 0) return { content: [{ type: "text" as const, text: `No changes specified for ${task_id}` }] };
-        writeTasks(WORKER_NAME, tasks);
-        return withLint({ content: [{ type: "text" as const, text: `Updated ${task_id}: ${changes.join(", ")}` }] });
+          task.status = "in_progress"; task.owner = owner || WORKER_NAME; changes.push("claimed");
+        } else if (status === "completed") {
+          if (task.recurring) {
+            task.status = "pending"; task.owner = null; task.completed_at = null;
+            task.last_completed_at = now; task.cycles_completed = (task.cycles_completed || 0) + 1;
+            changes.push(`completed (recurring — reset to pending, cycle #${task.cycles_completed})`);
+          } else { task.status = "completed"; task.completed_at = now; changes.push("completed"); }
+        } else if (status === "deleted") { task.status = "deleted"; task.deleted_at = now; changes.push("deleted"); }
+        else if (status === "pending") { task.status = "pending"; changes.push("set to pending"); }
       }
-
-      // ── LIST ──
-      if (action === "list") {
-        const targetWorkers: string[] = [];
-        const wn = worker || WORKER_NAME;
-        if (wn === "all") {
-          targetWorkers.push(...readdirSync(WORKERS_DIR, { withFileTypes: true })
-            .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
-            .map(d => d.name));
-        } else {
-          targetWorkers.push(wn);
-        }
-        const results: string[] = [];
-        let total = 0;
-        for (const w of targetWorkers) {
-          const tasks = readTasks(w);
-          if (Object.keys(tasks).length === 0) continue;
-          const entries = Object.entries(tasks) as [string, Task][];
-          const filtered = entries.filter(([tid, t]) => {
-            if (t.status === "deleted") return false;
-            const blocked = isTaskBlocked(tasks, tid);
-            if (filter === "pending") return t.status === "pending" && !blocked;
-            if (filter === "in_progress") return t.status === "in_progress";
-            if (filter === "blocked") return blocked && t.status !== "completed";
-            return true;
-          });
-          if (filtered.length === 0) continue;
-          results.push(`## ${w}`);
-          for (const [id, t] of filtered) {
-            const blocked = isTaskBlocked(tasks, id);
-            const st = blocked ? "blocked" : t.status;
-            const deps = (t.blocked_by || []).length > 0 ? ` [after:${t.blocked_by.join(",")}]` : "";
-            const rec = t.recurring ? " (recurring)" : "";
-            results.push(`  ${id} [${t.priority || "medium"}] ${st}: ${t.subject}${deps}${rec}`);
-            total++;
-          }
-        }
-        if (!results.length) return { content: [{ type: "text" as const, text: "No tasks found" }] };
-        return withLint({ content: [{ type: "text" as const, text: `${total} tasks:\n${results.join("\n")}` }] });
+      if (subject) { task.subject = subject; changes.push("subject updated"); }
+      if (description !== undefined) { task.description = description; changes.push("description updated"); }
+      if (active_form) { task.activeForm = active_form; changes.push("activeForm updated"); }
+      if (priority) { task.priority = priority; changes.push(`priority → ${priority}`); }
+      if (owner && !status) { task.owner = owner; changes.push(`owner → ${owner}`); }
+      if (add_blocked_by) {
+        const ids = add_blocked_by.split(",").map(s => s.trim()).filter(Boolean);
+        task.blocked_by = [...new Set([...(task.blocked_by || []), ...ids])]; changes.push(`blocked by: ${ids.join(",")}`);
       }
+      if (add_blocks) {
+        const ids = add_blocks.split(",").map(s => s.trim()).filter(Boolean);
+        for (const targetId of ids) {
+          if (tasks[targetId]) { const existing = tasks[targetId].blocked_by || []; if (!existing.includes(task_id)) tasks[targetId].blocked_by = [...existing, task_id]; }
+        }
+        changes.push(`blocks: ${ids.join(",")}`);
+      }
+      if (changes.length === 0) return { content: [{ type: "text" as const, text: `No changes specified for ${task_id}` }] };
+      writeTasks(WORKER_NAME, tasks);
+      return withLint({ content: [{ type: "text" as const, text: `Updated ${task_id}: ${changes.join(", ")}` }] });
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+);
 
-      return { content: [{ type: "text" as const, text: `Unknown action: ${action}` }], isError: true };
+server.registerTool(
+  "task_list",
+  { description: "View tasks with optional filtering.", inputSchema: {
+    filter: z.enum(["all", "pending", "in_progress", "blocked"]).optional().describe("Filter by status (default: all)"),
+    worker: z.string().optional().describe("Whose tasks (omit=self, 'all'=fleet-wide)"),
+  } },
+  async ({ filter, worker }) => {
+    try {
+      const targetWorkers: string[] = [];
+      const wn = worker || WORKER_NAME;
+      if (wn === "all") {
+        targetWorkers.push(...readdirSync(WORKERS_DIR, { withFileTypes: true })
+          .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+          .map(d => d.name));
+      } else {
+        targetWorkers.push(wn);
+      }
+      const results: string[] = [];
+      let total = 0;
+      for (const w of targetWorkers) {
+        const tasks = readTasks(w);
+        if (Object.keys(tasks).length === 0) continue;
+        const entries = Object.entries(tasks) as [string, Task][];
+        const filtered = entries.filter(([tid, t]) => {
+          if (t.status === "deleted") return false;
+          const blocked = isTaskBlocked(tasks, tid);
+          if (filter === "pending") return t.status === "pending" && !blocked;
+          if (filter === "in_progress") return t.status === "in_progress";
+          if (filter === "blocked") return blocked && t.status !== "completed";
+          return true;
+        });
+        if (filtered.length === 0) continue;
+        results.push(`## ${w}`);
+        for (const [id, t] of filtered) {
+          const blocked = isTaskBlocked(tasks, id);
+          const st = blocked ? "blocked" : t.status;
+          const deps = (t.blocked_by || []).length > 0 ? ` [after:${t.blocked_by.join(",")}]` : "";
+          const rec = t.recurring ? " (recurring)" : "";
+          results.push(`  ${id} [${t.priority || "medium"}] ${st}: ${t.subject}${deps}${rec}`);
+          total++;
+        }
+      }
+      if (!results.length) return { content: [{ type: "text" as const, text: "No tasks found" }] };
+      return withLint({ content: [{ type: "text" as const, text: `${total} tasks:\n${results.join("\n")}` }] });
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
@@ -1448,63 +1457,7 @@ server.registerTool(
   }
 );
 
-// ── Backward-compatible aliases ──
-server.registerTool(
-  "add_stop_check",
-  {
-    description: "Alias for add_hook(event='Stop', blocking=true). Register a verification gate that blocks recycle() until completed.",
-    inputSchema: {
-      description: z.string().describe("What must be verified"),
-      agent_id: z.string().optional().describe("Subagent ID for auto-completion on SubagentStop"),
-    },
-  },
-  async ({ description, agent_id }) => {
-    const id = `dh-${++_hookCounter}`;
-    const hook: DynamicHook = {
-      id, event: "Stop", blocking: true, description,
-      completed: false, added_at: new Date().toISOString(),
-    };
-    if (agent_id) hook.agent_id = agent_id;
-    dynamicHooks.set(id, hook);
-    _persistHooks();
-    const agentNote = agent_id ? ` (auto-completes when subagent ${agent_id} stops)` : "";
-    return {
-      content: [{
-        type: "text" as const,
-        text: `Stop check registered: [${id}] ${description}${agentNote}\n${dynamicHooks.size} total hook(s), ${[...dynamicHooks.values()].filter(h => h.blocking && !h.completed).length} blocking.`,
-      }],
-    };
-  }
-);
-
-server.registerTool(
-  "complete_stop_check",
-  {
-    description: "Alias for complete_hook(). Mark a stop check as verified and completed.",
-    inputSchema: {
-      id: z.string().describe("Hook ID to complete (e.g. 'dh-1'). Use 'all' to complete all pending"),
-      result: z.string().optional().describe("Brief verification outcome"),
-    },
-  },
-  async ({ id, result }) => {
-    if (id === "all") {
-      const pending = [...dynamicHooks.values()].filter(h => h.event === "Stop" && h.blocking && !h.completed);
-      if (pending.length === 0) return { content: [{ type: "text" as const, text: "No pending stop checks." }] };
-      const now = new Date().toISOString();
-      for (const h of pending) { h.completed = true; h.completed_at = now; if (result) h.result = result; }
-      _persistHooks();
-      return { content: [{ type: "text" as const, text: `Completed ${pending.length} stop check(s). All clear.` }] };
-    }
-    const hook = dynamicHooks.get(id);
-    if (!hook) return { content: [{ type: "text" as const, text: `No hook with ID '${id}'.` }], isError: true };
-    hook.completed = true;
-    hook.completed_at = new Date().toISOString();
-    if (result) hook.result = result;
-    _persistHooks();
-    const pending = [...dynamicHooks.values()].filter(h => h.event === "Stop" && h.blocking && !h.completed);
-    return { content: [{ type: "text" as const, text: `Completed: [${id}] ${hook.description}\n${pending.length} stop check(s) remaining.` }] };
-  }
-);
+// add_stop_check / complete_stop_check aliases removed — use add_hook(event="Stop", blocking=true) / complete_hook() directly
 
 // ═══════════════════════════════════════════════════════════════════
 // LIFECYCLE TOOLS (4) — recycle, heartbeat, check_config, reload
@@ -2454,7 +2407,7 @@ async function handleFleetTemplate(params: Record<string, any>): Promise<McpResu
       `- **perpetual**: ${defaults.perpetual}\n` +
       `- **sleep_duration**: ${defaults.sleep_duration}s\n`);
   } catch { sections.push("## defaults.json\n_Not found_\n"); }
-  sections.push("## Usage\n`fleet(action=\"create\", name=\"...\", type=\"" + type + "\", mission=\"# Your mission here\\n...\")`\nThe `type` sets model/permissions/perpetual/sleep defaults. You always write your own mission. Explicit params override type defaults.");
+  sections.push("## Usage\n`create_worker(name=\"...\", type=\"" + type + "\", mission=\"# Your mission here\\n...\")`\nThe `type` sets model/permissions/perpetual/sleep defaults. You always write your own mission. Explicit params override type defaults.");
   return { content: [{ type: "text" as const, text: sections.join("\n") }] };
 }
 
@@ -2521,7 +2474,7 @@ async function handleFleetMove(params: Record<string, any>): Promise<McpResult> 
     try {
       const handoffPath = join(WORKERS_DIR, targetName, "handoff.md");
       const timestamp = new Date().toISOString();
-      writeFileSync(handoffPath, `# Standby\n\n**At:** ${timestamp}\n**Reason:** ${reason}\n\nWorker is in standby — registered but not running. Call fleet(action="move", name="${targetName}", window="${previousWindow || targetName}") to wake.\n`);
+      writeFileSync(handoffPath, `# Standby\n\n**At:** ${timestamp}\n**Reason:** ${reason}\n\nWorker is in standby — registered but not running. Call move_worker(name="${targetName}", window="${previousWindow || targetName}") to wake.\n`);
     } catch {}
   }
 
@@ -2614,7 +2567,7 @@ async function handleFleetStandby(params: Record<string, any>): Promise<McpResul
     try {
       const handoffPath = join(WORKERS_DIR, targetName, "handoff.md");
       const timestamp = new Date().toISOString();
-      writeFileSync(handoffPath, `# Standby\n\n**At:** ${timestamp}\n**Reason:** ${reason}\n\nWorker is in standby — registered but not running. Call fleet(action="standby", name="${targetName}") again to wake.\n`);
+      writeFileSync(handoffPath, `# Standby\n\n**At:** ${timestamp}\n**Reason:** ${reason}\n\nWorker is in standby — registered but not running. Call standby_worker(name="${targetName}") again to wake.\n`);
     } catch {}
   }
 
@@ -2666,7 +2619,7 @@ async function handleFleetStandby(params: Record<string, any>): Promise<McpResul
         ``,
         standbyPendingWarning || null,
         ``,
-        `To resume: call fleet(action="standby", name="${targetName}") again, or: bash ~/.claude-ops/scripts/launch-flat-worker.sh ${targetName}`,
+        `To resume: call standby_worker(name="${targetName}") again, or: bash ~/.claude-ops/scripts/launch-flat-worker.sh ${targetName}`,
       ].filter(Boolean).join("\n"),
     }],
   };
@@ -2766,7 +2719,7 @@ async function handleFleetDeregister(params: Record<string, any>): Promise<McpRe
           `  - Any unfinished work or known issues`,
           `  - Recommendations for whoever picks this up next`,
           ``,
-          `Then call fleet(action="deregister") again.`,
+          `Then call deregister_worker() again.`,
         ].join("\n"),
       }],
       isError: true,
@@ -2816,45 +2769,43 @@ function handleFleetHelp(): McpResult {
     content: [{
       type: "text" as const,
       text: [
-        `# fleet — Fleet Management Tool`,
+        `# Fleet Management Tools`,
         ``,
-        `## Actions`,
+        `## Available Tools`,
         ``,
-        `### create — Create a new autonomous worker`,
+        `### create_worker — Create a new autonomous worker`,
         `Required: name (string), mission (string)`,
-        `Optional: type (implementer|monitor|coordinator|optimizer|verifier), runtime (claude|codex),`,
-        `  model (string), reasoning_effort (low|medium|high|extra_high), perpetual (bool),`,
-        `  sleep_duration (number), disallowed_tools (JSON string array), window (string),`,
-        `  window_index (number), report_to (string), permission_mode (string), launch (bool),`,
-        `  tasks (JSON array string), proposal_required (bool), fork_from_session (bool),`,
-        `  direct_report (bool)`,
+        `Optional: type, runtime, model, reasoning_effort, perpetual, sleep_duration,`,
+        `  disallowed_tools (JSON string array), window, window_index, report_to,`,
+        `  permission_mode, launch, tasks (JSON array), proposal_required,`,
+        `  fork_from_session, direct_report`,
         ``,
-        `### register — Register yourself in the fleet registry`,
-        `Optional: model (string), perpetual (bool), sleep_duration (number), report_to (string)`,
+        `### register_worker — Register yourself in the fleet registry`,
+        `Optional: model, perpetual, sleep_duration, report_to`,
         `Auto-detects tmux pane, session, runtime. Call when lint warns you're not in registry.`,
         ``,
-        `### deregister — Remove a worker from the registry`,
-        `Optional: name (string, default=self), reason (string)`,
+        `### deregister_worker — Remove a worker from the registry`,
+        `Optional: name (default=self), reason`,
         `Requires HANDOFF.md (>50 chars) in worker directory. Files/worktree preserved.`,
         `Authorization: self or mission_authority.`,
         ``,
-        `### move — Move a worker's tmux pane to a different window`,
-        `Required: window (string)`,
-        `Optional: name (string, default=self), reason (string)`,
+        `### move_worker — Move a worker's tmux pane to a different window`,
+        `Required: window`,
+        `Optional: name (default=self), reason`,
         `Moving to 'standby' sets status=standby. Moving out restores active.`,
         `Authorization: self or mission_authority.`,
         ``,
-        `### standby — Toggle worker between active and standby`,
-        `Optional: name (string, default=self), reason (string)`,
+        `### standby_worker — Toggle worker between active and standby`,
+        `Optional: name (default=self), reason`,
         `If active → standby (moves pane, stops watchdog). If standby → active (restores).`,
         `USER-ONLY — workers must never call this proactively.`,
         `Authorization: self or mission_authority.`,
         ``,
-        `### template — Preview worker archetype defaults`,
+        `### fleet_template — Preview worker archetype defaults`,
         `Required: type (implementer|monitor|coordinator|optimizer|verifier)`,
         `Returns template mission.md, permissions, and state config.`,
         ``,
-        `### help — Show this help text`,
+        `### fleet_help — Show this help text`,
       ].join("\n"),
     }],
   };
@@ -2862,48 +2813,103 @@ function handleFleetHelp(): McpResult {
 
 // @ts-ignore — MCP SDK deep type instantiation with Zod
 server.registerTool(
-  "fleet",
+  "create_worker",
   {
-    description: "Fleet management operations. Call fleet(action='help') for full parameter docs.\n\nActions: create, register, deregister, move, standby, template, help",
+    description: "Create a new worker: worktree, branch, registry entry, optional launch.",
     inputSchema: {
-      action: z.enum(["create", "register", "deregister", "move", "standby", "template", "help"]).describe("Which fleet operation to perform"),
-      // Common params (used by multiple actions)
-      name: z.string().optional().describe("Worker name (required for create; optional for deregister/move/standby — defaults to self)"),
-      reason: z.string().optional().describe("[deregister/move/standby] Reason for the operation"),
-      window: z.string().optional().describe("[move/create] Target tmux window name"),
-      // create-specific params
-      mission: z.string().optional().describe("[create] Mission markdown (required for create)"),
-      type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("[create/template] Worker archetype"),
-      runtime: z.enum(["claude", "codex"]).optional().describe("[create] Execution engine (default: claude)"),
-      model: z.string().optional().describe("[create/register] LLM model override"),
-      reasoning_effort: z.enum(["low", "medium", "high", "extra_high"]).optional().describe("[create] Depth of reasoning (default: high)"),
-      perpetual: z.boolean().optional().describe("[create/register] Run in infinite recycle loop"),
-      sleep_duration: z.number().optional().describe("[create/register] Seconds between perpetual cycles (default: 1800)"),
-      disallowed_tools: z.string().optional().describe("[create] JSON array of tool deny-list patterns"),
-      window_index: z.number().optional().describe("[create] Explicit tmux window index for new windows"),
-      report_to: z.string().optional().describe("[create/register] Who this worker reports to"),
-      permission_mode: z.string().optional().describe("[create] Claude permission mode (default: bypassPermissions)"),
-      launch: z.boolean().optional().describe("[create] Launch immediately after creation"),
-      tasks: z.string().optional().describe("[create] JSON array of initial tasks"),
-      proposal_required: z.boolean().optional().describe("[create] Require HTML proposal before coding"),
-      fork_from_session: z.boolean().optional().describe("[create] Fork caller's session (requires launch=true)"),
-      direct_report: z.boolean().optional().describe("[create] Set report_to to calling worker"),
+      name: z.string().describe("Worker name (alphanumeric + hyphens)"),
+      mission: z.string().describe("Mission markdown content"),
+      type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("Worker archetype"),
+      runtime: z.enum(["claude", "codex"]).optional().describe("Execution engine (default: claude)"),
+      model: z.string().optional().describe("LLM model override"),
+      reasoning_effort: z.enum(["low", "medium", "high", "extra_high"]).optional().describe("Depth of reasoning (default: high)"),
+      perpetual: z.boolean().optional().describe("Run in infinite recycle loop"),
+      sleep_duration: z.number().optional().describe("Seconds between perpetual cycles (default: 1800)"),
+      disallowed_tools: z.string().optional().describe("JSON array of tool deny-list patterns"),
+      window: z.string().optional().describe("Target tmux window name"),
+      window_index: z.number().optional().describe("Explicit tmux window index for new windows"),
+      report_to: z.string().optional().describe("Who this worker reports to"),
+      permission_mode: z.string().optional().describe("Claude permission mode (default: bypassPermissions)"),
+      launch: z.boolean().optional().describe("Launch immediately after creation"),
+      tasks: z.string().optional().describe("JSON array of initial tasks"),
+      proposal_required: z.boolean().optional().describe("Require HTML proposal before coding"),
+      fork_from_session: z.boolean().optional().describe("Fork caller's session (requires launch=true)"),
+      direct_report: z.boolean().optional().describe("Set report_to to calling worker"),
     },
   },
   // @ts-ignore — MCP SDK deep type instantiation with Zod
-  async (params: Record<string, any>) => {
-    const { action } = params;
-    switch (action) {
-      case "create": return handleFleetCreate(params);
-      case "template": return handleFleetTemplate(params);
-      case "move": return handleFleetMove(params);
-      case "standby": return handleFleetStandby(params);
-      case "register": return handleFleetRegister(params);
-      case "deregister": return handleFleetDeregister(params);
-      case "help": return handleFleetHelp();
-      default: return { content: [{ type: "text" as const, text: `Unknown action '${action}'. Use fleet(action='help') for available actions.` }], isError: true };
-    }
-  }
+  async (params: Record<string, any>) => handleFleetCreate(params)
+);
+
+server.registerTool(
+  "register_worker",
+  {
+    description: "Register yourself in the fleet registry. Auto-detects tmux pane, session, runtime.",
+    inputSchema: {
+      model: z.string().optional().describe("LLM model override"),
+      perpetual: z.boolean().optional().describe("Run in infinite recycle loop"),
+      sleep_duration: z.number().optional().describe("Seconds between perpetual cycles (default: 1800)"),
+      report_to: z.string().optional().describe("Who this worker reports to"),
+    },
+  },
+  async (params: Record<string, any>) => handleFleetRegister(params)
+);
+
+server.registerTool(
+  "deregister_worker",
+  {
+    description: "Remove a worker from the registry. Requires HANDOFF.md (>50 chars). Files/worktree preserved.",
+    inputSchema: {
+      name: z.string().optional().describe("Worker name (default: self)"),
+      reason: z.string().optional().describe("Reason for deregistration"),
+    },
+  },
+  async (params: Record<string, any>) => handleFleetDeregister(params)
+);
+
+server.registerTool(
+  "move_worker",
+  {
+    description: "Move a worker's tmux pane to a different window. Moving to 'standby' sets status=standby.",
+    inputSchema: {
+      window: z.string().describe("Target tmux window name"),
+      name: z.string().optional().describe("Worker name (default: self)"),
+      reason: z.string().optional().describe("Reason for the move"),
+    },
+  },
+  async (params: Record<string, any>) => handleFleetMove(params)
+);
+
+server.registerTool(
+  "standby_worker",
+  {
+    description: "Toggle worker between active and standby. If active → standby (moves pane, stops watchdog). If standby → active (restores).",
+    inputSchema: {
+      name: z.string().optional().describe("Worker name (default: self)"),
+      reason: z.string().optional().describe("Reason for standby/wake"),
+    },
+  },
+  async (params: Record<string, any>) => handleFleetStandby(params)
+);
+
+server.registerTool(
+  "fleet_template",
+  {
+    description: "Preview worker archetype defaults (mission.md template, permissions, state config).",
+    inputSchema: {
+      type: z.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).describe("Worker archetype"),
+    },
+  },
+  async (params: Record<string, any>) => handleFleetTemplate(params)
+);
+
+server.registerTool(
+  "fleet_help",
+  {
+    description: "Show fleet management documentation and available operations.",
+    inputSchema: {},
+  },
+  async () => handleFleetHelp()
 );
 
 // reload removed — merged into recycle(resume=true)

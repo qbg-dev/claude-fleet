@@ -1,6 +1,6 @@
 ## MCP Tools (`mcp__worker-fleet__*`)
 
-12 tools. High-frequency tools are standalone; low-frequency operations are consolidated into `task` and `fleet`.
+21 tools. One action per tool for clear schemas and reliable tool selection.
 
 | Tool | What it does |
 |------|-------------|
@@ -8,16 +8,22 @@
 | `mail_inbox(label?)` | Read your inbox. Default label=UNREAD. Use label="INBOX" for all. |
 | `mail_read(id)` | Read full message body by ID (auto-marks as read). |
 | `mail_help()` | BMS CLI docs — search, threads, labels, mailing lists, curl examples. |
-| `task(action, ...)` | Manage tasks. `action`: create (subject required), update (task_id required), list (optional filter/worker). |
+| `task_create(subject, ...)` | Add a task. Optional: description, priority, blocks, blocked_by, recurring. |
+| `task_update(task_id, ...)` | Update a task. Optional: status, subject, description, priority, owner, add_blocked_by, add_blocks. |
+| `task_list(filter?, worker?)` | View tasks. filter: all/pending/in_progress/blocked. worker: omit=self, "all"=fleet-wide. |
 | `get_worker_state(name?)` | Read worker state; `name="all"` for fleet overview |
 | `update_state(key, value)` | Persist state across recycles (saved in registry, included in next seed) |
 | `add_hook(event, description, ...)` | Register a dynamic hook: gate (blocking) or inject (context). See Dynamic Hooks section |
 | `complete_hook(id, result?)` | Mark a blocking hook as done (`id="all"` to clear all) |
 | `remove_hook(id)` | Remove any hook entirely (`id="all"` to clear all) |
-| `add_stop_check(description)` | Alias: `add_hook(event="Stop", blocking=true)` |
-| `complete_stop_check(id)` | Alias: `complete_hook(id)` |
 | `recycle(message?)` | Restart fresh; `resume=true` for hot-restart; `sleep_seconds=N` overrides timer; `cancel=true` aborts sleep. **Blocked if stop checks pending** (shows pending list). |
-| `fleet(action, ...)` | Fleet admin. `action`: create, register, deregister, move, standby, template, help. Call `fleet(action="help")` for full parameter docs. |
+| `create_worker(name, mission, ...)` | Create a new worker: worktree, branch, registry entry, optional launch. |
+| `register_worker(model?, ...)` | Register yourself in the fleet registry. Auto-detects tmux pane. |
+| `deregister_worker(name?, reason?)` | Remove a worker from registry. Requires HANDOFF.md. |
+| `move_worker(window, name?)` | Move a worker's tmux pane to a different window. |
+| `standby_worker(name?, reason?)` | Toggle worker between active and standby. |
+| `fleet_template(type)` | Preview worker archetype defaults. |
+| `fleet_help()` | Show fleet management documentation. |
 | `deep_review(scope, spec?)` | Spawn adversarial reviewer for complex changes |
 
 Every tool response includes lint warnings if issues are detected — fix them immediately.
@@ -69,8 +75,8 @@ You control your own reliability through **dynamic hooks** — runtime-registere
 
 ```
 # 1. What verification gates do I need this round?
-add_stop_check("verify TypeScript compiles after changes")
-add_stop_check("test deploy to slot — check UI loads")
+add_hook(event="Stop", description="verify TypeScript compiles after changes")
+add_hook(event="Stop", description="test deploy to slot — check UI loads")
 
 # 2. What guardrails prevent me from going off the rails?
 add_hook(event="PreToolUse",
@@ -96,8 +102,7 @@ Think of it as setting up your workbench before starting: lay out the tools, set
 ```
 add_hook(event="Stop", description="verify TypeScript compiles")
 add_hook(event="Stop", description="test deploy to slot — check UI loads")
-# Or use the alias:
-add_stop_check("no console errors on slot URL")
+add_hook(event="Stop", description="no console errors on slot URL")
 ```
 `recycle()` REFUSES until all blocking hooks are completed:
 ```
@@ -214,9 +219,9 @@ claude_files/evidence/{date}-{description}/
 
 **Link evidence to stop checks:**
 ```
-add_stop_check("verify login page renders correctly")
+add_hook(event="Stop", description="verify login page renders correctly")
 # ... take screenshot, save to claude_files/evidence/2026-03-08-login-fix/
-complete_stop_check("dh-1", result="PASS — screenshot at claude_files/evidence/2026-03-08-login-fix/screenshot.png")
+complete_hook("dh-1", result="PASS — screenshot at claude_files/evidence/2026-03-08-login-fix/screenshot.png")
 ```
 
 Evidence persists across recycles and can be referenced later by you or reviewers.
@@ -229,8 +234,8 @@ LOOP FOREVER:
   2. git fetch origin && git rebase origin/main
   3. Work on your mission (fix issues, run evals, check systems)
   4. Update state + save findings to auto-memory
-  5. Register stop checks for anything you changed: add_stop_check("verify X")
-  6. Complete each check after verifying: complete_stop_check("dh-1")
+  5. Register stop checks for anything you changed: add_hook(event="Stop", description="verify X")
+  6. Complete each check after verifying: complete_hook("dh-1")
   7. Call recycle() — blocked until all checks done. Watchdog respawns after sleep_duration.
 ```
 
