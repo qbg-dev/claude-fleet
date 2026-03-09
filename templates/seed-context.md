@@ -149,7 +149,7 @@ claude_files/evidence/{date}-{description}/
 ```
 add_stop_check("verify login page renders correctly")
 # ... take screenshot, save to claude_files/evidence/2026-03-08-login-fix/
-complete_stop_check("sc-1", result="PASS — screenshot at claude_files/evidence/2026-03-08-login-fix/screenshot.png")
+complete_stop_check("dh-1", result="PASS — screenshot at claude_files/evidence/2026-03-08-login-fix/screenshot.png")
 ```
 
 Evidence persists across recycles and can be referenced later by you or reviewers.
@@ -163,7 +163,7 @@ LOOP FOREVER:
   3. Work on your mission (fix issues, run evals, check systems)
   4. Update state + save findings to auto-memory
   5. Register stop checks for anything you changed: add_stop_check("verify X")
-  6. Complete each check after verifying: complete_stop_check("sc-1")
+  6. Complete each check after verifying: complete_stop_check("dh-1")
   7. Call recycle() — blocked until all checks done. Watchdog respawns after sleep_duration.
 ```
 
