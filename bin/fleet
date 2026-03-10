@@ -7,14 +7,18 @@
 FLEET_DIR="${CLAUDE_FLEET_DIR:-${CLAUDE_OPS_DIR:-$HOME/.claude-fleet}}"
 TS_CLI="$FLEET_DIR/cli/fleet.ts"
 
-# Fast path: bun + TypeScript CLI exist → delegate
-if command -v bun >/dev/null 2>&1 && [ -f "$TS_CLI" ]; then
-  exec bun run "$TS_CLI" "$@"
+# Fast path: bun available → use TypeScript CLI
+if command -v bun >/dev/null 2>&1; then
+  if [ -f "$TS_CLI" ]; then
+    exec bun run "$TS_CLI" "$@"
+  fi
+  echo "WARNING: bun found but $TS_CLI missing. Falling back to legacy CLI." >&2
 fi
 
 # Fallback: run legacy bash implementation
 LEGACY="$FLEET_DIR/bin/fleet-legacy.sh"
 if [ -f "$LEGACY" ]; then
+  echo "WARNING: Using legacy bash CLI. Install bun for the full experience." >&2
   exec bash "$LEGACY" "$@"
 fi
 

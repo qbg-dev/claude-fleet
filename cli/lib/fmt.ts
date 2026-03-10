@@ -1,7 +1,10 @@
 /**
  * Output formatting: colors, tables, status indicators.
+ * Respects NO_COLOR (https://no-color.org/) and FORCE_COLOR env vars.
  */
 import chalk from "chalk";
+
+// chalk auto-respects NO_COLOR and FORCE_COLOR, no extra wiring needed.
 
 export const ok = (msg: string) => console.log(`${chalk.green("✓")} ${msg}`);
 export const info = (msg: string) => console.log(`${chalk.cyan("→")} ${msg}`);
