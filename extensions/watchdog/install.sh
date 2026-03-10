@@ -4,7 +4,7 @@
 set -euo pipefail
 
 FLEET_DIR="${TMUX_AGENTS_DIR:-${CLAUDE_OPS_DIR:-$HOME/.tmux-agents}}"
-WATCHDOG_SCRIPT="$FLEET_DIR/plugins/watchdog/watchdog.sh"
+WATCHDOG_SCRIPT="$FLEET_DIR/extensions/watchdog/watchdog.sh"
 STATE_DIR="$FLEET_DIR/state"
 PLIST_NAME="com.tmux-agents.watchdog"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME.plist"

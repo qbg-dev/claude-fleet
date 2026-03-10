@@ -5,7 +5,6 @@
 
 import { execSync } from "child_process";
 import { join, basename } from "path";
-import { existsSync } from "fs";
 
 // ── Path Constants ──────────────────────────────────────────────────
 export const HOME = process.env.HOME!;

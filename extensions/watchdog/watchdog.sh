@@ -33,13 +33,13 @@ CHECK_INTERVAL="${WATCHDOG_CHECK_INTERVAL:-30}"
 STUCK_THRESHOLD_SEC="${WATCHDOG_STUCK_THRESHOLD:-600}"  # 10 min no activity = stuck
 MAX_CRASHES_PER_HR="${WATCHDOG_MAX_CRASHES:-3}"
 MAX_CYCLE_SEC="${WATCHDOG_MAX_CYCLE:-7200}"  # 2hr max — Claude Code leaks memory in long sessions (github.com/anthropics/claude-code/issues/18859)
-LOG_FILE="${WATCHDOG_LOG:-${HOME}/.claude-ops/state/watchdog.log}"
+LOG_FILE="${WATCHDOG_LOG:-${CLAUDE_OPS_DIR}/state/watchdog.log}"
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || { echo "ERROR: PROJECT_ROOT not set and not in a git repo" >&2; exit 1; })}"
 REGISTRY="$PROJECT_ROOT/.claude/workers/registry.json"
-CRASH_DIR="${HOME}/.claude-ops/state/watchdog-crashes"
-RUNTIME_DIR="${HOME}/.claude-ops/state/watchdog-runtime"
-LAUNCH_SCRIPT="${HOME}/.claude-ops/scripts/launch-flat-worker.sh"
+CRASH_DIR="${CLAUDE_OPS_DIR}/state/watchdog-crashes"
+RUNTIME_DIR="${CLAUDE_OPS_DIR}/state/watchdog-runtime"
+LAUNCH_SCRIPT="${CLAUDE_OPS_DIR}/scripts/launch-flat-worker.sh"
 
 MODE="daemon"
 [ "${1:-}" = "--once" ]   && MODE="once"
@@ -397,7 +397,7 @@ _record_relaunch() {
     .[$n].last_relaunch = {at: $ts, reason: $r}
   ' --arg n "$worker" --arg ts "$_now_iso" --arg r "$reason"
   # Touch liveness so watchdog doesn't immediately re-detect as stuck
-  local _RUNTIME_DIR="${HOME}/.claude-ops/state/watchdog-runtime/${worker}"
+  local _RUNTIME_DIR="${CLAUDE_OPS_DIR}/state/watchdog-runtime/${worker}"
   mkdir -p "$_RUNTIME_DIR" 2>/dev/null || true
   date +%s > "$_RUNTIME_DIR/liveness"
 }
@@ -789,7 +789,7 @@ check_worker() {
     # Check for graceful sleep (perpetual worker waiting for sleep_duration)
     # Uses liveness file timestamp as "last active" signal
     if [ "$perpetual" = "true" ] && [ "$sleep_dur" -gt 0 ] 2>/dev/null; then
-      local _liveness_file="${HOME}/.claude-ops/state/watchdog-runtime/${worker}/liveness"
+      local _liveness_file="${CLAUDE_OPS_DIR}/state/watchdog-runtime/${worker}/liveness"
       if [ -f "$_liveness_file" ]; then
         local _last_active
         _last_active=$(cat "$_liveness_file" 2>/dev/null || echo 0)
