@@ -1,0 +1,139 @@
+/**
+ * Seed content generation — worker initialization prompts and context loading.
+ * Used when launching or relaunching a worker to provide initial context.
+ */
+
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
+import { HOME, PROJECT_ROOT, CLAUDE_OPS, WORKERS_DIR, WORKER_NAME, getWorktreeDir } from "./config";
+import { readRegistry, getMissionAuthorityLabel, type RegistryConfig, type RegistryWorkerEntry } from "./registry";
+
+// ── Seed Context Template ────────────────────────────────────────────
+
+/** Load shared seed context template, interpolate placeholders */
+export function loadSeedContext(branch: string, missionAuthority: string): string {
+  const tmplPath = join(CLAUDE_OPS, "templates/seed-context.md");
+  try {
+    return readFileSync(tmplPath, "utf-8")
+      .replace(/\{\{WORKER_NAME\}\}/g, WORKER_NAME)
+      .replace(/\{\{BRANCH\}\}/g, branch)
+      .replace(/\{\{MISSION_AUTHORITY\}\}/g, missionAuthority);
+  } catch {
+    // Fallback if template missing — minimal reminder
+    return `Use \`mcp__worker-fleet__*\` MCP tools. Call \`mail_inbox()\` first. Report to ${missionAuthority}.`;
+  }
+}
+
+// ── Seed Content Generation ──────────────────────────────────────────
+
+/** Generate the seed prompt content for a worker (same template as launch-flat-worker.sh) */
+export function generateSeedContent(handoff?: string): string {
+  const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
+  const worktreeDir = getWorktreeDir();
+  const branch = `worker/${WORKER_NAME}`;
+  const _seedConfig = readRegistry()._config as RegistryConfig | undefined;
+  const _missionAuth = getMissionAuthorityLabel(_seedConfig);
+
+  // Include persisted state in seed so workers resume where they left off
+  let stateBlock = "";
+  let proposalBlock = "";
+  try {
+    const reg = readRegistry();
+    const entry = reg[WORKER_NAME] as RegistryWorkerEntry | undefined;
+    if (entry?.custom && Object.keys(entry.custom).length > 0) {
+      stateBlock = `\n\n## Persisted State\n\`\`\`json\n${JSON.stringify(entry.custom, null, 2)}\n\`\`\`\nThese values were saved by your previous instance via \`update_state()\`. Use them to resume context.`;
+    }
+    // Load proposal instructions if proposal_required is set
+    if (entry?.custom?.proposal_required) {
+      const instrPath = join(CLAUDE_OPS, "templates/proposal-instructions.md");
+      const tmplPath = join(CLAUDE_OPS, "templates/proposal-template.html");
+      try {
+        let instrContent = readFileSync(instrPath, "utf-8");
+        instrContent = instrContent
+          .replace(/\{\{WORKER_NAME\}\}/g, WORKER_NAME)
+          .replace(/\{\{MISSION_AUTHORITY\}\}/g, _missionAuth)
+          .replace(/\{\{TEMPLATE_PATH\}\}/g, tmplPath);
+        proposalBlock = "\n\n" + instrContent;
+      } catch {}
+    }
+  } catch {}
+
+  // Worker memory lives at project-level auto-memory subdirectory
+  const projectSlug = PROJECT_ROOT.replace(/\//g, "-");
+  const workerMemoryDir = join(HOME, ".claude", "projects", projectSlug, "memory", WORKER_NAME);
+
+  // ── Build handoff/checkpoint block FIRST (most important context for resuming) ──
+  let handoffBlock = "";
+  if (handoff) {
+    handoffBlock = `\n## HANDOFF FROM PREVIOUS CYCLE — READ FIRST\n\n${handoff}`;
+  } else {
+    // Read checkpoint from previous cycle (replaces handoff.md)
+    const checkpointLatest = join(WORKERS_DIR, WORKER_NAME, "checkpoints", "latest.json");
+    if (existsSync(checkpointLatest)) {
+      try {
+        const cpRaw = readFileSync(checkpointLatest, "utf-8").trim();
+        const cp = JSON.parse(cpRaw);
+        let cpBlock = `\n## HANDOFF FROM PREVIOUS CYCLE — READ FIRST\n\n`;
+        cpBlock += `**Summary**: ${cp.summary || "No summary"}\n`;
+        if (cp.git_state?.branch) {
+          cpBlock += `**Git**: ${cp.git_state.branch} @ ${cp.git_state.sha || "?"} (${cp.git_state.dirty_count || 0} dirty, ${cp.git_state.staged_count || 0} staged)\n`;
+        }
+        if (cp.key_facts?.length > 0) {
+          cpBlock += `**Key facts**:\n${cp.key_facts.map((f: string) => `- ${f}`).join("\n")}\n`;
+        }
+        if (cp.dynamic_hooks?.length > 0) {
+          const pending = cp.dynamic_hooks.filter((h: any) => !h.completed);
+          if (pending.length > 0) {
+            cpBlock += `**Pending hooks**: ${pending.map((h: any) => `${h.id} (${h.event}: ${h.description})`).join(", ")}\n`;
+          }
+        }
+        if (cp.transcript_ref) {
+          cpBlock += `**Transcript**: ${cp.transcript_ref} — Read this if you need details from before recycling\n`;
+        }
+        handoffBlock = cpBlock;
+      } catch {
+        // Fall back to legacy handoff.md
+        const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
+        if (existsSync(handoffPath)) {
+          try {
+            const handoffContent = readFileSync(handoffPath, "utf-8").trim();
+            if (handoffContent) {
+              handoffBlock = `\n## HANDOFF FROM PREVIOUS CYCLE — READ FIRST\n\n${handoffContent}`;
+            }
+          } catch {}
+        }
+      }
+    } else {
+      // Legacy fallback: read handoff.md if no checkpoint exists
+      const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
+      if (existsSync(handoffPath)) {
+        try {
+          const handoffContent = readFileSync(handoffPath, "utf-8").trim();
+          if (handoffContent) {
+            handoffBlock = `\n## HANDOFF FROM PREVIOUS CYCLE — READ FIRST\n\n${handoffContent}`;
+          }
+        } catch {}
+      }
+    }
+  }
+
+  // ── Assemble seed: identity → handoff (FIRST) → instructions → context ──
+  let seed = `You are worker **${WORKER_NAME}**.
+Worktree: ${worktreeDir} (branch: ${branch})
+Worker config: ${workerDir}/
+${handoffBlock}
+Read these files NOW in this order:
+1. ${workerDir}/mission.md — your mission and goals (you own this file — update it as your mission evolves)
+2. Call \`mail_inbox()\` — check for messages before anything else
+3. Check \`.claude/scripts/${WORKER_NAME}/\` for existing scripts
+
+**Your memory**: \`${workerMemoryDir}/MEMORY.md\`
+Use Edit/Write to update it directly. Create topic files in that same directory for detailed notes.
+This path is under the project-level auto-memory — it persists across recycles and is shared with other workers.
+
+If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}${proposalBlock}
+
+${loadSeedContext(branch, _missionAuth)}`;
+
+  return seed;
+}

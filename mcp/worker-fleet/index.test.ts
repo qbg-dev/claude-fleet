@@ -1317,20 +1317,7 @@ describe("createWorkerFiles — unique name check", () => {
     expect(result.error).toContain("empty");
   });
 
-  test("returns task entries when tasks provided (LKML: IDs are placeholders until Fleet Mail send)", () => {
-    const result = createWorkerFiles({
-      name: "with-tasks-test",
-      mission: "Test mission",
-      taskEntries: [
-        { subject: "Task 1", priority: "high" },
-        { subject: "Task 2" },
-      ],
-    });
-    expect(result.ok).toBe(true);
-    expect(result.taskIds!.length).toBe(2);
-    expect(result.taskEntries!.length).toBe(2);
-    expect(result.taskEntries![0].subject).toBe("Task 1");
-  });
+  // Task CRUD removed — tasks are LKML mail threads now (send via mail_send with TASK label)
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1855,7 +1842,7 @@ describe("checkpoint helpers", () => {
 
   test("_timestampFilename returns valid checkpoint filename", () => {
     const name = _timestampFilename();
-    expect(name).toMatch(/^checkpoint-\d{4}-\d{2}-\d{2}T\d{4}Z\.json$/);
+    expect(name).toMatch(/^checkpoint-\d{4}-\d{2}-\d{2}T\d{7}Z\.json$/);
   });
 
   test("_writeCheckpoint creates file and latest symlink", () => {
