@@ -65,6 +65,13 @@ export function register(parent: Command): void {
       Bun.spawnSync(["ln", "-sfn", join(HOME, ".claude-fleet"), join(HOME, ".claude/ops")]);
       ok("~/.claude/ops → ~/.claude-fleet");
 
+      if (!existsSync(join(HOME, ".tmux-agents"))) {
+        Bun.spawnSync(["ln", "-sfn", realDir, join(HOME, ".tmux-agents")]);
+        ok("Created ~/.tmux-agents → (compat)");
+      } else {
+        ok("~/.tmux-agents exists");
+      }
+
       mkdirSync(join(HOME, ".local/bin"), { recursive: true });
       Bun.spawnSync(["ln", "-sf", join(HOME, ".claude-fleet/bin/fleet"), join(HOME, ".local/bin/fleet")]);
       ok("Symlinked ~/.local/bin/fleet");
@@ -213,8 +220,109 @@ export function register(parent: Command): void {
         console.log(`    ${chalk.dim("Restart Claude Code to pick up MCP server changes")}`);
       }
 
-      // 9. Plugins
-      info("Detecting plugins...");
+      // 9. Install hooks into settings.json
+      info("Installing hooks...");
+      {
+        let settings: Record<string, any> = {};
+        if (existsSync(settingsFile)) {
+          try { settings = JSON.parse(readFileSync(settingsFile, "utf-8")); } catch {}
+        }
+
+        // Back up settings before modifying hooks
+        const backupDir = join(HOME, ".claude/settings-backups");
+        mkdirSync(backupDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, "-");
+        writeFileSync(join(backupDir, `settings.${ts}.json`), JSON.stringify(settings, null, 2) + "\n");
+
+        // Build fleet hooks from bundled scripts
+        const fleetBase = join(HOME, ".claude-fleet");
+        type HookEntry = { hooks: Array<{ type: string; command: string; timeout?: number }> };
+
+        // Preserve non-fleet hooks (e.g., pii-firewall from project-specific configs)
+        const isFleetHook = (entry: HookEntry) =>
+          entry.hooks?.some((h: any) =>
+            h.command?.includes("/.claude-fleet/") ||
+            h.command?.includes("/.claude-ops/") ||
+            h.command?.includes("/.claude-hooks/") ||
+            h.command?.includes("/.tmux-agents/"));
+
+        const existingHooks: Record<string, HookEntry[]> = settings.hooks || {};
+        const preservedHooks: Record<string, HookEntry[]> = {};
+        for (const [event, entries] of Object.entries(existingHooks)) {
+          const kept = (entries as HookEntry[]).filter(e => !isFleetHook(e));
+          if (kept.length > 0) preservedHooks[event] = kept;
+        }
+
+        // Define fleet hooks — individual hooks + engine on every event
+        const h = (script: string, timeout?: number) => ({
+          hooks: [{ type: "command" as const, command: `bash ${fleetBase}/${script}`, ...(timeout ? { timeout } : {}) }],
+        });
+        const engine = h("engine/hook-engine.sh");
+        const logger = h("engine/session-logger.sh");
+
+        const fleetHooks: Record<string, HookEntry[]> = {
+          UserPromptSubmit: [
+            h("hooks/publishers/worker-session-register.sh"),
+            h("hooks/publishers/prompt-echo-deferred.sh"),
+            engine,
+            logger,
+          ],
+          PreToolUse: [
+            h("hooks/gates/tool-policy-gate.sh"),
+            h("hooks/interceptors/pre-tool-context-injector.sh"),
+            engine,
+            logger,
+          ],
+          PreCompact: [
+            h("scripts/pre-compact.sh", 5000),
+            engine,
+            logger,
+          ],
+          Stop: [
+            h("hooks/gates/stop-worker-dispatch.sh"),
+            h("hooks/gates/stop-inbox-drain.sh"),
+            h("hooks/publishers/stop-echo.sh"),
+            engine,
+            logger,
+          ],
+        };
+
+        // Merge: preserved non-fleet hooks first, then fleet hooks
+        const merged: Record<string, HookEntry[]> = {};
+        const allEvents = new Set([...Object.keys(preservedHooks), ...Object.keys(fleetHooks)]);
+        for (const event of allEvents) {
+          merged[event] = [
+            ...(preservedHooks[event] || []),
+            ...(fleetHooks[event] || []),
+          ];
+        }
+
+        settings.hooks = merged;
+        writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + "\n");
+
+        // Verify hook scripts exist
+        let hookCount = 0;
+        let missingCount = 0;
+        for (const entries of Object.values(fleetHooks)) {
+          for (const entry of entries) {
+            hookCount++;
+            const script = entry.hooks[0].command.replace(/^bash\s+/, "");
+            if (!existsSync(script)) missingCount++;
+          }
+        }
+        if (missingCount > 0) {
+          warn(`${hookCount} hooks registered, ${missingCount} scripts missing`);
+        } else {
+          ok(`${hookCount} hooks installed across ${Object.keys(fleetHooks).length} events`);
+        }
+        const nonFleetCount = Object.values(preservedHooks).reduce((n, arr) => n + arr.length, 0);
+        if (nonFleetCount > 0) {
+          ok(`${nonFleetCount} project-specific hooks preserved`);
+        }
+      }
+
+      // 10. Optional plugins
+      info("Detecting optional plugins...");
 
       // Watchdog plugin
       const watchdogPlugin = join(FLEET_DIR, "extensions/watchdog/watchdog.sh");
@@ -222,13 +330,13 @@ export function register(parent: Command): void {
         const watchdogPlist = join(HOME, "Library/LaunchAgents/com.tmux-agents.watchdog.plist");
         const legacyPlist = join(HOME, "Library/LaunchAgents/com.claude-ops.harness-watchdog.plist");
         if (existsSync(watchdogPlist) || existsSync(legacyPlist)) {
-          ok("Watchdog plugin: installed (launchd daemon active)");
+          ok("Watchdog: installed (launchd daemon active)");
         } else {
-          warn("Watchdog plugin: found but not installed as daemon");
+          warn("Watchdog: found but not installed as daemon");
           console.log(`    Install: bash ${join(FLEET_DIR, "extensions/watchdog/install.sh")}`);
         }
       } else {
-        info("Watchdog plugin: not found (optional — supervises long-running workers)");
+        info("Watchdog: not found (optional — supervises long-running workers)");
       }
 
       // Deep review
@@ -241,21 +349,12 @@ export function register(parent: Command): void {
         info("Deep review: not found (optional — multi-pass adversarial code review)");
       }
 
-      // Claude hooks
-      const hooksDir = process.env.CLAUDE_HOOKS_DIR || join(HOME, ".claude-hooks");
-      if (existsSync(join(hooksDir, "hooks/manifest.json"))) {
-        ok(`Claude hooks: ${hooksDir}`);
-      } else if (existsSync(join(FLEET_DIR, "hooks/manifest.json"))) {
-        ok("Claude hooks: bundled (in fleet repo)");
-      } else {
-        info("Claude hooks: not found (optional — runtime hook injection)");
-      }
-
       console.log("");
       ok("Fleet setup complete!");
       console.log("");
       console.log("  fleet ls                    — list workers");
       console.log(`  fleet create <n> "m"        — create a worker`);
+      console.log("  fleet doctor                — verify installation");
       console.log("  fleet help                  — all commands");
     });
 }
