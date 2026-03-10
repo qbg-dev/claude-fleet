@@ -252,11 +252,16 @@ else
       RESOLVED_REF=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "wip")
     elif [[ "$SCOPE" == pr:* ]]; then
       RESOLVED_REF="pr${SCOPE#pr:}"
+    elif [[ "$SCOPE" == *..* ]]; then
+      # Range syntax — use the endpoint for commit msg, sanitize for session name
+      RANGE_END="${SCOPE##*..}"
+      RESOLVED_REF="$RANGE_END"
     fi
     COMMIT_MSG=$(git log -1 --format='%s' "$RESOLVED_REF" 2>/dev/null || echo "review")
     COMMIT_MSG=$(echo "$COMMIT_MSG" | sed 's/^[a-z]*([^)]*): *//' | sed 's/^[a-z]*: *//')
     FIRST_TWO=$(echo "$COMMIT_MSG" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//' | cut -d'-' -f1-2)
-    SHORT_HASH=$(git rev-parse --short=8 "$RESOLVED_REF" 2>/dev/null || echo "$RESOLVED_REF")
+    # Use head -1 to prevent multi-line output from ranges
+    SHORT_HASH=$(git rev-parse --short=8 "$RESOLVED_REF" 2>/dev/null | head -1 || echo "$RESOLVED_REF" | tr -cs 'a-z0-9A-Z' '-')
     REVIEW_SESSION="dr-${WORKTREE_NAME}-${FIRST_TWO}-${SHORT_HASH}"
   fi
   REVIEW_SESSION="${REVIEW_SESSION:0:50}"
@@ -302,6 +307,11 @@ if $HAS_DIFF; then
     PR_NUM="${SCOPE#pr:}"
     gh pr diff "$PR_NUM" > "$DIFF_TMP"
     DIFF_DESC_PARTS+=("PR #$PR_NUM")
+
+  elif [[ "$SCOPE" == *..* ]]; then
+    # Explicit range (e.g. v1.1.3..v1.1.4 or main..feature)
+    git diff "$SCOPE" > "$DIFF_TMP" 2>/dev/null || true
+    DIFF_DESC_PARTS+=("$SCOPE")
 
   elif git rev-parse --verify "$SCOPE^{commit}" &>/dev/null && \
        [ "$(git rev-parse "$SCOPE" 2>/dev/null)" != "$(git merge-base "$SCOPE" HEAD 2>/dev/null)" ]; then
@@ -778,29 +788,35 @@ with open(sys.argv[1], 'w') as f: f.write(content)
 " "$SESSION_DIR/worker-$i-seed.md" "$AV"
 done
 
-sed \
-  -e "s|{{SESSION_DIR}}|$SESSION_DIR|g" \
-  -e "s|{{SESSION_ID}}|$SESSION_ID|g" \
-  -e "s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g" \
-  -e "s|{{NUM_PASSES}}|$TOTAL_WORKERS|g" \
-  -e "s|{{PASSES_PER_FOCUS}}|$PASSES_PER_FOCUS|g" \
-  -e "s|{{NUM_FOCUS}}|$NUM_FOCUS|g" \
-  -e "s|{{FOCUS_LIST}}|$FOCUS_LIST_CSV|g" \
-  -e "s|{{REPORT_FILE}}|$SESSION_DIR/report.md|g" \
-  -e "s|{{HISTORY_FILE}}|$HISTORY_FILE|g" \
-  -e "s|{{NOTIFY_TARGET}}|$NOTIFY_TARGET|g" \
-  -e "s|{{REVIEW_SESSION}}|$REVIEW_SESSION|g" \
-  -e "s|{{DIFF_DESC}}|$DIFF_DESC|g" \
-  -e "s|{{MATERIAL_TYPES}}|$MATERIAL_TYPES_STR|g" \
-  "$TEMPLATE_DIR/coordinator-seed.md" > "$SESSION_DIR/coordinator-seed.md"
-
-# Safe-substitute REVIEW_CONFIG into coordinator (may contain special chars)
+# Use python for all coordinator substitutions (safe against special chars, newlines)
 _REVIEW_CONFIG="$REVIEW_CONFIG" python3 -c "
 import sys, os
 with open(sys.argv[1]) as f: content = f.read()
-content = content.replace('{{REVIEW_CONFIG}}', os.environ.get('_REVIEW_CONFIG', ''))
-with open(sys.argv[1], 'w') as f: f.write(content)
-" "$SESSION_DIR/coordinator-seed.md"
+replacements = {
+    '{{SESSION_DIR}}': sys.argv[2],
+    '{{SESSION_ID}}': sys.argv[3],
+    '{{PROJECT_ROOT}}': sys.argv[4],
+    '{{NUM_PASSES}}': sys.argv[5],
+    '{{PASSES_PER_FOCUS}}': sys.argv[6],
+    '{{NUM_FOCUS}}': sys.argv[7],
+    '{{FOCUS_LIST}}': sys.argv[8],
+    '{{REPORT_FILE}}': sys.argv[9],
+    '{{HISTORY_FILE}}': sys.argv[10],
+    '{{NOTIFY_TARGET}}': sys.argv[11],
+    '{{REVIEW_SESSION}}': sys.argv[12],
+    '{{DIFF_DESC}}': sys.argv[13],
+    '{{MATERIAL_TYPES}}': sys.argv[14],
+    '{{REVIEW_CONFIG}}': os.environ.get('_REVIEW_CONFIG', ''),
+}
+for k, v in replacements.items():
+    content = content.replace(k, v)
+with open(sys.argv[15], 'w') as f: f.write(content)
+" "$TEMPLATE_DIR/coordinator-seed.md" \
+  "$SESSION_DIR" "$SESSION_ID" "$PROJECT_ROOT" \
+  "$TOTAL_WORKERS" "$PASSES_PER_FOCUS" "$NUM_FOCUS" \
+  "$FOCUS_LIST_CSV" "$SESSION_DIR/report.md" "$HISTORY_FILE" \
+  "$NOTIFY_TARGET" "$REVIEW_SESSION" "$DIFF_DESC" \
+  "$MATERIAL_TYPES_STR" "$SESSION_DIR/coordinator-seed.md"
 
 # ── Create launch wrappers ───────────────────────────────────
 for i in $(seq 1 "$TOTAL_WORKERS"); do
