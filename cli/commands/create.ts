@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { mkdirSync, writeFileSync, existsSync, readFileSync, copyFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import {
-  FLEET_DATA, FLEET_DIR, FLEET_MAIL_URL, DEFAULT_SESSION,
+  FLEET_DATA, FLEET_DIR, FLEET_MAIL_URL, FLEET_MAIL_TOKEN, DEFAULT_SESSION,
   workerDir, resolveProjectRoot, resolveProject,
 } from "../lib/paths";
 import {
@@ -168,9 +168,11 @@ export async function runCreate(
   let mailToken = "";
   if (FLEET_MAIL_URL) {
     try {
+      const mailHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (FLEET_MAIL_TOKEN) mailHeaders["Authorization"] = `Bearer ${FLEET_MAIL_TOKEN}`;
       const resp = await fetch(`${FLEET_MAIL_URL}/api/accounts`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: mailHeaders,
         body: JSON.stringify({ name: `${name}@${project}` }),
       });
       if (resp.ok) {
