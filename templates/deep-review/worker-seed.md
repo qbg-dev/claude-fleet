@@ -58,6 +58,25 @@ If these files exist in `{{SESSION_DIR}}`, read them BEFORE reviewing — they c
 
 Use these actively: compiler errors are confirmed bugs worth tracing. High-churn, high-import, untested files deserve extra scrutiny. Blame context helps distinguish new bugs from inherited debt.
 
+## Inter-Worker Communication
+
+You can see what other workers are finding via the shared comms directory: `{{SESSION_DIR}}/comms/`
+
+**Your role ID**: {{ROLE_ID}}
+**Roster**: {{WORKER_ROSTER}}
+
+**To send a message** (when you find something relevant to another specialist):
+Write a JSON file to `{{SESSION_DIR}}/comms/from-{{ROLE_ID}}-pass{{PASS_NUMBER}}-N.json`:
+```json
+{"from": "{{ROLE_ID}}", "to": "target-role-id or all", "tag": "QUERY|FYI", "subject": "brief desc", "body": "file:line details"}
+```
+
+**To check messages**: Read any `{{SESSION_DIR}}/comms/from-*.json` files.
+- Check ONCE at the start of Step 2 (deep investigation)
+- Check ONCE more before writing findings
+
+Only communicate when you find something specifically relevant to another specialist's domain. Don't broadcast generic observations.
+
 ## Investigation protocol
 
 Follow these steps IN ORDER. Do not skip steps.
@@ -121,6 +140,15 @@ For every changed file relevant to your specialization, enumerate ALL code paths
 - Code-review is the last resort — use it only when runtime testing isn't possible
 
 Write these in a `## Enumerated Paths` section AFTER your findings.
+
+### Step 4.5: Self-verify high-confidence findings
+
+For each HIGH or CRITICAL severity finding you plan to report:
+- Spawn a subagent (using the Agent tool) to independently verify it
+- The subagent should: read the actual source at the reported location, trace the code path, check if existing tests cover the case
+- Mark findings as `self_verified: true` if the subagent confirms, `self_verified: false` if it couldn't confirm
+
+This is optional but strongly recommended — self-verified findings carry more weight in voting.
 
 ### Step 5: Write findings with chain-of-thought evidence
 
@@ -193,11 +221,21 @@ Use whichever kind best describes your finding — both sets are valid regardles
 
 ## Completion
 
-After writing the JSON findings file, you MUST create the sentinel file to signal completion:
+After writing the JSON findings file, you MUST validate it before creating the sentinel:
 
+### Step 1: Validate your output
+```bash
+bash {{VALIDATOR}} {{OUTPUT_FILE}} worker
+```
+
+If validation fails, fix the JSON and re-validate. **Do not create the sentinel until validation passes.**
+
+### Step 2: Create the sentinel
 ```bash
 echo "done" > {{DONE_FILE}}
 ```
+
+Both steps are required. The pipeline will also validate your output after you exit, but validating yourself ensures your findings are properly structured.
 
 ## Rules
 

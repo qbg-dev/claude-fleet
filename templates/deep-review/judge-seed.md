@@ -16,6 +16,15 @@ Read: `{{SESSION_DIR}}/candidates.json`
 
 This contains the findings that survived voting. Each has: id, tier, votes, avg_confidence, location, severity, kind, title, description, evidence, suggestion.
 
+## Inter-Worker Communications
+
+Check `{{SESSION_DIR}}/comms/` for messages between workers. These may contain:
+- Cross-specialist confirmations or denials of findings
+- Additional context about code paths or patterns
+- FYI messages about related issues
+
+Use this context when evaluating findings — a finding confirmed by comms from another specialist is stronger.
+
 ## For each candidate finding
 
 Investigate independently — don't trust the worker's evidence at face value:
@@ -60,7 +69,13 @@ Write `{{SESSION_DIR}}/judged.json`:
 
 ## Completion
 
-After writing `judged.json`:
+After writing `judged.json`, validate it:
+
+```bash
+bash {{VALIDATOR}} {{SESSION_DIR}}/judged.json judge
+```
+
+If validation fails, fix the JSON and re-validate. Then create the sentinel:
 
 ```bash
 echo "done" > {{SESSION_DIR}}/judge.done

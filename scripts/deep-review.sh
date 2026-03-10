@@ -53,6 +53,10 @@ NO_CONTEXT=false
 FORCE=false
 VERIFY=false
 VERIFY_ROLES=""
+V1_MODE=false
+MAX_WORKERS=""
+NO_WORKTREE=false
+VALIDATOR="$CLAUDE_OPS/scripts/validate-findings.sh"
 
 # ── Attack vectors per specialization ──────────────────────
 get_attack_vectors() {
@@ -119,6 +123,9 @@ while [[ $# -gt 0 ]]; do
     --force)     FORCE=true; shift ;;
     --verify)    VERIFY=true; shift ;;
     --verify-roles) VERIFY_ROLES="$2"; shift 2 ;;
+    --v1)        V1_MODE=true; shift ;;
+    --max-workers) MAX_WORKERS="$2"; shift 2 ;;
+    --no-worktree) NO_WORKTREE=true; shift ;;
     # Legacy aliases
     --base)        SCOPE="$2"; shift 2 ;;
     --commit)      SCOPE="$2"; shift 2 ;;
@@ -147,6 +154,9 @@ while [[ $# -gt 0 ]]; do
       echo "  --force              Force review even if auto-skip would trigger"
       echo "  --verify             Enable verification phase after review completes"
       echo "  --verify-roles LIST  Comma-separated user roles to test as (e.g. admin,shenlan-pm)"
+      echo "  --v1                 Use v1 mode (static focus areas, no role designer, no worktree)"
+      echo "  --max-workers N      Max worker budget for role designer (default: passes × 8)"
+      echo "  --no-worktree        Run workers in PROJECT_ROOT (no worktree isolation)"
       echo "                       Diff: security,logic,error-handling,data-integrity,architecture,performance,ux-impact,completeness"
       echo "                       Content: correctness,completeness,feasibility,risks"
       echo "                       Mixed: security,logic,correctness,completeness,feasibility,risks"
@@ -305,6 +315,31 @@ HISTORY_FILE="$PROJECT_ROOT/.claude/state/deep-review/history.jsonl"
 
 echo "Session: $SESSION_DIR"
 
+# ── Worktree isolation (v2) ────────────────────────────────────────
+WORK_DIR="$PROJECT_ROOT"
+WORKTREE_DIR=""
+WORKTREE_BRANCH=""
+
+if ! $NO_WORKTREE && ! $V1_MODE; then
+  WORKTREE_BRANCH="deep-review/${SESSION_ID}"
+  WORKTREE_DIR="${PROJECT_ROOT}/../$(basename "$PROJECT_ROOT")-dr-${SESSION_ID}"
+  echo "Creating worktree: $WORKTREE_DIR"
+  if git worktree add "$WORKTREE_DIR" -b "$WORKTREE_BRANCH" HEAD 2>/dev/null; then
+    WORK_DIR="$WORKTREE_DIR"
+    echo "  Worktree: $WORKTREE_DIR (branch: $WORKTREE_BRANCH)"
+    # Record for cleanup
+    echo "$WORKTREE_DIR" > "$SESSION_DIR/worktree-path.txt"
+    echo "$WORKTREE_BRANCH" > "$SESSION_DIR/worktree-branch.txt"
+  else
+    echo "  WARN: Failed to create worktree, running in PROJECT_ROOT"
+    WORKTREE_DIR=""
+    WORKTREE_BRANCH=""
+  fi
+fi
+
+# ── Comms directory for inter-worker communication ──────────────
+mkdir -p "$SESSION_DIR/comms"
+
 # ── Collect material (additive) ──────────────────────────────
 MATERIAL_FILE="$SESSION_DIR/material-full.txt"
 DIFF_DESC_PARTS=()
@@ -442,8 +477,109 @@ if ! $FORCE && $HAS_DIFF && ! $HAS_CONTENT; then
   fi
 fi
 
-# ── Smart focus auto-detection (runs after material is available) ──
-if [ -z "$CUSTOM_FOCUS" ] && $HAS_DIFF; then
+# ── Detect material type ──────────────────────────────────────────
+detect_material_type() {
+  if $HAS_DIFF && ! $HAS_CONTENT; then
+    echo "code_diff"
+  elif ! $HAS_DIFF && $HAS_CONTENT; then
+    local first_file=$(echo "$CONTENT_FILES" | cut -d',' -f1 | sed 's/^[[:space:]]*//')
+    case "$first_file" in
+      *.md|*.txt|*.doc|*.docx|*.pdf) echo "document" ;;
+      *.json|*.yaml|*.yml|*.toml|*.xml) echo "config" ;;
+      *) echo "document" ;;
+    esac
+  elif $HAS_DIFF && $HAS_CONTENT; then
+    echo "mixed"
+  else
+    echo "code_diff"
+  fi
+}
+MATERIAL_TYPE=$(detect_material_type)
+echo "Material type: $MATERIAL_TYPE"
+
+# ── Phase 0: Dynamic Role Designer (v2 only) ─────────────────────
+ROLES_FILE="$SESSION_DIR/roles.json"
+USE_DYNAMIC_ROLES=false
+
+if ! $V1_MODE; then
+  MAX_W="${MAX_WORKERS:-$((PASSES_PER_FOCUS * 8))}"
+  echo ""
+  echo "Phase 0: Designing review team (Sonnet)..."
+
+  # Generate role designer seed from template
+  ROLE_DESIGNER_SEED="$SESSION_DIR/role-designer-seed.md"
+  _RD_REVIEW_CONFIG="$REVIEW_CONFIG" _RD_REVIEW_SPEC="$REVIEW_SPEC" python3 -c "
+import sys, os
+with open(sys.argv[1]) as f: content = f.read()
+replacements = {
+    '{{MATERIAL_FILE}}': sys.argv[2],
+    '{{MATERIAL_TYPE}}': sys.argv[3],
+    '{{MATERIAL_LINES}}': sys.argv[4],
+    '{{MAX_WORKERS}}': sys.argv[5],
+    '{{ROLES_FILE}}': sys.argv[6],
+    '{{REVIEW_CONFIG}}': os.environ.get('_RD_REVIEW_CONFIG', ''),
+    '{{REVIEW_SPEC}}': os.environ.get('_RD_REVIEW_SPEC', 'Review this material thoroughly.'),
+}
+for k, v in replacements.items():
+    content = content.replace(k, v)
+with open(sys.argv[7], 'w') as f: f.write(content)
+" "$TEMPLATE_DIR/role-designer-seed.md" \
+  "$MATERIAL_FILE" "$MATERIAL_TYPE" "$DIFF_LINES" "$MAX_W" \
+  "$ROLES_FILE" "$ROLE_DESIGNER_SEED"
+
+  # Run Sonnet to design roles (non-interactive, 90s timeout)
+  if timeout 90 claude -p --model sonnet --dangerously-skip-permissions \
+    "$(cat "$ROLE_DESIGNER_SEED")" > /dev/null 2>&1; then
+    if [ -f "$ROLES_FILE" ] && jq empty "$ROLES_FILE" 2>/dev/null; then
+      ROLE_COUNT=$(jq '.roles | length' "$ROLES_FILE")
+      ROLE_TOTAL=$(jq '.total_workers' "$ROLES_FILE")
+      echo "  Roles designed: $ROLE_TOTAL workers across $ROLE_COUNT roles"
+      echo "  Rationale: $(jq -r '.rationale' "$ROLES_FILE" | head -1 | cut -c1-100)"
+
+      # Parse roles into FOCUS_AREAS with per-role attack vectors
+      FOCUS_AREAS=()
+      declare -a CUSTOM_AVS=()
+      ROLE_NAMES_LIST=""
+
+      for role_idx in $(seq 0 $((ROLE_COUNT - 1))); do
+        ROLE_ID=$(jq -r ".roles[$role_idx].id" "$ROLES_FILE")
+        ROLE_PASSES=$(jq -r ".roles[$role_idx].passes" "$ROLES_FILE")
+        ROLE_AV=$(jq -r ".roles[$role_idx].attack_vectors" "$ROLES_FILE")
+        ROLE_NAME=$(jq -r ".roles[$role_idx].name" "$ROLES_FILE")
+
+        # Store custom attack vectors for this role
+        echo "$ROLE_AV" > "$SESSION_DIR/av-$ROLE_ID.txt"
+        ROLE_NAMES_LIST="${ROLE_NAMES_LIST:+$ROLE_NAMES_LIST, }$ROLE_ID(×$ROLE_PASSES)"
+
+        for _ in $(seq 1 "$ROLE_PASSES"); do
+          FOCUS_AREAS+=("$ROLE_ID")
+        done
+      done
+
+      # Recalculate totals
+      NUM_FOCUS=$ROLE_COUNT
+      TOTAL_WORKERS=${#FOCUS_AREAS[@]}
+      # PASSES_PER_FOCUS = max across roles (used for coordinator context)
+      PASSES_PER_FOCUS=1
+      for role_idx in $(seq 0 $((ROLE_COUNT - 1))); do
+        RP=$(jq -r ".roles[$role_idx].passes" "$ROLES_FILE")
+        [ "$RP" -gt "$PASSES_PER_FOCUS" ] && PASSES_PER_FOCUS="$RP"
+      done
+
+      USE_DYNAMIC_ROLES=true
+      echo "  Roles: $ROLE_NAMES_LIST"
+      echo "  Max passes/focus: $PASSES_PER_FOCUS | Total workers: $TOTAL_WORKERS"
+    else
+      echo "  WARN: Role designer produced invalid roles.json, falling back to v1"
+    fi
+  else
+    echo "  WARN: Role designer failed (timeout or error), falling back to v1"
+  fi
+  echo ""
+fi
+
+# ── Smart focus auto-detection (v1 mode only — v2 uses role designer) ──
+if [ -z "$CUSTOM_FOCUS" ] && $HAS_DIFF && ! $USE_DYNAMIC_ROLES; then
   FOCUS_CHANGED=false
 
   # Auto-include claude-md if project has CLAUDE.md and >50% TS/JS files changed
@@ -507,27 +643,60 @@ if $HAS_DIFF && ! $NO_CONTEXT; then
 
   if [ "$CHANGED_COUNT" -gt 0 ]; then (
     # Run in subshell so set -e doesn't abort the main script on pre-pass failures
-    # 1. Static analysis — tsc errors for changed files (best-effort, non-fatal)
+    # 1. Static analysis — try lightweight linters first, fall back to tsc
     echo "  Running static analysis..."
     SA_FILE="$SESSION_DIR/static-analysis.txt"
-    if command -v npx &>/dev/null && [ -f "$PROJECT_ROOT/tsconfig.json" ]; then
+    SA_TOOL_USED=""
+
+    # Write changed files list for linters that accept file args
+    CHANGED_FILES_TMP="$SESSION_DIR/_changed_files.txt"
+    echo "$CHANGED_FILES" > "$CHANGED_FILES_TMP"
+
+    # Try oxlint first (Rust-based, ~100x faster than ESLint)
+    if [ -z "$SA_TOOL_USED" ] && command -v oxlint &>/dev/null; then
+      cd "$PROJECT_ROOT"
+      # oxlint accepts file paths directly
+      TS_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(ts|tsx|js|jsx)$' || true)
+      if [ -n "$TS_FILES" ]; then
+        echo "$TS_FILES" | xargs timeout 15 oxlint --quiet 2>&1 > "$SA_FILE" || true
+        SA_TOOL_USED="oxlint"
+      fi
+    fi
+
+    # Try biome (Rust-based, fast)
+    if [ -z "$SA_TOOL_USED" ] && command -v biome &>/dev/null; then
+      cd "$PROJECT_ROOT"
+      TS_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(ts|tsx|js|jsx|json)$' || true)
+      if [ -n "$TS_FILES" ]; then
+        echo "$TS_FILES" | xargs timeout 20 biome check --no-errors-on-unmatched 2>&1 > "$SA_FILE" || true
+        SA_TOOL_USED="biome"
+      fi
+    fi
+
+    # Fall back to tsc --noEmit (slower but always available with tsconfig)
+    if [ -z "$SA_TOOL_USED" ] && command -v npx &>/dev/null && [ -f "$PROJECT_ROOT/tsconfig.json" ]; then
       cd "$PROJECT_ROOT"
       TSC_OUT=$(timeout 30 npx tsc --noEmit 2>&1 || true)
       # Filter to only errors in changed files
       while IFS= read -r cfile; do
         echo "$TSC_OUT" | grep -F "$cfile" >> "$SA_FILE" 2>/dev/null || true
       done <<< "$CHANGED_FILES"
+      SA_TOOL_USED="tsc"
+    fi
+
+    if [ -n "$SA_TOOL_USED" ]; then
       if [ -s "$SA_FILE" ]; then
         SA_LINES=$(wc -l < "$SA_FILE" | tr -d ' ')
-        echo "    TypeScript: $SA_LINES error lines"
+        echo "    $SA_TOOL_USED: $SA_LINES diagnostic lines"
       else
-        echo "# No TypeScript errors in changed files" > "$SA_FILE"
-        echo "    TypeScript: clean"
+        echo "# No issues found in changed files ($SA_TOOL_USED)" > "$SA_FILE"
+        echo "    $SA_TOOL_USED: clean"
       fi
     else
-      echo "# No tsconfig.json found — static analysis skipped" > "$SA_FILE"
-      echo "    (no tsconfig.json, skipped)"
+      echo "# No static analysis tool available (install oxlint, biome, or ensure tsconfig.json exists)" > "$SA_FILE"
+      echo "    (no linter available, skipped — install oxlint for fast analysis)"
     fi
+    rm -f "$CHANGED_FILES_TMP"
 
     # 2. Dependency graph — imports and callers
     echo "  Building dependency graph..."
@@ -560,34 +729,66 @@ FOCUS_LIST_CSV=$(IFS=','; echo "${FOCUS_AREAS[*]}")
 # ── Generate seed prompts from templates ─────────────────────
 echo "Generating seed prompts..."
 
+# Build worker roster for comms
+WORKER_ROSTER=""
 for i in $(seq 1 "$TOTAL_WORKERS"); do
-  FOCUS_IDX=$(( (i - 1) / PASSES_PER_FOCUS ))
-  PASS_IN_FOCUS=$(( (i - 1) % PASSES_PER_FOCUS + 1 ))
-  FOCUS="${FOCUS_AREAS[$FOCUS_IDX]}"
+  _FOCUS="${FOCUS_AREAS[$(( (i - 1) ))]}"  # flat array, 0-indexed
+  WORKER_ROSTER="${WORKER_ROSTER}- Worker $i: $_FOCUS\n"
+done
+echo -e "$WORKER_ROSTER" > "$SESSION_DIR/worker-roster.txt"
 
-  # Resolve attack vectors for this specialization
-  AV="$(get_attack_vectors "$FOCUS")"
+for i in $(seq 1 "$TOTAL_WORKERS"); do
+  # In v2, FOCUS_AREAS is flat (each entry = one worker's role)
+  # In v1, it's grouped: FOCUS_IDX = (i-1) / PASSES_PER_FOCUS
+  if $USE_DYNAMIC_ROLES; then
+    FOCUS="${FOCUS_AREAS[$(( i - 1 ))]}"
+    # Compute pass-in-focus: count occurrences of this focus before position i
+    PASS_IN_FOCUS=0
+    for j in $(seq 0 $(( i - 1 ))); do
+      [ "${FOCUS_AREAS[$j]}" = "$FOCUS" ] && PASS_IN_FOCUS=$((PASS_IN_FOCUS + 1))
+    done
+    # Count total passes for this focus
+    _FOCUS_TOTAL=0
+    for fa in "${FOCUS_AREAS[@]}"; do
+      [ "$fa" = "$FOCUS" ] && _FOCUS_TOTAL=$((_FOCUS_TOTAL + 1))
+    done
+  else
+    FOCUS_IDX=$(( (i - 1) / PASSES_PER_FOCUS ))
+    PASS_IN_FOCUS=$(( (i - 1) % PASSES_PER_FOCUS + 1 ))
+    FOCUS="${FOCUS_AREAS[$FOCUS_IDX]}"
+    _FOCUS_TOTAL=$PASSES_PER_FOCUS
+  fi
+
+  # Resolve attack vectors: custom (from roles.json) or built-in
+  if [ -f "$SESSION_DIR/av-$FOCUS.txt" ]; then
+    AV="$(cat "$SESSION_DIR/av-$FOCUS.txt")"
+  else
+    AV="$(get_attack_vectors "$FOCUS")"
+  fi
 
   sed \
     -e "s|{{PASS_NUMBER}}|$i|g" \
     -e "s|{{PASS_IN_FOCUS}}|$PASS_IN_FOCUS|g" \
-    -e "s|{{PASSES_PER_FOCUS}}|$PASSES_PER_FOCUS|g" \
+    -e "s|{{PASSES_PER_FOCUS}}|$_FOCUS_TOTAL|g" \
     -e "s|{{NUM_PASSES}}|$TOTAL_WORKERS|g" \
     -e "s|{{MATERIAL_FILE}}|$SESSION_DIR/material-pass-$i.txt|g" \
     -e "s|{{OUTPUT_FILE}}|$SESSION_DIR/findings-pass-$i.json|g" \
     -e "s|{{DONE_FILE}}|$SESSION_DIR/pass-$i.done|g" \
-    -e "s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g" \
+    -e "s|{{PROJECT_ROOT}}|$WORK_DIR|g" \
     -e "s|{{SESSION_DIR}}|$SESSION_DIR|g" \
     -e "s|{{SPECIALIZATION}}|$FOCUS|g" \
     -e "s|{{SPEC}}|$REVIEW_SPEC|g" \
+    -e "s|{{VALIDATOR}}|$VALIDATOR|g" \
+    -e "s|{{ROLE_ID}}|$FOCUS|g" \
     "$TEMPLATE_DIR/worker-seed.md" > "$SESSION_DIR/worker-$i-seed.md"
 
-  # Attack vectors + REVIEW_CONFIG may contain special chars — use python for safe substitution
-  _REVIEW_CONFIG="$REVIEW_CONFIG" python3 -c "
+  # Attack vectors + REVIEW_CONFIG + WORKER_ROSTER may contain special chars — use python
+  _REVIEW_CONFIG="$REVIEW_CONFIG" _WORKER_ROSTER="$WORKER_ROSTER" python3 -c "
 import sys, os
 with open(sys.argv[1]) as f: content = f.read()
 content = content.replace('{{ATTACK_VECTORS}}', sys.argv[2])
 content = content.replace('{{REVIEW_CONFIG}}', os.environ.get('_REVIEW_CONFIG', ''))
+content = content.replace('{{WORKER_ROSTER}}', os.environ.get('_WORKER_ROSTER', ''))
 with open(sys.argv[1], 'w') as f: f.write(content)
 " "$SESSION_DIR/worker-$i-seed.md" "$AV"
 done
@@ -611,30 +812,56 @@ replacements = {
     '{{DIFF_DESC}}': sys.argv[13],
     '{{MATERIAL_TYPES}}': sys.argv[14],
     '{{REVIEW_CONFIG}}': os.environ.get('_REVIEW_CONFIG', ''),
+    '{{WORKTREE_DIR}}': sys.argv[16],
+    '{{VALIDATOR}}': sys.argv[17],
 }
 for k, v in replacements.items():
     content = content.replace(k, v)
 with open(sys.argv[15], 'w') as f: f.write(content)
 " "$TEMPLATE_DIR/coordinator-seed.md" \
-  "$SESSION_DIR" "$SESSION_ID" "$PROJECT_ROOT" \
+  "$SESSION_DIR" "$SESSION_ID" "$WORK_DIR" \
   "$TOTAL_WORKERS" "$PASSES_PER_FOCUS" "$NUM_FOCUS" \
   "$FOCUS_LIST_CSV" "$SESSION_DIR/report.md" "$HISTORY_FILE" \
   "$NOTIFY_TARGET" "$REVIEW_SESSION" "$DIFF_DESC" \
-  "$MATERIAL_TYPES_STR" "$SESSION_DIR/coordinator-seed.md"
+  "$MATERIAL_TYPES_STR" "$SESSION_DIR/coordinator-seed.md" \
+  "${WORKTREE_DIR:-}" "$VALIDATOR"
 
-# ── Create launch wrappers ───────────────────────────────────
+# ── Create launch wrappers (with post-exit validation) ────────
 for i in $(seq 1 "$TOTAL_WORKERS"); do
   cat > "$SESSION_DIR/run-pass-$i.sh" << WEOF
 #!/usr/bin/env bash
-cd "$PROJECT_ROOT"
-exec claude --model $WORKER_MODEL --dangerously-skip-permissions "\$(cat '$SESSION_DIR/worker-$i-seed.md')"
+cd "$WORK_DIR"
+
+# Run the review worker
+claude --model $WORKER_MODEL --dangerously-skip-permissions "\$(cat '$SESSION_DIR/worker-$i-seed.md')"
+
+# Post-exit validation: ensure findings JSON is structurally valid
+OUTPUT_FILE="$SESSION_DIR/findings-pass-$i.json"
+DONE_FILE="$SESSION_DIR/pass-$i.done"
+VALIDATOR="$VALIDATOR"
+
+if [ -f "\$OUTPUT_FILE" ]; then
+  if bash "\$VALIDATOR" "\$OUTPUT_FILE" worker > /dev/null 2>&1; then
+    # Valid output — ensure sentinel exists
+    [ ! -f "\$DONE_FILE" ] && echo "done" > "\$DONE_FILE"
+    echo "[pass-$i] Findings validated successfully"
+  else
+    echo "[pass-$i] WARNING: Findings validation failed:"
+    bash "\$VALIDATOR" "\$OUTPUT_FILE" worker 2>&1 || true
+    # Create sentinel anyway to not block pipeline, but mark as invalid
+    echo "invalid" > "\$DONE_FILE"
+  fi
+else
+  echo "[pass-$i] WARNING: No findings file produced"
+  echo "no-output" > "\$DONE_FILE"
+fi
 WEOF
   chmod +x "$SESSION_DIR/run-pass-$i.sh"
 done
 
 cat > "$SESSION_DIR/run-coordinator.sh" << CEOF
 #!/usr/bin/env bash
-cd "$PROJECT_ROOT"
+cd "$WORK_DIR"
 exec claude --model $COORD_MODEL --dangerously-skip-permissions "\$(cat '$SESSION_DIR/coordinator-seed.md')"
 CEOF
 chmod +x "$SESSION_DIR/run-coordinator.sh"
@@ -643,21 +870,24 @@ chmod +x "$SESSION_DIR/run-coordinator.sh"
 if ! $NO_JUDGE && [ -f "$TEMPLATE_DIR/judge-seed.md" ]; then
   sed \
     -e "s|{{SESSION_DIR}}|$SESSION_DIR|g" \
-    -e "s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g" \
+    -e "s|{{PROJECT_ROOT}}|$WORK_DIR|g" \
     -e "s|{{NUM_PASSES}}|$TOTAL_WORKERS|g" \
+    -e "s|{{VALIDATOR}}|$VALIDATOR|g" \
     "$TEMPLATE_DIR/judge-seed.md" > "$SESSION_DIR/judge-seed.md"
 
-  # Safe-substitute REVIEW_CONFIG into judge
+  # Safe-substitute REVIEW_CONFIG + COMMS_LOG into judge
   _REVIEW_CONFIG="$REVIEW_CONFIG" python3 -c "
 import sys, os
 with open(sys.argv[1]) as f: content = f.read()
 content = content.replace('{{REVIEW_CONFIG}}', os.environ.get('_REVIEW_CONFIG', ''))
+# Comms log placeholder — coordinator populates before launching judge
+content = content.replace('{{COMMS_LOG}}', '(check {{SESSION_DIR}}/comms/ for inter-worker messages)')
 with open(sys.argv[1], 'w') as f: f.write(content)
 " "$SESSION_DIR/judge-seed.md"
 
   cat > "$SESSION_DIR/run-judge.sh" << JEOF
 #!/usr/bin/env bash
-cd "$PROJECT_ROOT"
+cd "$WORK_DIR"
 exec claude --model $WORKER_MODEL --dangerously-skip-permissions "\$(cat '$SESSION_DIR/judge-seed.md')"
 JEOF
   chmod +x "$SESSION_DIR/run-judge.sh"
@@ -718,16 +948,26 @@ echo "  DEEP REVIEW LAUNCHED"
 echo ""
 echo "  Session:     $REVIEW_SESSION"
 echo "  Dir:         $SESSION_DIR"
-echo "  Material:    $MATERIAL_TYPES_STR"
+echo "  Material:    $MATERIAL_TYPES_STR ($MATERIAL_TYPE)"
 echo "  Reviewing:   $DIFF_DESC ($DIFF_LINES lines)"
 if [ -n "$REVIEW_SPEC" ] && [ "$REVIEW_SPEC" != "Review this material thoroughly for issues, gaps, and improvements." ]; then
 echo "  Spec:        $REVIEW_SPEC"
 fi
 echo ""
+if $USE_DYNAMIC_ROLES; then
+echo "  Mode:        v2 (dynamic roles from role designer)"
+echo "  Roles:       $(jq -r '[.roles[].id] | join(", ")' "$ROLES_FILE" 2>/dev/null || echo "${FOCUS_AREAS[*]}")"
+else
+echo "  Mode:        v1 (static focus areas)"
 echo "  Focus areas ($NUM_FOCUS): ${FOCUS_AREAS[*]}"
-echo "  Passes/focus: $PASSES_PER_FOCUS"
+fi
+echo "  Passes/focus: $PASSES_PER_FOCUS (max)"
 echo "  Total workers: $TOTAL_WORKERS (model: $WORKER_MODEL)"
 echo "  Coordinator: $REVIEW_SESSION:coordinator (model: $COORD_MODEL)"
+if [ -n "$WORKTREE_DIR" ]; then
+echo "  Worktree:    $WORKTREE_DIR"
+echo "  Branch:      $WORKTREE_BRANCH"
+fi
 echo ""
 for w in $(seq 1 "$NUM_WORKER_WINDOWS"); do
   FIRST=$((  (w - 1) * 4 + 1 ))
@@ -744,6 +984,7 @@ echo "  Attach: tmux switch-client -t $REVIEW_SESSION"
 echo "          tmux a -t $REVIEW_SESSION"
 echo ""
 echo "  Voting: graduated (confidence + votes)"
+echo "  Validation: post-exit JSON validation enforced"
 if ! $NO_JUDGE && [ -f "$SESSION_DIR/run-judge.sh" ]; then
 echo "  Judge: enabled (adversarial validation)"
 else
@@ -754,164 +995,149 @@ echo "  Context: pre-gathered (static analysis, deps, tests)"
 fi
 echo "  Report: $SESSION_DIR/report.md"
 if $VERIFY; then
-echo "  Verify: enabled (verifier spawns after coordinator)"
+echo "  Verify: enabled (verifiers spawn after coordinator)"
 fi
+echo ""
+echo "  ── RECOMMENDATION ──────────────────────────────────────"
+echo "  Deep review takes 15-25 min. While it runs, consider:"
+echo "  • Work on generic/simple issues from your task list"
+echo "  • Launch targeted quick reviews on specific files"
+echo "  • Continue development — deep review catches the gnarly"
+echo "    bugs and unexpected errors in the background."
+echo "  You'll be notified when results are ready."
 echo "════════════════════════════════════════════════════════════"
 
-# ── Verification phase (spawns after coordinator completes) ───
+# ── Verification phase (multi-verifier, spawns after coordinator) ──
 if $VERIFY; then
   VERIFIER_ROLES_ARG=""
   [ -n "$VERIFY_ROLES" ] && VERIFIER_ROLES_ARG="Test as these user roles: $VERIFY_ROLES"
 
-  cat > "$SESSION_DIR/verifier-seed.md" << VEOF
-# Deep Review Verifier
+  # Define verifier types and their specific setup/protocol
+  declare -A VERIFY_SETUP VERIFY_PROTOCOL
 
-You are the verification worker for a deep review session. Your job: walk through the verification checklist and confirm every enumerated path works correctly.
+  VERIFY_SETUP[chrome]="Deploy to a test slot:
+\`\`\`bash
+cd $WORK_DIR
+bash .claude/scripts/worker/deploy-to-slot.sh --service static
+\`\`\`
+Note the slot URL from the deploy output. Open it in Chrome MCP.
+Login as each relevant user role. $VERIFIER_ROLES_ARG"
 
-## Session
-
-- Session dir: $SESSION_DIR
-- Project root: $PROJECT_ROOT
-- Report: $SESSION_DIR/report.md
-- Checklist: $SESSION_DIR/verification-checklist.md
-
-## Setup
-
-1. Wait for the coordinator to finish: poll for \`$SESSION_DIR/review.done\` every 15 seconds.
-2. Once it exists, read \`$SESSION_DIR/verification-checklist.md\`.
-3. Deploy to a test slot:
-   \`\`\`bash
-   cd $PROJECT_ROOT
-   bash .claude/scripts/worker/deploy-to-slot.sh --service static
-   \`\`\`
-4. Note the slot URL from the deploy output.
-
-## Verification Protocol
-
-For each checklist item, use the appropriate method:
-
-### Chrome MCP (UI paths)
+  VERIFY_PROTOCOL[chrome]="For each Chrome path:
 - Open the slot URL in Chrome MCP
-- Login as each relevant user role
 - Walk through each UI path, verify expected behavior
 - Check browser console for errors (zero errors acceptable, warnings OK)
 - Test both desktop and mobile viewports
+- Capture evidence (console output, page text)"
 
-### curl (API endpoints)
-- Get auth tokens: \`bash .claude/scripts/autologin.sh staff --env test\`
-- Execute each curl command against the test slot
+  VERIFY_SETUP[curl]="Get auth tokens:
+\`\`\`bash
+bash .claude/scripts/autologin.sh staff --env test
+\`\`\`"
+
+  VERIFY_PROTOCOL[curl]="For each API endpoint:
+- Execute the curl command against the test server
 - Verify response status codes and body structure
+- Check error branches (invalid input, missing auth, wrong role)
+- Record exact responses as evidence"
 
-### Script (write & run)
-- Write verification scripts to \`.claude/scripts/verify/\` directory
-- Run them and capture output
-- Scripts should test specific scenarios that are hard to verify manually
+  VERIFY_SETUP[test]="Ensure test environment is ready:
+\`\`\`bash
+cd $WORK_DIR
+bun test --help > /dev/null 2>&1
+\`\`\`"
 
-### Tests (unit/integration)
+  VERIFY_PROTOCOL[test]="For each test path:
 - Write test cases in \`src/tests/unit/\` or \`src/tests/isolated/\`
 - Run with \`bun test <file>\` and verify they pass
 - Focus on boundary conditions and error paths
+- Include the test file path in evidence"
 
-### Code Review (read-only)
-- Read the source files, trace callers
-- Verify contracts are preserved
-- Note any concerns
+  VERIFY_SETUP[script]="No special setup needed. Write scripts to \`.claude/scripts/verify/\` directory."
 
-### Query (database)
-- Run queries against the test database
-- Verify data shape and content
+  VERIFY_PROTOCOL[script]="For each script path:
+- Write a verification script that exercises the scenario end-to-end
+- Run it and capture output
+- Scripts should be idempotent and self-contained
+- Include the script path and output in evidence"
 
-$VERIFIER_ROLES_ARG
+  # Generate verifier seeds and wrappers from template
+  VERIFIER_TYPES=("chrome" "curl" "test" "script")
+  VERIFIER_COUNT=0
 
-## Output
+  for vtype in "${VERIFIER_TYPES[@]}"; do
+    VERIFIER_COUNT=$((VERIFIER_COUNT + 1))
+    VOUTPUT="$SESSION_DIR/verification-${vtype}-results.json"
+    VDONE="$SESSION_DIR/verify-${vtype}.done"
 
-Write results to \`$SESSION_DIR/verification-results.md\`:
+    # Generate seed from template
+    sed \
+      -e "s|{{VERIFY_TYPE}}|$vtype|g" \
+      -e "s|{{SESSION_DIR}}|$SESSION_DIR|g" \
+      -e "s|{{PROJECT_ROOT}}|$WORK_DIR|g" \
+      -e "s|{{OUTPUT_FILE}}|$VOUTPUT|g" \
+      -e "s|{{DONE_FILE}}|$VDONE|g" \
+      -e "s|{{VALIDATOR}}|$VALIDATOR|g" \
+      "$TEMPLATE_DIR/verifier-seed.md" > "$SESSION_DIR/verifier-${vtype}-seed.md"
 
-\`\`\`markdown
-# Verification Results
+    # Safe-substitute setup and protocol (may contain special chars)
+    python3 -c "
+import sys
+with open(sys.argv[1]) as f: content = f.read()
+content = content.replace('{{VERIFY_SETUP}}', sys.argv[2])
+content = content.replace('{{VERIFY_PROTOCOL}}', sys.argv[3])
+with open(sys.argv[1], 'w') as f: f.write(content)
+" "$SESSION_DIR/verifier-${vtype}-seed.md" "${VERIFY_SETUP[$vtype]}" "${VERIFY_PROTOCOL[$vtype]}"
 
-**Session**: $(basename "$SESSION_DIR")
-**Date**: <date>
-**Slot**: <slot URL>
-
-## Summary
-- **Total paths**: <N>
-- **Passed**: <N>
-- **Failed**: <N>
-- **Skipped**: <N> (with reason)
-
-## Results by Method
-
-### Chrome MCP
-- [x] P1: <description> — PASS
-- [ ] P2: <description> — FAIL: <what went wrong>
-
-### curl
-- [x] P10: <description> — PASS (200, response matched)
-- [ ] P11: <description> — FAIL: got 500, expected 400
-
-### Scripts Written
-- \`verify-auth-roles.sh\`: Tests all auth role combinations — PASS
-- \`verify-data-isolation.sh\`: Tests cross-project data leak — PASS
-
-### Tests Written
-- \`src/tests/unit/new-feature.test.ts\`: 5 tests — ALL PASS
-
-### Code Review
-- [x] P40: <description> — confirmed correct
-
-### Query
-- [x] P50: <description> — results match expected shape
-
-## Failed Items (Detail)
-
-### P2: <description>
-**Expected**: ...
-**Actual**: ...
-**Evidence**: screenshot/console output/response body
-**Suggested fix**: ...
-\`\`\`
-
-After writing results, create the completion marker:
-\`\`\`bash
-echo "done" > $SESSION_DIR/verify.done
-\`\`\`
-
-Then send a desktop notification:
-\`\`\`bash
-notify "Verification complete: <N> passed, <N> failed. Results: $SESSION_DIR/verification-results.md" "Deep Review Verify" "file://$SESSION_DIR/verification-results.md"
-\`\`\`
-
-## Rules
-
-- **Test everything on the checklist** — don't skip items without a documented reason.
-- **Write scripts and tests** — don't just eyeball things. Automate what you can.
-- **Be specific in failure reports** — include exact error messages, response bodies, screenshots.
-- **Zero console errors** — any console error is a failure.
-- **Test data isolation** — verify users only see their own project's data.
-- When finished, say "VERIFICATION COMPLETE" and stop.
-VEOF
-
-  cat > "$SESSION_DIR/run-verifier.sh" << RVEOF
+    # Create wrapper that waits for coordinator, then validates output
+    cat > "$SESSION_DIR/run-verifier-${vtype}.sh" << RVEOF
 #!/usr/bin/env bash
-cd "$PROJECT_ROOT"
+cd "$WORK_DIR"
 
 # Wait for coordinator to finish
-echo "Verifier waiting for coordinator to complete..."
+echo "Verifier ($vtype) waiting for coordinator to complete..."
 while [ ! -f "$SESSION_DIR/review.done" ]; do
   sleep 15
-  echo "  ... still waiting ($(date +%H:%M:%S))"
+  echo "  ... still waiting (\$(date +%H:%M:%S))"
 done
-echo "Coordinator done. Starting verification."
+echo "Coordinator done. Starting $vtype verification."
 
-exec claude --model $WORKER_MODEL --dangerously-skip-permissions "\$(cat '$SESSION_DIR/verifier-seed.md')"
+claude --model $WORKER_MODEL --dangerously-skip-permissions "\$(cat '$SESSION_DIR/verifier-${vtype}-seed.md')"
+
+# Post-exit validation
+if [ -f "$VOUTPUT" ]; then
+  if bash "$VALIDATOR" "$VOUTPUT" verifier > /dev/null 2>&1; then
+    [ ! -f "$VDONE" ] && echo "done" > "$VDONE"
+    echo "[verifier-$vtype] Results validated"
+  else
+    echo "[verifier-$vtype] WARNING: Validation failed"
+    bash "$VALIDATOR" "$VOUTPUT" verifier 2>&1 || true
+    echo "invalid" > "$VDONE"
+  fi
+else
+  echo "[verifier-$vtype] No results produced"
+  echo "no-output" > "$VDONE"
+fi
 RVEOF
-  chmod +x "$SESSION_DIR/run-verifier.sh"
+    chmod +x "$SESSION_DIR/run-verifier-${vtype}.sh"
+  done
 
-  # Create verifier window in the review tmux session
-  tmux new-window -d -t "$REVIEW_SESSION" -n "verifier" -c "$PROJECT_ROOT"
+  # Create verifier window with 4 panes (one per verifier type)
+  tmux new-window -d -t "$REVIEW_SESSION" -n "verifiers" -c "$WORK_DIR"
+  for _ in $(seq 1 $((VERIFIER_COUNT - 1))); do
+    tmux split-window -d -t "$REVIEW_SESSION:verifiers" -c "$WORK_DIR"
+  done
+  tmux select-layout -t "$REVIEW_SESSION:verifiers" tiled
   sleep 0.5
-  VERIFIER_PANE=$(tmux list-panes -t "$REVIEW_SESSION:verifier" -F '#{pane_id}' | head -1)
-  echo "Launching verifier (will start after coordinator completes)..."
-  tmux send-keys -t "$VERIFIER_PANE" "bash '$SESSION_DIR/run-verifier.sh'" Enter
+
+  # Launch verifiers
+  echo "Launching $VERIFIER_COUNT verifiers (will start after coordinator completes)..."
+  VPANE_IDX=0
+  for vtype in "${VERIFIER_TYPES[@]}"; do
+    VPANE=$(tmux list-panes -t "$REVIEW_SESSION:verifiers" -F '#{pane_id}' | sed -n "$((VPANE_IDX + 1))p")
+    tmux send-keys -t "$VPANE" "bash '$SESSION_DIR/run-verifier-${vtype}.sh'" Enter
+    echo "  Verifier $vtype → $VPANE"
+    VPANE_IDX=$((VPANE_IDX + 1))
+    sleep 0.3
+  done
 fi

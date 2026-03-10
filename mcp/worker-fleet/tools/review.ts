@@ -16,7 +16,7 @@ server.registerTool(
   "deep_review",
   {
     description:
-      "Launch a multi-pass deep review pipeline (v3). Workers follow investigation protocols with structured attack vectors, confidence scoring, and chain-of-thought evidence. Context pre-pass gathers static analysis, dependency graphs, test coverage, and git blame context. Judge agent does adversarial validation. Reads REVIEW.md for project-specific 'Always Flag'/'Never Flag' rules. Material is ADDITIVE — combine scope (git diff) and content (files). `scope` auto-detects: branch=diff since branch, SHA=commit, 'uncommitted'=working changes, 'pr:N'=PR. Graduated voting uses confidence + votes. Auto-skips trivial changes (lockfile-only, <5 lines). Smart focus auto-detects claude-md and silent-failure specializations. Emoji severity markers (🔴🟡🔵🟣) in reports. Pre-existing issues tracked separately via blame context. Creates dedicated tmux session.",
+      "Launch a multi-pass deep review pipeline (v4). NEW in v2: dynamic role designer (Sonnet designs optimal team composition), worktree isolation (fixes on separate branch), inter-worker communication (file-based comms), post-exit output validation (JSON schema enforcement), multi-verifier dispatch (chrome/curl/test/script verifiers in parallel), lightweight static analysis (oxlint/biome/tsc auto-detect). Workers follow investigation protocols with structured attack vectors, confidence scoring, chain-of-thought evidence, and self-verification via subagents. Context pre-pass gathers static analysis, dependency graphs, test coverage, and git blame context. Judge agent does adversarial validation. Material is ADDITIVE. Use --v1 for legacy static focus areas. RECOMMENDATION: launch deep review then continue working on other tasks — it runs in the background and catches gnarly bugs while you handle generic issues.",
     inputSchema: {
       scope: z
         .string()
@@ -66,6 +66,18 @@ server.registerTool(
         .array(z.string())
         .optional()
         .describe("User roles to test as during verification (e.g. ['admin', 'shenlan-pm']). Only used when verify=true."),
+      v1: z
+        .boolean()
+        .optional()
+        .describe("Use v1 mode: static focus areas, no role designer, no worktree isolation. Default: false."),
+      max_workers: z
+        .number()
+        .optional()
+        .describe("Max worker budget for the role designer. Default: passes × 8."),
+      no_worktree: z
+        .boolean()
+        .optional()
+        .describe("Skip worktree isolation — run workers directly in PROJECT_ROOT. Default: false."),
     },
   },
   async ({
@@ -94,6 +106,9 @@ server.registerTool(
     force?: boolean;
     verify?: boolean;
     verify_roles?: string[];
+    v1?: boolean;
+    max_workers?: number;
+    no_worktree?: boolean;
   }) => {
     try {
       const scriptPath = join(CLAUDE_OPS, "scripts", "deep-review.sh");
@@ -142,6 +157,15 @@ server.registerTool(
       }
       if (verify_roles?.length) {
         args.push("--verify-roles", verify_roles.join(","));
+      }
+      if (v1) {
+        args.push("--v1");
+      }
+      if (max_workers) {
+        args.push("--max-workers", String(max_workers));
+      }
+      if (no_worktree) {
+        args.push("--no-worktree");
       }
 
       // Validate content files exist before spawning (fast fail with clear message)
@@ -215,9 +239,16 @@ server.registerTool(
             `        tmux a -t ${reviewSession}`,
             ``,
             `Pipeline: ${totalWorkers} workers -> bucket -> majority vote (>=2/${passesPerFocus} per focus group) -> validate -> dedup -> autofix -> report + notify`,
-            verify ? `Verify: enabled (verifier spawns after coordinator, tests all enumerated paths)` : `Verify: disabled`,
+            v1 ? `Mode: v1 (static focus areas)` : `Mode: v2 (dynamic roles, worktree isolation, output validation)`,
+            verify ? `Verify: enabled (4 specialized verifiers: chrome, curl, test, script)` : `Verify: disabled`,
             `Report: ${sessionDir}/report.md`,
-            verify ? `Verification: ${sessionDir}/verification-results.md` : "",
+            verify ? `Verification: ${sessionDir}/verification-*-results.json` : "",
+            ``,
+            `RECOMMENDATION: Deep review takes 15-25 min. While it runs:`,
+            `• Work on generic/simple issues from your task list`,
+            `• Launch targeted quick reviews on specific files`,
+            `• Continue development — deep review catches gnarly bugs in the background`,
+            `You'll be notified when results are ready.`,
           ].join("\n"),
         }],
       };

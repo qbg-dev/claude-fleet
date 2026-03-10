@@ -20,6 +20,14 @@ These rules define "Never Flag" and "Always Flag" patterns. Apply them during vo
 
 `{{SESSION_DIR}}`
 
+## Working directory
+
+Workers and fixes target: `{{PROJECT_ROOT}}`
+
+## Inter-Worker Communications
+
+Workers may have left messages in `{{SESSION_DIR}}/comms/`. Check this directory during Phase 2 (aggregate) — messages may provide cross-cutting context that strengthens or weakens findings.
+
 ## Pipeline
 
 ### Phase 1: Wait for workers
@@ -38,7 +46,17 @@ Proceed when all {{NUM_PASSES}} `.done` files exist. If after **8 minutes** some
 
 ### Phase 2: Aggregate
 
-Read all available findings files (`{{SESSION_DIR}}/findings-pass-{1..{{NUM_PASSES}}}.json`). Build a unified list of all reported findings, noting each worker's specialization. Specialized findings in their focus area carry slightly more weight.
+Read all available findings files (`{{SESSION_DIR}}/findings-pass-{1..{{NUM_PASSES}}}.json`).
+
+First, validate each file:
+```bash
+bash {{VALIDATOR}} {{SESSION_DIR}}/findings-pass-N.json worker
+```
+Skip any files that fail validation (the worker's output was malformed). Note which passes produced valid vs invalid output.
+
+Also check `{{SESSION_DIR}}/comms/` for inter-worker messages — these may provide cross-cutting context.
+
+Build a unified list of all reported findings, noting each worker's specialization. Specialized findings in their focus area carry slightly more weight.
 
 ### Phase 3: Bucket similar findings
 
@@ -376,6 +394,20 @@ Read the full report for details."
 ```
 
 Replace `<N>` with actual counts. Include the top 3 findings by impact.
+
+### Phase 10.5: Worktree cleanup
+
+If a worktree was created (check `{{SESSION_DIR}}/worktree-path.txt`):
+- If you applied fixes in Phase 8: **keep the worktree**. Note the branch name in the report so changes can be reviewed and merged.
+- If no fixes were applied: clean up the worktree:
+```bash
+WORKTREE_PATH=$(cat {{SESSION_DIR}}/worktree-path.txt 2>/dev/null)
+WORKTREE_BRANCH=$(cat {{SESSION_DIR}}/worktree-branch.txt 2>/dev/null)
+if [ -n "$WORKTREE_PATH" ]; then
+  git worktree remove "$WORKTREE_PATH" 2>/dev/null || true
+  git branch -d "$WORKTREE_BRANCH" 2>/dev/null || true
+fi
+```
 
 ## Rules
 
