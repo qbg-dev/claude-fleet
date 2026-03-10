@@ -19465,7 +19465,7 @@ import { execSync } from "child_process";
 import { join, basename } from "path";
 var HOME = process.env.HOME;
 var PROJECT_ROOT = process.env.PROJECT_ROOT || process.cwd();
-var CLAUDE_OPS = process.env.CLAUDE_OPS_DIR || join(HOME, ".claude-ops");
+var CLAUDE_OPS = process.env.TMUX_AGENTS_DIR || process.env.CLAUDE_OPS_DIR || join(HOME, ".tmux-agents");
 var WORKERS_DIR = join(PROJECT_ROOT, ".claude/workers");
 function _setWorkersDir(dir) {
   WORKERS_DIR = dir;

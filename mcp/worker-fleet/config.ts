@@ -10,7 +10,7 @@ import { existsSync } from "fs";
 // ── Path Constants ──────────────────────────────────────────────────
 export const HOME = process.env.HOME!;
 export const PROJECT_ROOT = process.env.PROJECT_ROOT || process.cwd();
-export const CLAUDE_OPS = process.env.CLAUDE_OPS_DIR || join(HOME, ".claude-ops");
+export const CLAUDE_OPS = process.env.TMUX_AGENTS_DIR || process.env.CLAUDE_OPS_DIR || join(HOME, ".tmux-agents");
 export let WORKERS_DIR = join(PROJECT_ROOT, ".claude/workers");
 
 /** For testing — override the workers directory */
