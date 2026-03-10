@@ -32,6 +32,11 @@
 set -euo pipefail
 
 CLAUDE_OPS="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
+# Ensure dr-context binary is ad-hoc signed (macOS kills unsigned binaries)
+DR_CONTEXT_BIN="$CLAUDE_OPS/bin/dr-context"
+if [ -x "$DR_CONTEXT_BIN" ] && ! codesign -v "$DR_CONTEXT_BIN" 2>/dev/null; then
+  codesign -s - "$DR_CONTEXT_BIN" 2>/dev/null || true
+fi
 TEMPLATE_DIR="$CLAUDE_OPS/templates/deep-review"
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 PASSES_PER_FOCUS=2
