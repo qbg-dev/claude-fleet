@@ -159,6 +159,44 @@ export function register(parent: Command): void {
         fail("Configure Fleet Mail, then re-run: fleet setup");
       }
 
+      // 9. Plugins
+      info("Detecting plugins...");
+
+      // Watchdog plugin
+      const watchdogPlugin = join(FLEET_DIR, "extensions/watchdog/watchdog.sh");
+      if (existsSync(watchdogPlugin)) {
+        const watchdogPlist = join(HOME, "Library/LaunchAgents/com.tmux-agents.watchdog.plist");
+        const legacyPlist = join(HOME, "Library/LaunchAgents/com.claude-ops.harness-watchdog.plist");
+        if (existsSync(watchdogPlist) || existsSync(legacyPlist)) {
+          ok("Watchdog plugin: installed (launchd daemon active)");
+        } else {
+          warn("Watchdog plugin: found but not installed as daemon");
+          console.log(`    Install: bash ${join(FLEET_DIR, "extensions/watchdog/install.sh")}`);
+        }
+      } else {
+        info("Watchdog plugin: not found (optional — supervises long-running workers)");
+      }
+
+      // Deep review
+      const deepReviewDir = process.env.DEEP_REVIEW_DIR || join(HOME, ".deep-review");
+      if (existsSync(join(deepReviewDir, "scripts/deep-review.sh"))) {
+        ok(`Deep review: ${deepReviewDir}`);
+      } else if (existsSync(join(FLEET_DIR, "scripts/deep-review.sh"))) {
+        ok("Deep review: bundled (in fleet repo)");
+      } else {
+        info("Deep review: not found (optional — multi-pass adversarial code review)");
+      }
+
+      // Claude hooks
+      const hooksDir = process.env.CLAUDE_HOOKS_DIR || join(HOME, ".claude-hooks");
+      if (existsSync(join(hooksDir, "hooks/manifest.json"))) {
+        ok(`Claude hooks: ${hooksDir}`);
+      } else if (existsSync(join(FLEET_DIR, "hooks/manifest.json"))) {
+        ok("Claude hooks: bundled (in fleet repo)");
+      } else {
+        info("Claude hooks: not found (optional — runtime hook injection)");
+      }
+
       console.log("");
       ok("Fleet setup complete!");
       console.log("");

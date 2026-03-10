@@ -1,0 +1,7 @@
+{
+  "check_interval": 30,
+  "stuck_threshold_sec": 600,
+  "max_crashes_per_hr": 3,
+  "max_cycle_sec": 7200,
+  "memory_limit_mb": 2048
+}

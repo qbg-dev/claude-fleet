@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# install.sh — Install watchdog as a launchd daemon (macOS)
+# Part of tmux-agents fleet. Monitors workers, respawns on crash.
+set -euo pipefail
+
+FLEET_DIR="${TMUX_AGENTS_DIR:-${CLAUDE_OPS_DIR:-$HOME/.tmux-agents}}"
+WATCHDOG_SCRIPT="$FLEET_DIR/plugins/watchdog/watchdog.sh"
+STATE_DIR="$FLEET_DIR/state"
+PLIST_NAME="com.tmux-agents.watchdog"
+PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME.plist"
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+
+if [ ! -f "$WATCHDOG_SCRIPT" ]; then
+  echo "ERROR: watchdog.sh not found at $WATCHDOG_SCRIPT"
+  echo "Install tmux-agents first: git clone ... ~/.tmux-agents"
+  exit 1
+fi
+
+if [ -f "$PLIST_PATH" ]; then
+  echo "Watchdog already installed at $PLIST_PATH"
+  echo "To reinstall: launchctl unload $PLIST_PATH && rm $PLIST_PATH && bash $0"
+  exit 0
+fi
+
+mkdir -p "$STATE_DIR"
+
+cat > "$PLIST_PATH" <<EOPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$PLIST_NAME</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>while true; do /bin/bash $WATCHDOG_SCRIPT; sleep 5; done</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>$HOME</string>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    <key>PROJECT_ROOT</key><string>$PROJECT_ROOT</string>
+    <key>CLAUDE_OPS_DIR</key><string>$FLEET_DIR</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>$STATE_DIR/watchdog.log</string>
+  <key>StandardErrorPath</key><string>$STATE_DIR/watchdog.log</string>
+</dict>
+</plist>
+EOPLIST
+
+launchctl load "$PLIST_PATH"
+echo "Watchdog installed and started: $PLIST_PATH"
+echo "Logs: tail -f $STATE_DIR/watchdog.log"
