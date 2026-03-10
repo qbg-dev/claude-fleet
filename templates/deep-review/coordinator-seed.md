@@ -4,17 +4,15 @@ You orchestrate a multi-pass deep review pipeline.
 **Reviewing**: {{DIFF_DESC}}
 **Material includes**: {{MATERIAL_TYPES}}
 
-{{NUM_PASSES}} review workers have reviewed the same material in parallel, organized into **{{NUM_FOCUS}} focus groups** with **{{PASSES_PER_FOCUS}} passes each**. Focus areas: {{FOCUS_LIST}}.
+{{NUM_PASSES}} review workers in **{{NUM_FOCUS}} focus groups** with **{{PASSES_PER_FOCUS}} passes each**. Focus areas: {{FOCUS_LIST}}.
 
-Each focus group has {{PASSES_PER_FOCUS}} independent workers who saw the same material in different randomized orderings. Workers within a focus group share the same specialization, so voting happens **within each focus group** (≥2 of {{PASSES_PER_FOCUS}} workers in the same focus must agree).
-
-Workers report findings across multiple kinds — bugs, security, performance, design, ux, completeness, gaps, risks, errors, ambiguity, alternatives, improvements. Treat them all seriously.
+Workers within a focus group share specialization — voting happens **within each focus group** (≥2 of {{PASSES_PER_FOCUS}} must agree). Workers report findings across all kinds (bugs, security, performance, design, ux, completeness, gaps, risks, errors, ambiguity, alternatives, improvements).
 
 ## Project review rules
 
 {{REVIEW_CONFIG}}
 
-These rules define "Never Flag" and "Always Flag" patterns. Apply them during voting and validation.
+"Never Flag" and "Always Flag" patterns apply during voting and validation.
 
 ## Session directory
 
@@ -26,240 +24,108 @@ Workers and fixes target: `{{PROJECT_ROOT}}`
 
 ## Inter-Worker Communications
 
-Workers may have left messages in `{{SESSION_DIR}}/comms/`. Check this directory during Phase 2 (aggregate) — messages may provide cross-cutting context that strengthens or weakens findings.
+Check `{{SESSION_DIR}}/comms/` during Phase 2 — messages may provide cross-cutting context.
 
 ## Pipeline
 
 ### Phase 1: Wait for workers
 
-Workers signal completion by creating sentinel files: `{{SESSION_DIR}}/pass-{1..{{NUM_PASSES}}}.done`
-
-**Watch for these files** — check every 15 seconds:
-
-```bash
-ls {{SESSION_DIR}}/pass-*.done 2>/dev/null | wc -l
-```
-
-Proceed when all {{NUM_PASSES}} `.done` files exist. If after **8 minutes** some are missing, proceed with whatever is available (check which `findings-pass-N.json` files exist).
-
-**Progress tracking**: As you poll, note how many are complete. When ≥ half are done, read the early completers to start building context.
+Poll `{{SESSION_DIR}}/pass-*.done` every 15s (`ls {{SESSION_DIR}}/pass-*.done 2>/dev/null | wc -l`). Proceed when all {{NUM_PASSES}} exist, or after **8 min** with whatever's available. When ≥ half done, read early completers for context.
 
 ### Phase 2: Aggregate
 
-Read all available findings files (`{{SESSION_DIR}}/findings-pass-{1..{{NUM_PASSES}}}.json`).
+Read all `{{SESSION_DIR}}/findings-pass-{1..{{NUM_PASSES}}}.json`. Validate each: `bash {{VALIDATOR}} {{SESSION_DIR}}/findings-pass-N.json worker` — skip invalid files.
 
-First, validate each file:
-```bash
-bash {{VALIDATOR}} {{SESSION_DIR}}/findings-pass-N.json worker
-```
-Skip any files that fail validation (the worker's output was malformed). Note which passes produced valid vs invalid output.
-
-Also check `{{SESSION_DIR}}/comms/` for inter-worker messages — these may provide cross-cutting context.
-
-Build a unified list of all reported findings, noting each worker's specialization. Specialized findings in their focus area carry slightly more weight.
+Check `{{SESSION_DIR}}/comms/` for inter-worker messages. Build unified findings list, noting each worker's specialization (specialized findings in their area carry more weight).
 
 ### Phase 3: Bucket similar findings
 
-Group findings that refer to the same issue:
-- Same location (file+line within ±5 lines, or same section) AND similar description → same bucket
-- Use your judgment for fuzzy matches (same root cause, different wording)
-- Findings with different `kind` values CAN be the same bucket if they describe the same issue from different angles
-
-For each bucket, record which pass numbers reported it.
+Group findings referring to the same issue:
+- Same location (file+line ±5, or same section) AND similar description → same bucket
+- Different `kind` values CAN be same bucket if same root cause
+- Record which pass numbers reported each bucket
 
 ### Phase 4: Graduated voting
 
-**Vote within each focus group.** Workers are grouped by specialization: passes 1–{{PASSES_PER_FOCUS}} share focus area #1, passes {{PASSES_PER_FOCUS}}+1–{{PASSES_PER_FOCUS}}×2 share focus area #2, etc.
-
-Workers now report a `confidence` score (0.0–1.0) per finding. Use BOTH vote count AND confidence for filtering:
+**Vote within each focus group.** Passes 1–{{PASSES_PER_FOCUS}} = focus #1, {{PASSES_PER_FOCUS}}+1–{{PASSES_PER_FOCUS}}×2 = focus #2, etc. Use BOTH vote count AND confidence:
 
 **Tiers:**
-- **Auto-confirm**: ≥2 workers in the same focus group agree AND average confidence ≥ 0.7. Also: any ≥2 workers total (cross-group corroboration) with avg confidence ≥ 0.7.
+- **Auto-confirm**: ≥2 workers in same focus group agree AND avg confidence ≥ 0.7. Also: any ≥2 workers total (cross-group) with avg confidence ≥ 0.7.
 - **Candidate**: ≥2 workers agree (any confidence), OR 1 specialist with confidence ≥ 0.8 in their focus area.
 - **Weak signal**: 1 worker with confidence 0.5–0.79. Goes to specialist-only section.
 - **Reject**: 1 worker with confidence < 0.5. Drop silently.
 
-When {{PASSES_PER_FOCUS}} is 1: voting relies entirely on confidence thresholds. Findings with confidence ≥ 0.8 are candidates; 0.5–0.79 are weak signals; below 0.5 are rejected. Cross-group corroboration still promotes to auto-confirm.
+When {{PASSES_PER_FOCUS}} is 1: confidence-only tiers. ≥0.8 → candidate; 0.5–0.79 → weak signal; <0.5 → reject. Cross-group corroboration still promotes to auto-confirm.
 
-Record the vote count, average confidence, and tier for each bucket.
+Record vote count, avg confidence, and tier per bucket.
 
 ### Phase 4.5: Confidence recalibration
 
-Apply these adjustments after initial tiering:
-- **ALL contributing workers ≥ 0.9** → auto-confirm even with 1 vote (high-confidence unanimous signal)
-- **3+ votes across different focus groups** → boost confidence by 0.1 (cap 1.0) — cross-group corroboration is strong
-- **Matches "Never Flag" in project review rules** → force reject regardless of votes/confidence
-- **Matches "Always Flag" in project review rules** → force candidate minimum regardless of votes
-- **Reject threshold tightened**: workers at 0.5 confidence are too speculative — treat 0.5 as the floor for weak signals, reject below 0.55
-- **Pre-existing findings** (tagged `pre_existing: true` by workers): separate into their own section, do not count against the change author
+Apply after initial tiering:
+- **All contributing workers ≥ 0.9** → auto-confirm even with 1 vote
+- **3+ votes across different focus groups** → boost confidence by 0.1 (cap 1.0)
+- **Matches "Never Flag"** → force reject regardless of votes/confidence
+- **Matches "Always Flag"** → force candidate minimum
+- **Reject threshold**: 0.55 floor (0.5 is too speculative)
+- **Pre-existing** (`pre_existing: true`): separate section, don't count against change author
 
 ### Phase 4.7: Aggregate enumerated paths
 
-Workers now include `enumerated_paths` in their findings JSON. Collect all paths from all workers:
-
-1. Read each worker's `enumerated_paths` array
-2. Deduplicate: paths with same file/endpoint AND same verification method → merge into one entry, note which workers enumerated it
-3. Group by verification method:
-   - **chrome**: UI click-through paths (test with Chrome MCP)
-   - **curl**: API endpoint tests (verify with curl commands)
-   - **script**: Write and run a test script (bash, bun, python)
-   - **test**: Unit/integration tests (write bun:test cases)
-   - **code-review**: Read-only verification (trace code paths)
-   - **query**: Database queries (run against test DB)
-4. Write the unified checklist to `{{SESSION_DIR}}/verification-checklist.md`:
-
-```markdown
-# Verification Checklist
-
-**Session**: {{SESSION_ID}}
-**Generated from**: {{NUM_PASSES}} workers across {{NUM_FOCUS}} focus areas
-**Total paths**: <N>
-
-## Chrome MCP (UI Paths)
-
-- [ ] P1: <path description> — Expected: <expected>
-- [ ] P2: ...
-
-## curl (API Endpoints)
-
-- [ ] P10: `curl -X POST /api/v1/endpoint -d '...'` — Expected: 200 + <body>
-- [ ] P11: ...
-
-## Script (Write & Run)
-
-- [ ] P20: Write script to test <scenario> — Expected: <result>
-- [ ] P21: ...
-
-## Tests (Unit/Integration)
-
-- [ ] P30: Write test for <function> with <input> — Expected: <assertion>
-- [ ] P31: ...
-
-## Code Review (Read-Only)
-
-- [ ] P40: Trace <function> callers verify contract preserved — Expected: no breakage
-- [ ] P41: ...
-
-## Query (Database)
-
-- [ ] P50: `SELECT ... FROM ... WHERE ...` — Expected: <result shape>
-- [ ] P51: ...
-```
-
-Continue to Phase 5 after writing the checklist.
+Collect `enumerated_paths` from all workers:
+1. Deduplicate: same file/endpoint + same verify method → merge, note contributing workers
+2. Group by method: chrome, curl, script, test, code-review, query
+3. Write `{{SESSION_DIR}}/verification-checklist.md`: header (session {{SESSION_ID}}, worker count, total paths), then one section per method. Format: `- [ ] PX: description — Expected: result`
 
 ### Phase 5: Merge descriptions
 
-For each surviving bucket, synthesize the clearest description from all contributing passes. Pick the best title, most precise location, and most actionable suggestion. Determine the consensus `kind` and `severity`.
+For each surviving bucket: synthesize clearest description from all passes. Pick best title, most precise location, most actionable suggestion. Determine consensus `kind` and `severity`.
 
 ### Phase 5.5: Judge — adversarial validation
 
-**If `{{SESSION_DIR}}/run-judge.sh` exists**, launch the adversarial judge:
-
-1. Write all auto-confirm and candidate findings to `{{SESSION_DIR}}/candidates.json`:
-```json
-[
-  {
-    "id": 1,
-    "tier": "auto-confirm|candidate",
-    "votes": 3,
-    "avg_confidence": 0.85,
-    "location": "...",
-    "severity": "...",
-    "kind": "...",
-    "title": "...",
-    "description": "...",
-    "evidence": "...",
-    "suggestion": "..."
-  }
-]
-```
-
-2. Launch the judge: `bash {{SESSION_DIR}}/run-judge.sh`
-
-3. Poll for `{{SESSION_DIR}}/judge.done` every 10 seconds (5 min timeout):
-```bash
-ls {{SESSION_DIR}}/judge.done 2>/dev/null | wc -l
-```
-
-4. Read `{{SESSION_DIR}}/judged.json`. Apply verdicts:
-   - `confirmed` → keep (judge agrees it's real)
-   - `downgraded` → lower severity as judge suggests
-   - `rejected` → drop if judge confidence > 0.7 (strong rejection). Keep with warning if judge confidence ≤ 0.7 (weak rejection — judge wasn't sure either).
-
-5. If `run-judge.sh` doesn't exist or judge times out, skip this phase and proceed.
+If `{{SESSION_DIR}}/run-judge.sh` exists:
+1. Write auto-confirm + candidate findings to `{{SESSION_DIR}}/candidates.json` (array of `{id, tier, votes, avg_confidence, location, severity, kind, title, description, evidence, suggestion}`)
+2. Launch: `bash {{SESSION_DIR}}/run-judge.sh`
+3. Poll `{{SESSION_DIR}}/judge.done` every 10s (5 min timeout)
+4. Read `{{SESSION_DIR}}/judged.json`. Verdicts: `confirmed` → keep; `downgraded` → lower severity; `rejected` → drop if judge confidence > 0.7, keep with warning if ≤ 0.7
+5. No judge script or timeout → skip, proceed.
 
 ### Phase 6: Validate
 
-For findings that survived the judge (or all findings if no judge ran):
-1. Read the actual source file or document section at the reported location
-2. Verify the issue exists and is real
-3. For code bugs/security: verify the code path is reachable
-4. For content findings: verify the concern is substantive (not hypothetical)
-5. Mark as `confirmed` or `rejected` with a reason
-6. Reject findings that match "Never Flag" patterns in the project review rules
-7. Promote findings that match "Always Flag" patterns to minimum-candidate tier
-8. Only confirmed findings survive
+For findings that survived the judge (or all if no judge):
+1. Read actual source/document at reported location
+2. Verify issue exists and is real; for code: verify path is reachable; for content: verify concern is substantive
+3. Reject "Never Flag" matches, promote "Always Flag" to minimum-candidate
+4. Mark `confirmed` or `rejected` with reason. Only confirmed survive.
 
 ### Phase 7: Cross-run dedup
 
-Read the history file at: `{{HISTORY_FILE}}`
-(Create it if it doesn't exist.)
+Read `{{HISTORY_FILE}}` (create if missing). Each line: `{"id": "<sha256>", "location": "file:line", "title": "...", "kind": "...", "severity": "...", "first_seen": "ISO", "last_seen": "ISO", "seen_count": 1}`
 
-Each line in the history file is a JSON object with this schema:
-```json
-{"id": "<sha256 of location+title>", "location": "file:line", "title": "...", "kind": "...", "severity": "...", "first_seen": "ISO date", "last_seen": "ISO date", "seen_count": 1}
-```
-
-Compare confirmed findings against previous entries using fuzzy matching:
-- **Same file ±10 lines** AND **same kind** → probable duplicate
-- **Similar title** (>70% word overlap) → probable duplicate
-- If a match is found: update `last_seen` and `seen_count` in the history, mark finding as `duplicate` and skip
-- Append all NEW confirmed findings as new history entries
+Fuzzy match: same file ±10 lines AND same kind, OR similar title (>70% word overlap) → duplicate. Update `last_seen`/`seen_count`, skip finding. Append NEW confirmed findings as new entries.
 
 ### Phase 8: Act on findings
 
-**For content-only findings** (kind=gap, risk, error, ambiguity, alternative): ALL findings are advisory — do NOT apply fixes. Describe each finding clearly and move to reporting.
+**Content findings** (gap, risk, error, ambiguity, alternative): ALL advisory — do NOT apply fixes.
 
-**For code findings** (kind=bug, security, performance, design, ux, completeness, improvement):
+**Code findings:**
 
-**Bugs & Security** (kind=bug, security):
-- Apply the fix using the Edit tool
-- Record what you changed
-- If the fix is risky or ambiguous, describe it but don't apply
-
-**Performance** (kind=performance):
-- Apply the fix if it's straightforward and safe (e.g., adding a LIMIT, fixing N+1)
-- For larger perf changes, describe the fix but don't apply
-
-**Design & Architecture** (kind=design):
-- Do NOT apply changes — design decisions need human review
-- Write a clear description of the concern and proposed alternative
-
-**UX & Completeness** (kind=ux, completeness):
-- Apply trivial fixes (missing error message, unhandled edge case)
-- For larger UX changes, describe but don't apply
-
-**Improvements** (kind=improvement):
-- Do NOT apply — these are suggestions for the author to consider
-- Write a clear rationale for why the improvement matters
+| Kind | Action |
+|------|--------|
+| **bug, security** | Apply fix (Edit tool). Skip if risky/ambiguous. |
+| **performance** | Apply if straightforward (add LIMIT, fix N+1). Describe-only for larger changes. |
+| **design** | Do NOT apply — needs human review. Describe concern + alternative. |
+| **ux, completeness** | Apply trivial fixes. Describe-only for larger changes. |
+| **improvement** | Do NOT apply — suggestion for author. Write rationale. |
 
 ### Phase 9: Report
 
-Write the final report to: `{{REPORT_FILE}}`
+Write to: `{{REPORT_FILE}}`
 
-**Severity emoji markers** — use these instead of text `[severity]` in the report:
+**Severity emoji** (map from worker text severity during report generation only):
 
-| Marker | Severity |
-|--------|----------|
-| 🔴 | critical, high |
-| 🟡 | medium |
-| 🔵 | low, note |
-| 🟣 | pre_existing: true (any severity) |
+| 🔴 critical/high | 🟡 medium | 🔵 low/note | 🟣 pre_existing (any severity) |
 
-Workers use text severity in their findings. Map to emoji during report generation only.
-
-Format:
+**Header:**
 ```markdown
 # Deep Review Report
 
@@ -267,155 +133,47 @@ Format:
 **Date**: <date>
 **Reviewing**: {{DIFF_DESC}}
 **Material**: {{MATERIAL_TYPES}}
-**Workers**: {{NUM_PASSES}} ({{NUM_FOCUS}} focus × {{PASSES_PER_FOCUS}} passes) | **Raw findings**: <N> | **After voting**: <N> | **Confirmed**: <N> | **Fixed**: <N>
-
-## Critical & High — Bugs & Security (auto-fixed)
-
-### 1. 🔴 Title — location
-**Votes**: N/{{PASSES_PER_FOCUS}} | **Confidence**: 0.XX | **Kind**: bug/security | **Judge**: confirmed/downgraded/skipped
-**Description**: ...
-**Fix applied**: Yes/No — description of fix
-
----
-
-## Performance Issues
-
-### N. 🟡 Title — location
-**Votes**: N/{{PASSES_PER_FOCUS}} | **Confidence**: 0.XX | **Effort**: trivial/small/medium/large
-**Description**: ...
-**Fix applied**: Yes/No
-
----
-
-## Content Findings (Gaps, Risks, Errors)
-
-### N. 🟡 Title — section
-**Votes**: N/{{PASSES_PER_FOCUS}} | **Confidence**: 0.XX | **Kind**: gap/risk/error/ambiguity/alternative
-**Description**: ...
-**Suggestion**: ...
-
----
-
-## Design & Architecture Concerns
-
-### N. 🟡 Title — location
-**Votes**: N/{{PASSES_PER_FOCUS}}
-**Concern**: ...
-**Suggested approach**: ...
-
----
-
-## Completeness Gaps
-
-### N. 🔵 Title — location
-**Votes**: N/{{PASSES_PER_FOCUS}}
-**What's missing**: ...
-**Suggested fix**: ...
-
----
-
-## Improvements (suggestions for author)
-
-### N. 🔵 Title — location
-**Votes**: N/{{PASSES_PER_FOCUS}} | **Effort**: trivial/small/medium/large
-**Rationale**: ...
-
----
-
-## Pre-existing Issues (for awareness)
-
-(Issues found in code that predates this change. Reported for awareness, not counted against the change author.)
-
-### N. 🟣 Title — location
-**Votes**: N/{{PASSES_PER_FOCUS}} | **Confidence**: 0.XX | **Kind**: ...
-**Description**: ...
-**Suggestion**: ...
-
----
-
-## Specialist-Only Findings (manual review needed)
-
-(Findings from a single specialized worker in their focus area — not enough votes to auto-confirm, but potentially real.)
-
-## Verification Checklist
-
-See `verification-checklist.md` in the session directory for <N> enumerated paths grouped by verification method (chrome, curl, script, test, code-review, query).
-
-## Summary
-- **Fixed**: <N> bugs/security issues auto-fixed
-- **Content**: <N> content findings (gaps, risks, errors) — advisory
-- **Documented**: <N> design/architecture concerns for human review
-- **Suggested**: <N> improvements for author consideration
-- **Pre-existing**: <N> inherited issues (🟣 — for awareness only)
-- **Filtered**: <N> findings removed by voting
-- **Specialist-only**: <N> flagged for manual review
-- **Verification paths**: <N> enumerated (see verification-checklist.md)
+**Workers**: {{NUM_PASSES}} ({{NUM_FOCUS}} focus × {{PASSES_PER_FOCUS}} passes) | **Raw**: <N> | **After voting**: <N> | **Confirmed**: <N> | **Fixed**: <N>
 ```
+
+**Sections** (omit empty). Per finding: `### N. {emoji} Title — location` with metadata `**Votes**: N/{{PASSES_PER_FOCUS}} | **Confidence**: 0.XX | ...`:
+
+1. **Critical & High — Bugs & Security (auto-fixed)** — Votes, Confidence, Kind, Judge verdict, Description, Fix applied (Yes/No + description)
+2. **Performance Issues** — Votes, Confidence, Effort, Description, Fix applied
+3. **Content Findings (Gaps, Risks, Errors)** — Votes, Confidence, Kind, Description, Suggestion
+4. **Design & Architecture Concerns** — Votes, Concern, Suggested approach
+5. **Completeness Gaps** — Votes, What's missing, Suggested fix
+6. **Improvements (suggestions for author)** — Votes, Effort, Rationale
+7. **Pre-existing Issues** — "(for awareness, not counted against change author)" — Votes, Confidence, Kind, Description, Suggestion
+8. **Specialist-Only Findings** — "(single specialist, not enough votes, potentially real)"
+9. **Verification Checklist** — reference `verification-checklist.md` with path count
+10. **Summary** — Fixed, Content, Documented, Suggested, Pre-existing, Filtered, Specialist-only, Verification paths
 
 Display the report summary in your output.
 
 ### Phase 10: Notify completion
 
-After writing the report, signal completion:
-
-1. Write a completion marker: `echo "complete" > {{SESSION_DIR}}/review.done`
-
-2. Send a desktop notification:
-```bash
-notify "Deep review complete: $(grep -c '###' {{REPORT_FILE}} 2>/dev/null || echo 0) findings in {{REPORT_FILE}}" "Deep Review" "file://{{REPORT_FILE}}"
-```
-
-3. **Send a fleet message** to the notify target. Use `fleet-message.sh` to write directly to the recipient's inbox. Only do this if `{{NOTIFY_TARGET}}` is non-empty:
-
+1. Sentinel: `echo "complete" > {{SESSION_DIR}}/review.done`
+2. Desktop: `notify "Deep review complete: $(grep -c '###' {{REPORT_FILE}} 2>/dev/null || echo 0) findings in {{REPORT_FILE}}" "Deep Review" "file://{{REPORT_FILE}}"`
+3. Fleet message (if `{{NOTIFY_TARGET}}` non-empty):
 ```bash
 bash ~/.claude-ops/scripts/fleet-message.sh \
-  --to "{{NOTIFY_TARGET}}" \
-  --from "deep-review" \
-  --fyi \
-  --summary "Deep review complete: N fixed, N content findings, N design concerns, N suggestions" \
-  --content "DEEP REVIEW COMPLETE
-
-Report: {{REPORT_FILE}}
-Session: {{SESSION_ID}}
-tmux: {{REVIEW_SESSION}}
-
-Fixed: <N> bugs/security auto-fixed
-Content: <N> gaps/risks/errors (advisory)
-Design: <N> architecture concerns (need human review)
-Suggestions: <N> improvements proposed
-Specialist-only: <N> flagged for manual review
-
-Top findings:
-- <1-line summary of most important finding>
-- <1-line summary of second most important>
-- <1-line summary of third most important>
-
-Read the full report for details."
+  --to "{{NOTIFY_TARGET}}" --from "deep-review" --fyi \
+  --summary "Deep review complete: N fixed, N content, N design, N suggestions" \
+  --content "Report: {{REPORT_FILE}} | Session: {{SESSION_ID}} | tmux: {{REVIEW_SESSION}}
+Fixed: N | Content: N | Design: N | Suggestions: N | Specialist-only: N
+Top 3 findings: <one-line summaries>"
 ```
-
-Replace `<N>` with actual counts. Include the top 3 findings by impact.
 
 ### Phase 10.5: Worktree cleanup
 
-If a worktree was created (check `{{SESSION_DIR}}/worktree-path.txt`):
-- If you applied fixes in Phase 8: **keep the worktree**. Note the branch name in the report so changes can be reviewed and merged.
-- If no fixes were applied: clean up the worktree:
+If `{{SESSION_DIR}}/worktree-path.txt` exists:
+- Fixes applied in Phase 8 → **keep worktree**, note branch name in report
+- No fixes → clean up:
 ```bash
 WORKTREE_PATH=$(cat {{SESSION_DIR}}/worktree-path.txt 2>/dev/null)
 WORKTREE_BRANCH=$(cat {{SESSION_DIR}}/worktree-branch.txt 2>/dev/null)
-if [ -n "$WORKTREE_PATH" ]; then
-  git worktree remove "$WORKTREE_PATH" 2>/dev/null || true
-  git branch -d "$WORKTREE_BRANCH" 2>/dev/null || true
-fi
+if [ -n "$WORKTREE_PATH" ]; then git worktree remove "$WORKTREE_PATH" 2>/dev/null || true; git branch -d "$WORKTREE_BRANCH" 2>/dev/null || true; fi
 ```
 
-## Rules
-
-- Be patient — workers may take 5-10 minutes each
-- Trust the voting: if only 1 of {{PASSES_PER_FOCUS}} workers in a focus group found something, it's probably noise (unless specialist-only exception or cross-group corroboration)
-- When validating, actually READ the code or document — don't trust the worker's evidence blindly
-- Bug/security fixes should be minimal and surgical — don't refactor surrounding code
-- Do NOT apply design/architecture changes or improvements — those need human judgment
-- Content findings are always advisory — never edit the reviewed document
-- Performance fixes: only apply if the fix is clearly correct and safe
-- After completing the report AND notifications, say "DEEP REVIEW COMPLETE" and stop
+After completing report AND notifications, say "DEEP REVIEW COMPLETE" and stop.
