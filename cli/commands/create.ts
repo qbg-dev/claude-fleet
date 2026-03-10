@@ -199,17 +199,49 @@ export async function runCreate(
   // 9. Provision Fleet Mail
   let mailToken = "";
   if (FLEET_MAIL_URL) {
+    // Auto-start local boring-mail if URL is localhost and server isn't responding
+    if (FLEET_MAIL_URL.includes("localhost") || FLEET_MAIL_URL.includes("127.0.0.1")) {
+      try {
+        await fetch(`${FLEET_MAIL_URL}/health`, { signal: AbortSignal.timeout(1000) });
+      } catch {
+        const bmPath = join(process.env.HOME || "", ".cargo/bin/boring-mail");
+        if (existsSync(bmPath)) {
+          info("Starting local boring-mail...");
+          Bun.spawn([bmPath, "serve"], { stdio: ["ignore", "ignore", "ignore"] });
+          // Wait up to 3s for it to be ready
+          for (let i = 0; i < 6; i++) {
+            await new Promise(r => setTimeout(r, 500));
+            try { await fetch(`${FLEET_MAIL_URL}/health`, { signal: AbortSignal.timeout(500) }); break; } catch {}
+          }
+        }
+      }
+    }
+
+    const accountName = `${name}@${project}`;
+    const mailHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    if (FLEET_MAIL_TOKEN) mailHeaders["Authorization"] = `Bearer ${FLEET_MAIL_TOKEN}`;
+
     try {
-      const mailHeaders: Record<string, string> = { "Content-Type": "application/json" };
-      if (FLEET_MAIL_TOKEN) mailHeaders["Authorization"] = `Bearer ${FLEET_MAIL_TOKEN}`;
+      // Try creating the account
       const resp = await fetch(`${FLEET_MAIL_URL}/api/accounts`, {
         method: "POST",
         headers: mailHeaders,
-        body: JSON.stringify({ name: `${name}@${project}` }),
+        body: JSON.stringify({ name: accountName }),
       });
+
       if (resp.ok) {
-        const data = await resp.json() as { token?: string };
-        mailToken = data.token || "";
+        const data = await resp.json() as { bearerToken?: string; token?: string };
+        mailToken = data.bearerToken || data.token || "";
+      } else if (resp.status === 409 && FLEET_MAIL_TOKEN) {
+        // Account exists — reset its token via admin endpoint
+        const resetResp = await fetch(
+          `${FLEET_MAIL_URL}/api/admin/accounts/${encodeURIComponent(accountName)}/reset-token`,
+          { method: "POST", headers: { "Authorization": `Bearer ${FLEET_MAIL_TOKEN}` } },
+        );
+        if (resetResp.ok) {
+          const data = await resetResp.json() as { bearerToken?: string; token?: string };
+          mailToken = data.bearerToken || data.token || "";
+        }
       }
     } catch { /* non-fatal */ }
 
