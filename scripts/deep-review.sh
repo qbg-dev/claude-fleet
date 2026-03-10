@@ -201,13 +201,35 @@ fi
 cd "$PROJECT_ROOT"
 
 # ── Detect REVIEW.md ─────────────────────────────────────────
+# Search order:
+#   1. Current project root (worktree or repo)
+#   2. Main worktree root (for git worktrees attached to another repo)
+#   3. Sibling base repo (for separate clones: Wechat-w-merger → Wechat)
 REVIEW_CONFIG=""
-for _rmd in "$PROJECT_ROOT/REVIEW.md" "$PROJECT_ROOT/.claude/REVIEW.md"; do
-  if [ -f "$_rmd" ]; then
-    REVIEW_CONFIG=$(cat "$_rmd")
-    echo "REVIEW.md: $_rmd"
-    break
-  fi
+_SEARCH_ROOTS=("$PROJECT_ROOT")
+
+# Check main worktree (handles git worktree add)
+_MAIN_WORKTREE=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
+if [ -n "$_MAIN_WORKTREE" ] && [ "$_MAIN_WORKTREE" != "$PROJECT_ROOT" ]; then
+  _SEARCH_ROOTS+=("$_MAIN_WORKTREE")
+fi
+
+# Check sibling base repo (handles separate clones like Wechat-w-merger → Wechat)
+_BASENAME=$(basename "$PROJECT_ROOT")
+_BASE_REPO=$(echo "$_BASENAME" | sed 's/-w-[^/]*$//')
+if [ "$_BASE_REPO" != "$_BASENAME" ]; then
+  _SIBLING="$(dirname "$PROJECT_ROOT")/$_BASE_REPO"
+  [ -d "$_SIBLING" ] && _SEARCH_ROOTS+=("$_SIBLING")
+fi
+
+for _root in "${_SEARCH_ROOTS[@]}"; do
+  for _rmd in "$_root/REVIEW.md" "$_root/.claude/REVIEW.md"; do
+    if [ -f "$_rmd" ]; then
+      REVIEW_CONFIG=$(cat "$_rmd")
+      echo "REVIEW.md: $_rmd"
+      break 2
+    fi
+  done
 done
 [ -z "$REVIEW_CONFIG" ] && echo "REVIEW.md: not found (skipping project-specific rules)"
 
