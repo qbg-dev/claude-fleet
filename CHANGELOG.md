@@ -1,8 +1,37 @@
 # Changelog
 
-All notable changes to claude-ops are documented here.
+All notable changes to claude-fleet (formerly claude-ops) are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+---
+
+## [1.0.0] — 2026-03-10
+
+### Added
+- **`fleet` CLI** — single command for all fleet operations: `fleet create`, `fleet start`, `fleet stop`, `fleet ls`, `fleet config`, `fleet defaults`, `fleet fork`, `fleet log`, `fleet mail`, `fleet mcp`
+- **`fleet setup`** — one-command bootstrap: checks deps, creates symlinks, registers MCP server, creates defaults
+- **`fleet mcp`** — manage MCP server registration (`register`, `unregister`, `status`, `build`)
+- **Per-worker directories** — each worker gets its own dir at `~/.claude/fleet/{project}/{name}/` with `config.json`, `state.json`, `mission.md`, `launch.sh`, `token`
+- **`defaults.json`** — global defaults at `~/.claude/fleet/defaults.json`, overridden by per-worker config, overridden by CLI flags
+- **12 system hooks** — irremovable safety hooks (block rm -rf, force push, checkout main, direct config edits)
+- **Dynamic hook management** — workers register/remove their own hooks at runtime via MCP tools
+- **Hook ownership tiers** — `system` (irremovable), `creator` (worker can't remove), `self` (worker manages)
+- **Liveness detection** in `fleet ls` — cross-references tmux panes to detect dead workers
+
+### Changed
+- **Renamed** `claude-ops` → `claude-fleet` (GitHub repo, symlinks, env vars, docs)
+- **MCP server** runs from TypeScript source via `bun run index.ts` instead of compiled `node index.js`
+- **Storage model** migrated from monolithic `registry.json` to per-worker directories
+- **`CLAUDE_OPS_DIR`** → `CLAUDE_FLEET_DIR` (both still work via `resolve-deps.sh` compat shim)
+- **Settings.json** hook paths updated from `~/.claude/ops/` to `~/.claude-fleet/`
+- **README.md** rewritten — positions as lightweight tmux-based Claude Code orchestration platform
+- **`docs/getting-started.md`** rewritten for `fleet` CLI workflow
+
+### Removed
+- **Direct dependency on `registry.json`** for config (kept as backward-compat runtime state)
+- **Manual `.mcp.json` wiring** — MCP server now registered globally via `fleet mcp register`
+- **`init-project.sh` requirement** — `fleet create` handles all project bootstrapping
 
 ---
 

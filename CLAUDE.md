@@ -1,35 +1,24 @@
-# claude-ops
+# claude-fleet
 
-Agent fleet for Claude Code. Workers run in tmux panes on git worktrees, talk via MCP, watchdog keeps them alive.
-
-## Dependencies
-
-```bash
-brew install jq tmux git       # required
-brew install sshpass            # optional (deploy scripts)
-curl -fsSL https://bun.sh/install | bash  # bun (builds MCP server)
-# node v18+ also required (MCP server runs on node)
-```
-
-MCP server deps (installed automatically):
-- `@modelcontextprotocol/sdk` — MCP protocol
-- `zod` — schema validation
+Lightweight, tmux-based orchestration for Claude Code. Workers run in tmux panes on git worktrees, talk via Fleet Mail, watchdog keeps them alive.
 
 ## Install
 
 ```bash
-git clone git@github.com:qbg-dev/claude-ops.git ~/.claude-ops
-cd ~/.claude-ops/mcp/worker-fleet && bun install && bun build index.ts --target=node --outfile=index.js
-bash ~/.claude-ops/scripts/setup-hooks.sh
+git clone git@github.com:qbg-dev/claude-fleet.git ~/.claude-fleet
+~/.claude-fleet/bin/fleet setup
 ```
 
-## Bootstrap a Project
+`fleet setup` checks deps (bun, jq, tmux), creates symlinks, registers the MCP server globally, and creates default config.
+
+## Quick Start
 
 ```bash
-bash ~/.claude-ops/scripts/init-project.sh /path/to/project --with-chief-of-staff
+fleet create my-worker "Fix the login bug"    # create + launch
+fleet ls                                      # list workers
+fleet stop my-worker                          # graceful stop
+fleet start my-worker --model opus --save     # restart with override
 ```
-
-Creates: `.claude/workers/registry.json`, `.mcp.json`, shared scripts, CLAUDE.md fleet section.
 
 ## Architecture
 
@@ -108,6 +97,14 @@ The `_config.mission_authority` field (defaults to `"chief-of-staff"`) defines t
 - **Default report_to**: all new workers report to mission_authority unless overridden
 
 Change it in `registry.json` `_config` to use a different coordinator name.
+
+## Subagent Types
+
+Non-worker agents launched via the Agent tool for specific pre-tasks.
+
+| Type | Doc | Use case |
+|------|-----|----------|
+| **thoroughly-paranoid-examiner** | `docs/thoroughly-paranoid-examiner.md` | Pre-verification: exhaustively enumerate every user journey before spawning a verifier worker. See `commands/complex-verification.md`. |
 
 ## Conventions
 

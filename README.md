@@ -1,77 +1,197 @@
-# claude-ops
+# claude-fleet
 
-Autonomous agent fleet for Claude Code.
+Lightweight, tmux-based orchestration for Claude Code. Run persistent AI workers that survive crashes, coordinate via mail, and accumulate knowledge across cycles.
 
-Each worker = git worktree + tmux pane + persistent memory. Workers commit on their own branches, coordinate via MCP tools, watchdog respawns them.
+**The pitch:** Claude Code is powerful but ephemeral — sessions end, context is lost, and you manage one agent at a time. claude-fleet makes workers *persistent* and *parallel*. Each worker gets its own git worktree, tmux pane, and durable memory. A watchdog respawns them on crash. An MCP server gives them 20 tools for messaging, state, hooks, and fleet coordination. You use more compute, more effectively.
 
-**Why worktrees?** Claude Code scopes auto-memory by filesystem path. Different worktree = isolated memory. By cycle 50, a worker knows things a fresh session never could.
+## What You Get
 
-## Dependencies
+- **Persistent workers** — Watchdog (launchd, every 30s) detects stopped/stuck/crashed workers and respawns them. Workers survive crashes, context compaction, and `/stop`.
+- **Git worktree isolation** — Each worker gets its own branch and worktree. Claude Code scopes auto-memory by path, so different worktree = isolated memory. By cycle 50, a worker knows things a fresh session never could.
+- **Fleet Mail** — Workers message each other, report to coordinators, and track tasks via a durable mail system (LKML model — tasks are mail threads with labels).
+- **Dynamic hooks** — Workers manage their own guardrails at runtime: blocking gates before recycling, context injection on tool use, safety checks on destructive operations. 12 immutable system hooks prevent catastrophic actions (rm -rf, force push, etc.).
+- **MCP server** — 20 tools available inside every worker: `mail_send`, `mail_inbox`, `update_state`, `add_hook`, `create_worker`, `recycle`, `deep_review`, and more.
+- **Single CLI** — `fleet create`, `fleet start`, `fleet stop`, `fleet ls` — everything from one command.
 
-| Tool | Install | Required |
-|------|---------|----------|
-| git | `brew install git` | yes |
-| jq | `brew install jq` | yes |
-| tmux | `brew install tmux` | yes |
-| bun | `curl -fsSL https://bun.sh/install \| bash` | yes (build MCP) |
-| node v18+ | `brew install node` | yes (run MCP) |
-| sshpass | `brew install sshpass` | no (deploy only) |
-
-## Install
+## Quick Start
 
 ```bash
-git clone git@github.com:qbg-dev/claude-ops.git ~/.claude-ops
-cd ~/.claude-ops/mcp/worker-fleet && bun install && bun build index.ts --target=node --outfile=index.js
-bash ~/.claude-ops/scripts/setup-hooks.sh
+# 1. Clone
+git clone git@github.com:qbg-dev/claude-fleet.git ~/.claude-fleet
+
+# 2. Bootstrap (creates symlinks, registers MCP, checks deps)
+~/.claude-fleet/bin/fleet setup
+
+# 3. Create your first worker
+fleet create my-worker "Fix the login bug in auth.ts"
 ```
 
-## Bootstrap a Project
+That's it. The worker launches in a tmux pane, reads its mission, and starts working.
+
+## Requirements
+
+| Tool | Install | Why |
+|------|---------|-----|
+| bun | `curl -fsSL https://bun.sh/install \| bash` | Runs MCP server |
+| jq | `brew install jq` | JSON processing |
+| tmux | `brew install tmux` | Pane management |
+| git | `brew install git` | Worktree isolation |
+
+`fleet setup` checks all of these and tells you what's missing.
+
+## CLI Reference
 
 ```bash
-bash ~/.claude-ops/scripts/init-project.sh /path/to/project --with-chief-of-staff
-# Creates: registry.json, .mcp.json, shared scripts, CLAUDE.md fleet section
+fleet setup                              # One-time bootstrap
+fleet create <name> "<mission>"          # Create + launch worker
+fleet start  <name>                      # Restart existing worker
+fleet stop   <name> [--all]              # Graceful stop
+fleet ls     [--json]                    # List all workers with liveness
+fleet config <name> [key] [value]        # Get/set worker config
+fleet defaults [key] [value]             # Global defaults
+fleet fork   <parent> <child> "<mission>" # Fork from existing session
+fleet log    <name>                      # Tail worker's tmux pane
+fleet mail   <name>                      # Check worker's inbox
+fleet mcp    [register|status|build]     # Manage MCP server
 ```
 
-## Launch a Worker
+### Flags
 
 ```bash
-bash ~/.claude-ops/scripts/launch-flat-worker.sh my-worker
-# Or from any Claude session:
-create_worker(name: "my-worker", mission: "...", launch: true)
+--model opus|sonnet|haiku       # Override model
+--effort low|medium|high|max    # Reasoning effort
+--window <name>                 # tmux window group
+--no-launch                     # Create without launching
+--save                          # Persist overrides to config
+--json                          # Machine-readable output
 ```
 
-## How It Works
+### Resolution Chain
 
-1. **Launch** creates git worktree + tmux pane + seeds Claude with mission
-2. **Worker** reads mission, does work, commits, messages merger
-3. **Watchdog** (launchd, every 30s) detects stopped/stuck/crashed workers, respawns them
-4. **MCP** gives workers 14 tools: messaging, tasks, state, fleet visibility
-5. **Merger** cherry-picks worker branches to main, deploys
+CLI flag > per-worker `config.json` > `defaults.json` > hardcoded defaults
 
-Workers never push. One merger handles main.
-
-## Project Structure
+## Architecture
 
 ```
-{project}/
-├── .claude/workers/registry.json   # all worker config + state
-├── .claude/workers/{name}/mission.md
-├── .claude/scripts/worker/         # shared scripts
-├── .mcp.json                       # wires MCP server
-└── CLAUDE.md                       # fleet docs
-
-~/.claude-ops/
-├── mcp/worker-fleet/   # MCP server (14 tools, TypeScript)
-├── scripts/            # launch, watchdog, hooks, init
-├── hooks/              # Claude Code hooks (manifest.json)
-└── state/              # runtime: logs, crash counts
+                    fleet CLI
+                       │
+          ┌────────────┼────────────┐
+          │            │            │
+      tmux panes   git worktrees  Fleet Mail
+          │            │            │
+     ┌────┴────┐  ┌────┴────┐  ┌───┴───┐
+     │ worker1 │  │ worker2 │  │ mail  │
+     │ Claude  │  │ Claude  │  │server │
+     │ Code    │  │ Code    │  └───────┘
+     └────┬────┘  └────┬────┘
+          │            │
+     MCP server (20 tools)
+          │
+     watchdog (launchd, 30s)
 ```
+
+Each worker = Claude Code session + git worktree + tmux pane + persistent config.
+
+Workers never push or merge. A designated merger handles main.
+
+## Data Model
+
+```
+~/.claude/fleet/
+├── defaults.json                 # Global defaults (model, effort, permissions)
+├── {project}/
+│   ├── fleet.json                # Fleet-wide config (tmux session, authorities)
+│   ├── {worker-name}/
+│   │   ├── config.json           # Settings (model, hooks, permissions, meta)
+│   │   ├── state.json            # Runtime (status, pane, session, cycles)
+│   │   ├── mission.md            # Worker's prompt/purpose
+│   │   ├── launch.sh             # Auto-generated restart command
+│   │   └── token                 # Fleet Mail auth token
+│   └── missions/                 # Symlinks to worker missions
+
+~/.claude-fleet/                  # Infrastructure (this repo)
+├── bin/fleet                     # CLI
+├── mcp/worker-fleet/             # MCP server (TypeScript)
+├── hooks/                        # Claude Code hooks (gates, publishers, interceptors)
+├── engine/                       # Hook engine + session logger
+├── scripts/                      # Launch, watchdog, git hooks
+├── templates/                    # Worker archetypes
+└── lib/                          # Shared bash libraries
+```
+
+## Hook System
+
+### 12 System Hooks (always active, irremovable)
+
+| What's blocked | Why |
+|----------------|-----|
+| `rm -rf /`, `~`, `.` | Catastrophic deletion |
+| `git reset --hard` | Irreversible state loss |
+| `git push --force` | Overwrites shared history |
+| `git checkout main` | Workers stay on their branch |
+| `git merge` | Workers don't merge — use Fleet Mail |
+| Direct edit of `config.json`, `state.json`, `token` | Use MCP tools instead |
+
+### Dynamic Hooks (worker self-governance)
+
+Workers register their own hooks at runtime:
+
+```
+# Block recycling until TypeScript compiles
+add_hook(event="Stop", description="verify TypeScript compiles")
+
+# Inject context when editing ontology files
+add_hook(event="PreToolUse", content="Use applyAction() for ontology writes",
+  condition={file_glob: "src/ontology/**"})
+
+# Complete a gate after verification
+complete_hook("dh-1", result="PASS — no TS errors")
+```
+
+Hooks fire on all Claude Code events: PreToolUse, PostToolUse, Stop, UserPromptSubmit, PreCompact, SubagentStart/Stop, and more.
+
+## Watchdog
+
+The watchdog runs via launchd (every 30s) and keeps workers alive:
+
+1. **Liveness check** — Heartbeat timestamps updated on every prompt/tool use
+2. **Stuck detection** — If no activity for 10+ minutes, kill and respawn
+3. **Crash-loop protection** — >3 crashes/hour → stop and alert
+4. **Perpetual cycles** — Workers call `recycle()` when done; watchdog respawns after `sleep_duration`
+
+Workers don't `sleep` — they exit cleanly, and the watchdog owns the timer.
+
+## MCP Tools (inside workers)
+
+| Tool | Description |
+|------|-------------|
+| `mail_send(to, subject, body)` | Message workers, coordinators, or the operator |
+| `mail_inbox(label?)` | Read inbox (UNREAD, TASK, INBOX) |
+| `update_state(key, value)` | Persist state across recycles |
+| `add_hook(event, ...)` | Register dynamic hooks (gates or injectors) |
+| `complete_hook(id)` | Mark a blocking gate as done |
+| `create_worker(name, mission)` | Spawn a new worker |
+| `recycle(message?)` | Clean restart (blocked until all gates pass) |
+| `save_checkpoint(summary)` | Snapshot working state for crash recovery |
+| `deep_review(scope)` | Spawn adversarial reviewer |
+
+[Full reference: 20 tools total](docs/architecture.md)
+
+## Fleet Mail
+
+Workers coordinate via a durable mail server (self-hosted, Rust + Dolt):
+
+- **Messaging**: Direct, broadcast, mailing lists
+- **Tasks**: LKML model — tasks are mail threads with labels (`[TASK]`, `P1`, `IN_PROGRESS`)
+- **Merge requests**: Workers send structured merge requests to the merger
+- **Escalation**: `mail_send(to="user")` reaches the human operator
 
 ## Docs
 
-- `CLAUDE.md` — development guide (architecture, watchdog, hooks, conventions)
-- `AGENTS.md` — single-page agent reference (curl-friendly)
-- `TMUX-OPS.md` — tmux patterns for spawning/recovering agents
+- [Getting Started](docs/getting-started.md) — Installation and first worker
+- [Architecture](docs/architecture.md) — Component deep dive
+- [Hooks](docs/hooks.md) — Claude Code hook lifecycle
+- [Event Bus](docs/event-bus.md) — JSONL event streaming
 
 ## License
 

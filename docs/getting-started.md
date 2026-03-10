@@ -2,111 +2,196 @@
 
 ## Prerequisites
 
-git, jq, tmux, bash 4+, bun, Claude Code (authenticated).
+- **bun** — `curl -fsSL https://bun.sh/install | bash`
+- **jq** — `brew install jq`
+- **tmux** — `brew install tmux`
+- **git** — `brew install git`
+- **Claude Code** — [claude.ai/code](https://claude.ai/code)
 
 ## Install
 
 ```bash
-git clone git@github.com:qbg-dev/claude-ops.git ~/.claude-ops
-cd ~/.claude-ops/mcp/worker-fleet && bun install
+# Clone the repo
+git clone git@github.com:qbg-dev/claude-fleet.git ~/.claude-fleet
+
+# Run setup (creates symlinks, registers MCP server, checks deps)
+~/.claude-fleet/bin/fleet setup
 ```
 
-## Set Up a Project
+`fleet setup` does everything:
+- Checks that bun, jq, and tmux are installed
+- Creates symlinks (`~/.claude-fleet`, `~/.claude-ops` for compat, `~/.local/bin/fleet`)
+- Creates `~/.claude/fleet/defaults.json` with global defaults
+- Registers the MCP server in `~/.claude/settings.json`
 
-**1. Wire the MCP server** — create `.mcp.json` in your project root. See `mcp/worker-fleet/index.ts` header for the full schema. Minimum:
-
-```jsonc
-{
-  "mcpServers": {
-    "worker-fleet": {
-      "command": "bun",
-      "args": ["run", "/Users/you/.claude-ops/mcp/worker-fleet/index.ts"],
-      "env": { "PROJECT_ROOT": "/path/to/project" }
-    }
-  }
-}
+If `~/.local/bin` isn't in your PATH, add it:
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
-**2. Create the registry** — `.claude/workers/registry.json`. The `_config` block sets fleet-wide defaults (who merges, which tmux session, who gets commit notifications):
-
-```jsonc
-{
-  "_config": {
-    "commit_notify": ["merger"],
-    "merge_authority": "merger",
-    "tmux_session": "w",
-    "project_name": "my-project"
-  }
-}
-```
-
-## Launch a Worker
-
-**3. Write a mission** — `.claude/workers/my-worker/mission.md`. The mission is the worker's entire personality and protocol. Good missions have: what to do, when to commit, who to message, and when to recycle. See `templates/flat-worker/types/` for examples per worker type.
-
-**4. Add to registry** — add an entry to registry.json with model, permissions, sleep cadence:
-
-```jsonc
-"my-worker": {
-  "model": "sonnet",
-  "permission_mode": "bypassPermissions",
-  "disallowed_tools": ["Bash(git push*)", "Bash(rm -rf*)"],
-  "perpetual": true,
-  "sleep_duration": 3600,
-  "branch": "worker/my-worker",
-  "window": "workers"
-}
-```
-
-**5. Launch** — this creates the worktree, tmux pane, git hooks, seed prompt, and starts Claude:
+## Create Your First Worker
 
 ```bash
-bash ~/.claude-ops/scripts/launch-flat-worker.sh my-worker
+# Start a tmux session (if not already in one)
+tmux new -s w
+
+# Create a worker — this does everything:
+#   creates config, state, mission files
+#   creates a git worktree on branch worker/my-worker
+#   provisions Fleet Mail account
+#   launches Claude Code in a tmux pane
+#   injects the mission as a seed prompt
+fleet create my-worker "Fix the login timeout bug in src/auth/sso.ts"
 ```
 
-The worker is now autonomous. To create + launch from another running worker:
+## What Happens
 
-```
-create_worker(name: "my-worker", mission: "...", model: "sonnet", launch: true)
-```
+1. **Directory created** at `~/.claude/fleet/{project}/my-worker/` with:
+   - `config.json` — model, effort, permissions, 12 system hooks
+   - `state.json` — runtime status, pane ID, session history
+   - `mission.md` — the worker's purpose
+   - `launch.sh` — auto-generated restart command
+   - `token` — Fleet Mail auth
 
-## What Happens Under the Hood
+2. **Git worktree** created at `../{project}-w-my-worker` on branch `worker/my-worker`
 
-`launch-flat-worker.sh` does these things in order:
-1. Creates git worktree at `../project-w-my-worker/` on branch `worker/my-worker`
-2. Copies `.mcp.json` into worktree (so the worker gets fleet tools)
-3. Installs post-commit + commit-msg hooks (auto-notification + trailers)
-4. Joins or creates tmux window, splits pane
-5. Generates seed prompt via `bun` (reads mission, memory, inbox, registry)
-6. Starts Claude Code with `--disallowed-tools` from registry
-7. Registers pane ID in registry.json (atomic locked write)
+3. **Claude Code** launched in a tmux pane with the mission injected
 
-## Watchdog
+4. **Worker starts working** — reads mission, does the task, commits to its branch
 
-The watchdog keeps workers alive. Set up as launchd (macOS):
+## Managing Workers
 
 ```bash
-# See scripts/worker-watchdog.sh header for the full plist template
-launchctl load ~/Library/LaunchAgents/com.claude-ops.worker-watchdog.plist
+# List all workers (with liveness detection)
+fleet ls
+
+# NAME             STATUS   MODEL   PANE   WINDOW        BRANCH
+# my-worker        active   opus    %42    my-worker     worker/my-worker
+
+# Check a worker's output
+fleet log my-worker
+
+# Stop a worker gracefully
+fleet stop my-worker
+
+# Restart with a different model
+fleet start my-worker --model sonnet
+
+# Restart and save the override
+fleet start my-worker --model sonnet --save
+
+# Stop all workers
+fleet stop --all
 ```
 
-It checks every 30s: respawns graceful stops after `sleep_duration`, respawns crashes immediately, kills stuck workers (scrollback unchanged >20min), stops crash-loops (>3/hour).
+## Configuration
 
-## Fleet Operations
+### Per-Worker Config
 
 ```bash
-bash ~/.claude-ops/scripts/fleet-health.sh          # fleet status + health check
+fleet config my-worker                    # show full config
+fleet config my-worker model              # get value
+fleet config my-worker model sonnet       # set + regenerate launch.sh
+fleet config my-worker sleep_duration 900 # 15-min respawn cycle
 ```
 
-From inside any worker: `fleet_status()`, `read_inbox()`, `send_message(to, content)`.
+### Global Defaults
+
+```bash
+fleet defaults                            # show defaults
+fleet defaults model sonnet               # all new workers use sonnet
+fleet defaults effort max                 # all new workers use max effort
+```
+
+### Resolution Chain
+
+CLI flag > per-worker `config.json` > `defaults.json` > hardcoded defaults
+
+## Persistent Workers (Watchdog)
+
+Workers can run perpetually — working, recycling, sleeping, respawning:
+
+```bash
+# Set a 15-minute sleep between cycles
+fleet config my-worker sleep_duration 900
+```
+
+The watchdog (launchd daemon, checks every 30s) handles:
+- **Respawning** after `recycle()` + sleep
+- **Crash recovery** — detects dead panes, relaunches
+- **Stuck detection** — kills workers idle >10 minutes
+
+Inside the worker, the perpetual loop is:
+```
+1. mail_inbox() — act on messages
+2. git fetch && git rebase origin/main
+3. Do work, commit changes
+4. add_hook(event="Stop", description="verify TypeScript compiles")
+5. complete_hook("dh-1") after verifying
+6. recycle() — exits cleanly, watchdog respawns after sleep_duration
+```
+
+## Dynamic Hooks
+
+Workers govern themselves through runtime hooks:
+
+```
+# Block recycling until you've verified your work
+add_hook(event="Stop", description="verify deployment works")
+
+# Inject context when editing specific files
+add_hook(event="PreToolUse",
+  content="Use applyAction() for ontology writes",
+  condition={file_glob: "src/ontology/**"})
+
+# Complete a gate after checking
+complete_hook("dh-1", result="PASS")
+```
+
+12 system hooks are always active and irremovable (block rm -rf, force push, etc.).
+
+## Forking Workers
+
+Fork an existing worker's session to spawn a child with inherited context:
+
+```bash
+fleet fork my-worker analyst "Analyze the performance of the auth module"
+```
+
+The child inherits the parent's conversation history via `--resume --fork-session`.
+
+## Fleet Mail
+
+Workers coordinate through a durable mail server. Inside a worker:
+
+```
+mail_send(to="merger", subject="MERGE REQUEST", body="branch: worker/my-worker...")
+mail_inbox()                           # check for messages
+mail_inbox(label="TASK")               # list task threads
+```
+
+From the CLI:
+```bash
+fleet mail my-worker                   # check a worker's inbox
+```
+
+## MCP Server
+
+The MCP server gives workers 20 tools for coordination. It's registered globally in `~/.claude/settings.json`.
+
+```bash
+fleet mcp status                       # check registration
+fleet mcp register                     # re-register (e.g., after bun upgrade)
+fleet mcp build                        # rebuild compiled JS from TypeScript
+```
 
 ## Key Insight: Memory Through Worktrees
 
-Each worktree has a unique filesystem path → Claude Code's auto-memory is automatically isolated per worker. No configuration needed. Workers accumulate domain knowledge across cycles because the watchdog respawns them in the same worktree.
+Each worktree has a unique filesystem path. Claude Code scopes auto-memory by path, so different worktree = isolated memory — no configuration needed. Workers accumulate domain knowledge across cycles because the watchdog respawns them in the same worktree.
 
 ## Next Steps
 
-- `templates/flat-worker/types/` — implementer, monitor, coordinator templates
-- `mcp/worker-fleet/index.ts` — all 15 MCP tools documented in source
-- `scripts/launch-flat-worker.sh` — the full launch sequence
-- [Architecture](architecture.md) — component diagram and data flow
+- Read [Architecture](architecture.md) for the full component deep dive
+- Read [Hooks](hooks.md) for the dynamic hook system
+- Explore `~/.claude-fleet/templates/` for worker archetypes
