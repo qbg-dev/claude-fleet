@@ -2,12 +2,12 @@ import { defineCommand } from "citty";
 import { readFileSync, writeFileSync, copyFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
-  FLEET_DATA, DEFAULT_SESSION, workerDir, resolveProject,
+  DEFAULT_SESSION, workerDir, resolveProject,
 } from "../lib/paths";
 import {
-  getConfig, getFleetConfig, generateLaunchSh, writeJson,
+  getConfig, getFleetConfig, generateLaunchSh,
 } from "../lib/config";
-import { info, ok, warn, fail } from "../lib/fmt";
+import { info, ok, fail } from "../lib/fmt";
 import { launchInTmux } from "../lib/launch";
 
 export default defineCommand({

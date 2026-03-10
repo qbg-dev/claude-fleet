@@ -13,7 +13,7 @@ import {
 import {
   sessionExists, createSession, windowExists, splitIntoWindow,
   createWindow, setPaneTitle, sendKeys, sendEnter, capturePane,
-  waitForPrompt, pasteBuffer, getPaneTarget, listPaneIds,
+  waitForPrompt, pasteBuffer, getPaneTarget,
 } from "./tmux";
 import { info, ok, warn, fail } from "./fmt";
 

@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
-# fleet — Worker fleet management CLI (TypeScript, powered by citty + Bun)
+# fleet — Worker fleet management CLI (shim)
 #
-# Thin shim that delegates to the TypeScript CLI.
-# Bash implementation preserved at bin/fleet.bash.bak.
-#
-# Usage: fleet <command> [args] [flags]
-#   fleet --help    Show all commands
-
-set -euo pipefail
+# Delegates to the TypeScript CLI at cli/fleet.ts via bun.
+# Falls back to the bash implementation if bun is not available.
 
 FLEET_DIR="${CLAUDE_FLEET_DIR:-${CLAUDE_OPS_DIR:-$HOME/.claude-fleet}}"
-CLI_ENTRY="$FLEET_DIR/cli/index.ts"
+TS_CLI="$FLEET_DIR/cli/fleet.ts"
 
-# Resolve bun
-BUN="${BUN:-$(command -v bun 2>/dev/null || echo "")}"
-if [ -z "$BUN" ]; then
-  echo "ERROR: bun not found. Install: curl -fsSL https://bun.sh/install | bash" >&2
-  exit 1
+# Fast path: bun + TypeScript CLI exist → delegate
+if command -v bun >/dev/null 2>&1 && [ -f "$TS_CLI" ]; then
+  exec bun run "$TS_CLI" "$@"
 fi
 
-exec "$BUN" run "$CLI_ENTRY" "$@"
+# Fallback: run legacy bash implementation
+LEGACY="$FLEET_DIR/bin/fleet-legacy.sh"
+if [ -f "$LEGACY" ]; then
+  exec bash "$LEGACY" "$@"
+fi
+
+echo "ERROR: Neither bun nor fleet-legacy.sh found." >&2
+echo "  Install bun: curl -fsSL https://bun.sh/install | bash" >&2
+echo "  Or restore fleet-legacy.sh in $FLEET_DIR/bin/" >&2
+exit 1
