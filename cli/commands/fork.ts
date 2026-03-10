@@ -5,7 +5,7 @@ import {
   DEFAULT_SESSION, workerDir, resolveProject,
 } from "../lib/paths";
 import {
-  getConfig, getState, getFleetConfig, writeJson,
+  getConfig, getState, getFleetConfig, writeJsonLocked,
 } from "../lib/config";
 import { info, ok, warn, fail } from "../lib/fmt";
 import {
@@ -67,7 +67,7 @@ export default defineCommand({
     const childConfig = getConfig(project, args.child);
     if (childConfig) {
       childConfig.meta.forked_from = args.parent;
-      writeJson(childConfigPath, childConfig);
+      writeJsonLocked(childConfigPath, childConfig);
     }
 
     // Copy parent session data to child's project dir
@@ -133,7 +133,7 @@ export default defineCommand({
     sendEnter(paneId);
 
     const paneTarget = getPaneTarget(paneId);
-    writeJson(join(childDir, "state.json"), {
+    writeJsonLocked(join(childDir, "state.json"), {
       status: "active",
       pane_id: paneId,
       pane_target: paneTarget,

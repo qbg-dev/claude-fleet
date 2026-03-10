@@ -2,7 +2,7 @@ import { defineCommand } from "citty";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { FLEET_DATA, workerDir, resolveProject } from "../lib/paths";
-import { getState, writeJson } from "../lib/config";
+import { getState, writeJsonLocked } from "../lib/config";
 import { info, ok, warn, fail } from "../lib/fmt";
 import { gracefulStop, listPaneIds } from "../lib/tmux";
 
@@ -20,20 +20,20 @@ async function stopWorker(name: string, project: string): Promise<void> {
 
   if (!paneId) {
     warn(`'${name}' has no pane — marking idle`);
-    writeJson(statePath, { ...state, status: "idle", pane_id: null, pane_target: null });
+    writeJsonLocked(statePath, { ...state, status: "idle", pane_id: null, pane_target: null });
     return;
   }
 
   if (!listPaneIds().has(paneId)) {
     warn(`'${name}' pane ${paneId} is already gone — marking idle`);
-    writeJson(statePath, { ...state, status: "idle", pane_id: null, pane_target: null });
+    writeJsonLocked(statePath, { ...state, status: "idle", pane_id: null, pane_target: null });
     return;
   }
 
   info(`Stopping '${name}' (pane ${paneId})`);
   await gracefulStop(paneId);
 
-  writeJson(statePath, { ...state, status: "idle", pane_id: null, pane_target: null });
+  writeJsonLocked(statePath, { ...state, status: "idle", pane_id: null, pane_target: null });
   ok(`Worker '${name}' stopped`);
 }
 

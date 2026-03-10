@@ -1,11 +1,11 @@
 import { defineCommand } from "citty";
-import { readFileSync, writeFileSync, copyFileSync, existsSync } from "node:fs";
+import { readFileSync, copyFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   DEFAULT_SESSION, workerDir, resolveProject,
 } from "../lib/paths";
 import {
-  getConfig, getFleetConfig, generateLaunchSh,
+  getConfig, getFleetConfig, generateLaunchSh, writeJsonLocked,
 } from "../lib/config";
 import { info, ok, fail } from "../lib/fmt";
 import { launchInTmux } from "../lib/launch";
@@ -42,11 +42,11 @@ export default defineCommand({
 
     if (hasOverrides) {
       if (args.save) {
-        // Save to config permanently
+        // Save to config permanently (locked — prevents CLI/MCP race)
         info("Saving overrides to config");
         const config = JSON.parse(readFileSync(configPath, "utf-8"));
         Object.assign(config, overrides);
-        writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+        writeJsonLocked(configPath, config);
         generateLaunchSh(project, args.name);
         ok("Config updated + launch.sh regenerated");
       } else {
@@ -54,7 +54,7 @@ export default defineCommand({
         copyFileSync(configPath, backupPath);
         const config = JSON.parse(readFileSync(configPath, "utf-8"));
         Object.assign(config, overrides);
-        writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+        writeJsonLocked(configPath, config);
       }
     }
 

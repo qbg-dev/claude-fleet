@@ -6,7 +6,7 @@ import {
   workerDir, resolveProjectRoot, resolveProject,
 } from "../lib/paths";
 import {
-  getDefaults, getFleetConfig, getSystemHooks, generateLaunchSh, writeJson,
+  getDefaults, getFleetConfig, getSystemHooks, generateLaunchSh, writeJsonLocked,
 } from "../lib/config";
 import { info, ok, warn, fail } from "../lib/fmt";
 import { launchInTmux } from "../lib/launch";
@@ -90,10 +90,10 @@ export default defineCommand({
         project,
       },
     };
-    writeJson(join(dir, "config.json"), config);
+    writeJsonLocked(join(dir, "config.json"), config);
 
     // 3. Write state.json
-    writeJson(join(dir, "state.json"), { status: "idle" });
+    writeJsonLocked(join(dir, "state.json"), { status: "idle" });
 
     // 4. Write mission.md
     writeFileSync(join(dir, "mission.md"), args.mission + "\n");

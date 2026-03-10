@@ -1,83 +1,18 @@
 /**
  * Configuration resolution: CLI flag > config.json > defaults.json > hardcoded.
  */
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { defaultsPath, configPath, exists, workerDir, fleetJsonPath, FLEET_DIR } from "./paths";
+import { writeFileSync } from "node:fs";
+import { defaultsPath, configPath, exists, workerDir, fleetJsonPath } from "./paths";
 
-export interface WorkerConfig {
-  model: string;
-  reasoning_effort: string;
-  permission_mode: string;
-  sleep_duration: number | null;
-  window: string | null;
-  worktree: string;
-  branch: string;
-  mcp: Record<string, unknown>;
-  hooks: SystemHook[];
-  meta: {
-    created_at: string;
-    created_by: string;
-    forked_from: string | null;
-    project: string;
-  };
-}
+// Re-export canonical types from shared module
+export type { WorkerConfig, WorkerState, FleetConfig, SystemHook } from "../../shared/types";
+export { SYSTEM_HOOKS, HARDCODED_DEFAULTS } from "../../shared/types";
+import type { WorkerConfig, WorkerState, FleetConfig } from "../../shared/types";
+import { HARDCODED_DEFAULTS } from "../../shared/types";
 
-export interface WorkerState {
-  status: "active" | "idle" | "sleeping" | "dead" | "unknown";
-  pane_id: string | null;
-  pane_target: string | null;
-  tmux_session: string | null;
-  session_id: string;
-  past_sessions: string[];
-  last_relaunch: { at: string; reason: string } | null;
-  relaunch_count: number;
-  cycles_completed: number;
-  last_cycle_at: string | null;
-  custom: Record<string, unknown>;
-}
-
-export interface FleetConfig {
-  tmux_session: string;
-  project_name: string;
-  commit_notify: string[];
-  deploy_authority: string;
-  merge_authority: string;
-  mission_authority: string[];
-  window_groups: Record<string, string[]>;
-}
-
-interface SystemHook {
-  id: string;
-  owner: "system" | "creator" | "self";
-  event: string;
-  tool?: string;
-  condition: Record<string, string>;
-  action: "block";
-  message: string;
-}
-
-const HARDCODED_DEFAULTS = {
-  model: "opus",
-  effort: "high",
-  permission_mode: "bypassPermissions",
-  sleep_duration: null as number | null,
-};
-
-/** Read JSON file, return null on failure */
-function readJson<T>(path: string): T | null {
-  try {
-    return JSON.parse(readFileSync(path, "utf-8")) as T;
-  } catch {
-    return null;
-  }
-}
-
-/** Write JSON file, creating parent dirs */
-export function writeJson(path: string, data: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(data, null, 2) + "\n");
-}
+// Re-export IO utilities (locked writes for shared files, plain writes for local)
+export { readJson, writeJson, writeJsonLocked, updateJsonLocked } from "../../shared/io";
+import { readJson, writeJson, writeJsonLocked } from "../../shared/io";
 
 /** Get global defaults (file > hardcoded) */
 export function getDefaults(): Record<string, unknown> {
@@ -119,7 +54,7 @@ export function resolveValue(project: string, name: string, key: string): unknow
   return defaults[key] ?? null;
 }
 
-/** Update a config key, write back, regenerate launch.sh */
+/** Update a config key, write back (locked), regenerate launch.sh */
 export function setConfigValue(project: string, name: string, key: string, value: unknown): void {
   const cp = configPath(project, name);
   const config = readJson<Record<string, unknown>>(cp);
@@ -127,7 +62,7 @@ export function setConfigValue(project: string, name: string, key: string, value
 
   const configKey = key === "effort" ? "reasoning_effort" : key;
   config[configKey] = value;
-  writeJson(cp, config);
+  writeJsonLocked(cp, config);
   generateLaunchSh(project, name);
 }
 
@@ -169,20 +104,6 @@ export function parseCliValue(raw: string): unknown {
   return raw;
 }
 
-/** The 12 immutable system hooks */
-export function getSystemHooks(): SystemHook[] {
-  return [
-    { id: "sys-1", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "rm\\s+-rf\\s+[/~.]" }, action: "block", message: "Catastrophic rm -rf blocked" },
-    { id: "sys-2", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+reset\\s+--hard" }, action: "block", message: "git reset --hard blocked" },
-    { id: "sys-3", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+clean\\s+-[fd]" }, action: "block", message: "git clean blocked" },
-    { id: "sys-4", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+push.*--force" }, action: "block", message: "Force push blocked" },
-    { id: "sys-5", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+checkout\\s+main\\b" }, action: "block", message: "Workers stay on their branch" },
-    { id: "sys-6", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+merge\\b" }, action: "block", message: "Workers don't merge — use Fleet Mail" },
-    { id: "sys-7", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/config.json" }, action: "block", message: "Use update_worker_config tool" },
-    { id: "sys-8", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/config.json" }, action: "block", message: "Use update_worker_config tool" },
-    { id: "sys-9", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/state.json" }, action: "block", message: "Use update_state tool" },
-    { id: "sys-10", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/state.json" }, action: "block", message: "Use update_state tool" },
-    { id: "sys-11", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/token" }, action: "block", message: "Token is auto-provisioned" },
-    { id: "sys-12", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/token" }, action: "block", message: "Token is auto-provisioned" },
-  ];
-}
+/** The 12 immutable system hooks (delegated to shared/types.ts) */
+import { SYSTEM_HOOKS as _HOOKS } from "../../shared/types";
+export function getSystemHooks() { return [..._HOOKS]; }

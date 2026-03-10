@@ -8,7 +8,7 @@ import {
   FLEET_DATA, FLEET_DIR, workerDir,
 } from "./paths";
 import {
-  getConfig, getState, writeJson,
+  getConfig, getState, writeJsonLocked,
 } from "./config";
 import {
   sessionExists, createSession, windowExists, splitIntoWindow,
@@ -128,7 +128,7 @@ export async function launchInTmux(
     pastSessions = [oldSessionId, ...pastSessions].slice(0, 10);
   }
 
-  writeJson(join(dir, "state.json"), {
+  writeJsonLocked(join(dir, "state.json"), {
     status: "active",
     pane_id: paneId,
     pane_target: paneTarget,

@@ -30,6 +30,12 @@ import { join, basename } from "path";
 import { execSync, spawnSync, spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { acquireLock, releaseLock } from "../shared/lock-utils.js";
+import {
+  type WorkerConfig as SharedWorkerConfig,
+  type WorkerState as SharedWorkerState,
+  type SystemHook,
+  SYSTEM_HOOKS,
+} from "../../shared/types";
 
 // ── Configuration ────────────────────────────────────────────────────
 const HOME = process.env.HOME!;
@@ -141,56 +147,26 @@ const LEGACY_REGISTRY_PATH = join(PROJECT_ROOT, ".claude/workers/registry.json")
 // Each worker gets: {FLEET_DIR}/{name}/config.json, state.json, mission.md, launch.sh, token
 
 /** Default system hooks applied to ALL workers — nobody can remove these */
-function getDefaultSystemHooks(): Array<{
-  id: string; owner: string; event: string; tool: string;
-  condition: { command_pattern?: string; file_glob?: string };
-  action: string; message: string;
-}> {
-  return [
-    { id: "sys-1", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "rm\\s+-rf\\s+[/~.]" }, action: "block", message: "Catastrophic rm -rf blocked" },
-    { id: "sys-2", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+reset\\s+--hard" }, action: "block", message: "git reset --hard blocked" },
-    { id: "sys-3", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+clean\\s+-[fd]" }, action: "block", message: "git clean blocked" },
-    { id: "sys-4", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+push.*--force" }, action: "block", message: "Force push blocked" },
-    { id: "sys-5", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+checkout\\s+main\\b" }, action: "block", message: "Workers stay on their branch" },
-    { id: "sys-6", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+merge\\b" }, action: "block", message: "Workers don't merge — use Fleet Mail" },
-    { id: "sys-7", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/config.json" }, action: "block", message: "Use update_worker_config tool" },
-    { id: "sys-8", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/config.json" }, action: "block", message: "Use update_worker_config tool" },
-    { id: "sys-9", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/state.json" }, action: "block", message: "Use update_state tool" },
-    { id: "sys-10", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/state.json" }, action: "block", message: "Use update_state tool" },
-    { id: "sys-11", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/token" }, action: "block", message: "Token is auto-provisioned" },
-    { id: "sys-12", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/token" }, action: "block", message: "Token is auto-provisioned" },
-  ];
+/** System hooks — delegated to shared/types.ts (single source of truth) */
+function getDefaultSystemHooks(): SystemHook[] {
+  return [...SYSTEM_HOOKS];
 }
 
-interface WorkerConfig {
-  model: string;
-  reasoning_effort: string;
-  permission_mode: string;
-  sleep_duration: number | null;
-  window: string | null;
+/**
+ * WorkerConfig and WorkerState — local aliases with relaxed nullability
+ * for backward compatibility with legacy registry data. The canonical
+ * strict types live in shared/types.ts.
+ */
+interface WorkerConfig extends Omit<SharedWorkerConfig, 'worktree' | 'mcp' | 'hooks'> {
   worktree: string | null;
-  branch: string;
   mcp: Record<string, any>;
   hooks: Array<any>;
-  meta: {
-    created_at: string;
-    created_by: string;
-    forked_from: string | null;
-    project: string;
-  };
 }
 
-interface WorkerState {
+interface WorkerState extends Omit<SharedWorkerState, 'status' | 'tmux_session' | 'session_id' | 'custom'> {
   status: string;
-  pane_id: string | null;
-  pane_target: string | null;
   tmux_session: string;
   session_id: string | null;
-  past_sessions: string[];
-  last_relaunch: { at: string; reason: string } | null;
-  relaunch_count: number;
-  cycles_completed: number;
-  last_cycle_at: string | null;
   custom: Record<string, any>;
 }
 

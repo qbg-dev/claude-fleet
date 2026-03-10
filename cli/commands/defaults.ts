@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import { defaultsPath } from "../lib/paths";
-import { getDefaults, writeJson, parseCliValue } from "../lib/config";
+import { getDefaults, writeJsonLocked, parseCliValue } from "../lib/config";
 import { ok } from "../lib/fmt";
 
 export default defineCommand({
@@ -25,7 +25,7 @@ export default defineCommand({
 
     // Set
     defaults[args.key] = parseCliValue(args.value);
-    writeJson(defaultsPath(), defaults);
+    writeJsonLocked(defaultsPath(), defaults);
     ok(`${args.key} → ${args.value}`);
   },
 });
