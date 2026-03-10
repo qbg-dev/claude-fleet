@@ -1,424 +1,119 @@
 # claude-fleet
 
-Lightweight, tmux-based orchestration for Claude Code. Give agents a name, a function, an identity, and a lifecycle.
-
-## Why
-
-Claude Code is powerful but ephemeral—sessions end, context is lost, and you manage one agent at a time. We wanted more.
-
-**Persistent, named agents.** Not just sessions—workers with identity, mission, and lifecycle. A watchdog respawns them on crash. By cycle 50, a worker's auto-memory knows things a fresh session never could.
-
-**Dynamic hooks as code-memory.** Claude's auto-memory is good enough for most context. We experimented with complex memory systems and they weren't worth it. But hooks—code that's dynamically injected at runtime—turned out to be the killer feature. Workers register Stop hooks to remind themselves to finish checks before exiting. They register PreToolUse hooks to inject context when touching specific files. It's memory in the form of executable code, not static files.
-
-**Reliability at scale.** With one agent, you can watch it work. With ten, you can't. We built a multi-pass adversarial review pipeline—drawing from Claude's code review, Cursor's bug bot, and Toad's approach—so agents review each other's work with confidence voting, adversarial judging, and optional end-to-end verification.
-
-**Simple, boring collaboration.** Workers need to talk to each other. We built a mail server: Rust + SQLite, LKML-style threads, task labels. The initial version was written by a perpetual worker in the fleet overnight across 30 cycles. It's deliberately boring infrastructure.
-
-**CLI + MCP parity.** Everything is available both through the CLI and through the MCP server. Agents can self-register, create other workers, manage their own hooks. Humans use the same `fleet` CLI to inspect and control. No forced choice between the two.
-
-**Minimal friction.** Three commands to go from zero to a working fleet. Agents teach themselves how to use the tools via seed prompts. The setup checks deps, creates config, registers the MCP server, and verifies Fleet Mail—all in one command.
-
-## Quick Start
+Give Claude Code agents a name, a mission, and a lifecycle. They persist across crashes, talk to each other, and review each other's work.
 
 ```bash
-# 1. Clone
 git clone git@github.com:qbg-dev/claude-fleet.git ~/.claude-fleet
-
-# 2. Bootstrap (creates symlinks, registers MCP, checks deps)
 ~/.claude-fleet/bin/fleet setup
-
-# 3. Create your first worker
 fleet create my-worker "Fix the login bug in auth.ts"
 ```
 
-That's it. The worker launches in a tmux pane, reads its mission, and starts working.
+## Why
+
+Claude Code is powerful but ephemeral—sessions end, context is lost, and you manage one agent at a time.
+
+**Persistent agents.** Workers have a name, mission, and config. A watchdog respawns them on crash. By cycle 50, auto-memory knows things a fresh session never could.
+
+**Hooks as code-memory.** We tried complex memory systems—not worth it. But dynamic hooks turned out to be the killer feature. Workers register Stop hooks to block exit until checks pass. PreToolUse hooks inject context when touching specific files. Memory as executable code, not static files.
+
+**Reliability at scale.** With ten agents, you can't watch them all. A multi-pass adversarial review pipeline lets agents review each other's work with confidence voting, adversarial judging, and end-to-end verification.
+
+**Boring collaboration.** Workers talk via a mail server (Rust + SQLite). LKML-style threads, task labels, merge requests. Deliberately simple.
+
+**CLI + MCP parity.** Everything works both from the terminal and from inside a worker. Agents self-register, create other workers, manage their own hooks. No forced choice.
 
 ## Requirements
 
-| Tool | Install | Why |
-|------|---------|-----|
-| Claude Code | [docs.anthropic.com](https://docs.anthropic.com/en/docs/claude-code) | The AI that runs in each worker |
-| bun | `curl -fsSL https://bun.sh/install \| bash` | Runs CLI + MCP server |
-| tmux | `brew install tmux` | Pane management |
-| git | `brew install git` | Worktree isolation |
-| cargo | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | Build `dr-context` (deep review analysis, optional) |
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code), [bun](https://bun.sh), [tmux](https://github.com/tmux/tmux), git. `fleet setup` checks all of these.
 
-`fleet setup` checks bun, tmux, and claude, then verifies Fleet Mail connectivity.
-
-**Fleet Mail is required.** Workers use it for coordination. Set it up before running `fleet setup`:
+Fleet Mail is required for coordination:
 ```bash
-fleet mail-server start                           # start a local server
-fleet mail-server connect http://server:8025      # or connect to existing
+fleet mail-server start                    # local server
+fleet mail-server connect http://host:8025 # or existing
 ```
 
-## What You Get
-
-- **Named, persistent workers** — Each worker has a name, mission, config, and lifecycle. The watchdog (launchd, 30s) respawns them on crash, recycles them on stuck, and manages perpetual sleep/wake cycles.
-- **Dynamic hooks** — Workers register their own guardrails at runtime. Stop hooks block exit until checks pass. PreToolUse hooks inject context when touching specific files. Hooks are code-as-memory—executable, not just text.
-- **Git worktree isolation** — Each worker gets its own branch and worktree. Claude Code's auto-memory scopes by path, so different worktree = isolated memory that compounds over cycles.
-- **Fleet Mail** — Durable mail server (Rust + SQLite) for inter-agent coordination. LKML-style threads with task labels. Workers message each other, send merge requests, escalate to humans.
-- **Deep review** — Multi-pass adversarial code review: parallel workers with randomized focus areas, confidence voting, adversarial judging, and optional end-to-end verification via Chrome MCP.
-- **Safety gates** — 12 irremovable system hooks block destructive operations (rm -rf, force push, kill-session, reset --hard). Workers can't disable them.
-- **CLI + MCP** — Everything available both ways. `fleet create` from the terminal, `create_worker()` from inside a worker. Same operations, same config, same locks.
-- **20 MCP tools** — `mail_send`, `mail_inbox`, `update_state`, `add_hook`, `complete_hook`, `create_worker`, `recycle`, `save_checkpoint`, `deep_review`, and more.
-
----
-
-## Architecture
-
-```
-                    fleet CLI
-                       │
-          ┌────────────┼────────────┐
-          │            │            │
-      tmux panes   git worktrees  Fleet Mail
-          │            │            │
-     ┌────┴────┐  ┌────┴────┐  ┌───┴───┐
-     │ worker1 │  │ worker2 │  │ mail  │
-     │ Claude  │  │ Claude  │  │server │
-     │ Code    │  │ Code    │  └───────┘
-     └────┬────┘  └────┬────┘
-          │            │
-     MCP server (20+ tools)
-          │
-     watchdog (launchd, 30s)
-```
-
-Each worker = Claude Code session + git worktree + tmux pane + persistent config.
-
-Workers never push or merge. A designated merger handles main.
-
-### Components
-
-| Component | What it does | Docs |
-|-----------|-------------|------|
-| **MCP Server** | 20+ tools for messaging, state, tasks, hooks, fleet visibility | [architecture.md](docs/architecture.md) |
-| **Watchdog** | launchd daemon (30s): respawn dead/stuck workers, crash-loop protection | [architecture.md](docs/architecture.md) |
-| **Hooks** | PreToolUse/PostToolUse/Stop/PromptSubmit lifecycle hooks | [hooks.md](docs/hooks.md) |
-| **Fleet Mail** | Durable mail server (Rust + SQLite), LKML-style task threads | [architecture.md](docs/architecture.md) |
-| **Deep Review** | Multi-pass adversarial code review pipeline | [Deep Review](#deep-review) |
-| **CLI** | `fleet` command for all fleet operations | [CLI Reference](#cli-reference) |
-
----
-
-## CLI Reference
+## CLI
 
 ```bash
-fleet setup                              # One-time bootstrap
-fleet create <name> "<mission>"          # Create + launch worker
-fleet start  <name>                      # Restart existing worker
-fleet stop   <name> [--all]              # Graceful stop
-fleet ls     [--json]                    # List all workers with liveness
-fleet config <name> [key] [value]        # Get/set worker config
-fleet defaults [key] [value]             # Global defaults
-fleet fork   <parent> <child> "<mission>" # Fork from existing session
-fleet log    <name>                      # Tail worker's tmux pane
-fleet mail   <name>                      # Check worker's inbox
-fleet mail-server connect <url>          # Connect to Fleet Mail server
-fleet mail-server start                  # Start local Fleet Mail server
-fleet mail-server status                 # Fleet Mail connection info
-fleet mcp    [register|status|build]     # Manage MCP server
+fleet create <name> "<mission>"   # create + launch worker
+fleet ls                          # list workers
+fleet stop <name>                 # graceful stop
+fleet start <name>                # restart
+fleet config <name> [key] [value] # get/set config
+fleet log <name>                  # tail output
+fleet mail <name>                 # check inbox
+fleet mail-server status          # Fleet Mail info
 ```
 
-### Flags
+Flags: `--model opus|sonnet|haiku`, `--effort high|max`, `--save`, `--json`
 
-```bash
---model opus|sonnet|haiku       # Override model
---effort low|medium|high|max    # Reasoning effort
---window <name>                 # tmux window group
---no-launch                     # Create without launching
---save                          # Persist overrides to config
---json                          # Machine-readable output
-```
+Config resolution: CLI flag > worker `config.json` > `defaults.json` > hardcoded
 
-### Resolution Chain
-
-CLI flag > per-worker `config.json` > `defaults.json` > hardcoded defaults
-
----
-
-## Worker Archetypes
-
-Six built-in worker types. Use `get_worker_template(type)` to preview, then `create_worker(type=..., mission=...)` to create.
-
-| Type | Lifecycle | Access | Use case |
-|------|-----------|--------|----------|
-| **implementer** | One-shot or cycled | Read-write, no push | Task-backlog-driven: fix bugs, build features |
-| **optimizer** | Perpetual | Read-write, no push | Eval-driven: run evals, fix worst gaps, prove improvement |
-| **monitor** | Perpetual | Read-only | Watch for anomalies, report to chief-of-staff |
-| **merger** | Perpetual | Full + cherry-pick + deploy | Cherry-pick worker commits to main, deploy to test, notify for E2E |
-| **chief-of-staff** | Perpetual | Read + message only | Comms hub: relay messages, optimize missions, monitor fleet health |
-| **verifier** | One-shot | Read-write, no push | Exhaustive testing against generated checklists |
-
-See [templates/flat-worker/types/README.md](templates/flat-worker/types/README.md) for details on each archetype.
-
----
-
-## Data Model
+## MCP Tools (20, available inside every worker)
 
 ```
-~/.claude/fleet/
-├── defaults.json                 # Global defaults (model, effort, permissions)
-├── {project}/
-│   ├── fleet.json                # Fleet-wide config (tmux session, authorities)
-│   ├── {worker-name}/
-│   │   ├── config.json           # Settings (model, hooks, permissions, meta)
-│   │   ├── state.json            # Runtime (status, pane, session, cycles)
-│   │   ├── mission.md            # Worker's prompt/purpose
-│   │   ├── launch.sh             # Auto-generated restart command
-│   │   └── token                 # Fleet Mail auth token
-│   └── missions/                 # Symlinks to worker missions
-
-~/.claude-fleet/                  # Infrastructure (this repo)
-├── bin/                          # CLI shim + compiled tools
-│   ├── fleet                     # CLI entry point (delegates to TypeScript)
-│   └── dr-context                # Compiled Rust binary (deep review analysis)
-├── cli/                          # TypeScript CLI (commander + Bun)
-│   ├── index.ts                  # Entry point
-│   ├── commands/                 # Subcommands (create, start, stop, ls, ...)
-│   └── lib/                      # Shared modules (config, tmux, paths, fmt)
-├── mcp/worker-fleet/             # MCP server (TypeScript, ~4000 lines)
-├── hooks/                        # Claude Code hooks
-│   ├── gates/                    # PreToolUse blocking gates (tool-policy-gate.sh)
-│   ├── interceptors/             # Context injection (pre-tool-context-injector.sh)
-│   └── publishers/               # Event publishing (post-tool, prompt)
-├── engine/                       # Hook engine + session logger
-├── scripts/                      # Launch, watchdog, deep-review, git hooks
-├── templates/                    # Worker archetypes + seed templates
-│   ├── flat-worker/types/        # 6 worker type templates
-│   └── deep-review/              # Review pipeline templates (worker, coordinator, judge)
-├── tools/dr-context/             # Rust source for deep review analysis
-│   ├── Cargo.toml
-│   └── src/                      # dep_graph, test_coverage, blame_context, shuffle
-├── lib/                          # Shared bash libraries
-├── docs/                         # Documentation
-└── tui/                          # Terminal UI (React Ink)
+mail_send(to, subject, body)     # message workers or the operator
+mail_inbox(label?)               # read inbox
+add_hook(event, description)     # register dynamic hook
+complete_hook(id, result?)       # mark gate as done
+update_state(key, value)         # persist state across recycles
+create_worker(name, type, mission)
+recycle(message?)                # clean restart (blocked until gates pass)
+save_checkpoint(summary)         # snapshot for crash recovery
+deep_review(scope, spec)         # launch adversarial review
 ```
 
----
+## Worker Types
 
-## Hook System
+| Type | Lifecycle | Use case |
+|------|-----------|----------|
+| **implementer** | One-shot | Fix bugs, build features |
+| **optimizer** | Perpetual | Run evals, fix gaps |
+| **monitor** | Perpetual | Watch for anomalies |
+| **merger** | Perpetual | Cherry-pick to main, deploy |
+| **chief-of-staff** | Perpetual | Relay messages, monitor fleet |
+| **verifier** | One-shot | Exhaustive testing |
 
-### Universal Fleet Gates (always active, irremovable)
+## How It Works
 
-Enforced by `hooks/gates/tool-policy-gate.sh` — blocks commands that no agent should ever run:
-
-| Category | Blocked commands |
-|----------|-----------------|
-| **Tmux destruction** | `tmux kill-session`, `tmux kill-window`, `tmux kill-server` |
-| **Git destruction** | `git push --force`, `git reset --hard`, `git clean -f`, `git checkout .`, `git branch -D`, `git filter-branch` |
-| **Git config** | `git remote set-url/add`, `git config` (except user.name/email) |
-| **File destruction** | `rm -rf` |
-| **Process killing** | `kill/pkill/killall claude` |
-| **System services** | `launchctl unload/bootout`, `osascript`, `crontab -r`, `nohup` |
-| **Privilege escalation** | Editing own `permissions.json`, git hooks, shell profiles |
-| **Prod access** | Direct prod IP from worktrees |
-
-### Dynamic Hooks (worker self-governance)
-
-Workers register their own hooks at runtime:
+Each worker = Claude Code + git worktree + tmux pane + persistent config.
 
 ```
-# Block recycling until TypeScript compiles
-add_hook(event="Stop", description="verify TypeScript compiles")
-
-# Inject context when editing ontology files
-add_hook(event="PreToolUse", content="Use applyAction() for ontology writes",
-  condition={file_glob: "src/ontology/**"})
-
-# Complete a gate after verification
-complete_hook("dh-1", result="PASS — no TS errors")
+~/.claude/fleet/{project}/{worker}/
+├── config.json    # model, hooks, permissions
+├── state.json     # status, pane, cycles
+├── mission.md     # what this worker does
+├── launch.sh      # auto-generated restart command
+└── token          # Fleet Mail auth
 ```
 
-Hooks fire on: PreToolUse, PostToolUse, Stop, UserPromptSubmit, PreCompact, SubagentStart/Stop.
+**Watchdog** (launchd, 30s): respawns dead workers, kills stuck ones (10min timeout), crash-loop protection (3/hr max), memory-leak recycling.
 
----
+**Safety gates** (12 system hooks, irremovable): block rm -rf, force push, reset --hard, kill-session, checkout main, merge. Workers can't disable them.
 
-## Watchdog
-
-The watchdog runs via launchd (every 30s) and keeps workers alive:
-
-1. **Liveness check** — Heartbeat timestamps updated on every prompt/tool use
-2. **Stuck detection** — If no activity for 10+ minutes, kill and respawn
-3. **Crash-loop protection** — >3 crashes/hour → stop and alert
-4. **Memory-leak recycling** — Workers exceeding memory thresholds get gracefully recycled
-5. **Perpetual cycles** — Workers call `recycle()` when done; watchdog respawns after `sleep_duration`
-
-Workers don't `sleep` — they exit cleanly, and the watchdog owns the timer.
-
----
-
-## MCP Tools (inside workers)
-
-| Tool | Description |
-|------|-------------|
-| `mail_send(to, subject, body)` | Message workers, coordinators, or the operator |
-| `mail_inbox(label?)` | Read inbox (UNREAD, TASK, INBOX) |
-| `update_state(key, value)` | Persist state across recycles |
-| `add_hook(event, ...)` | Register dynamic hooks (gates or injectors) |
-| `complete_hook(id)` | Mark a blocking gate as done |
-| `create_worker(name, mission)` | Spawn a new worker |
-| `recycle(message?)` | Clean restart (blocked until all gates pass) |
-| `save_checkpoint(summary)` | Snapshot working state for crash recovery |
-| `deep_review(scope, spec)` | Launch multi-pass adversarial review pipeline |
-| `get_worker_template(type)` | Preview a worker archetype template |
-
-[Full reference: 20+ tools total](docs/architecture.md)
-
----
-
-## Fleet Mail
-
-Workers coordinate via a durable mail server ([fleet-server](https://github.com/qbg-dev/fleet-server) — Rust + SQLite):
-
-- **Messaging**: Direct, broadcast, mailing lists
-- **Tasks**: LKML model — tasks are mail threads with labels (`[TASK]`, `P1`, `IN_PROGRESS`)
-- **Merge requests**: Workers send structured merge requests to the merger
-- **Escalation**: `mail_send(to="user")` reaches the human operator
-
-### Setup
-
-```bash
-# Option A: Connect to an existing server
-fleet mail-server connect http://your-server:8025 --token <admin-token>
-
-# Option B: Start a local server (requires fleet-server binary)
-fleet mail-server start
-
-# Check connection
-fleet mail-server status
-```
-
-Config is stored in `~/.claude/fleet/defaults.json` (`fleet_mail_url`, `fleet_mail_token`). Resolution: `$FLEET_MAIL_URL` env > `defaults.json` > not configured.
-
-Workers auto-provision mail accounts on `fleet create`. Each worker gets a per-account bearer token stored at `~/.claude/fleet/{project}/{name}/token`.
-
-Fleet Mail is required. `fleet setup` checks connectivity and fails if Fleet Mail is unreachable.
-
-### Self-Hosting
-
-fleet-server is a single Rust binary with SQLite storage. No external database needed.
-
-```bash
-# Build
-git clone https://github.com/qbg-dev/fleet-server.git
-cd fleet-server && cargo build --release
-cp target/release/fleet-server ~/.cargo/bin/
-
-# Start (fleet CLI handles token generation)
-fleet mail-server start
-
-# Or run manually
-FLEET_SERVER_BIND=0.0.0.0:8025 FLEET_SERVER_ADMIN_TOKEN=$(uuidgen) fleet-server serve
-```
-
-Data lives in `./mail.db` (SQLite). Back up this single file.
-
----
+**Dynamic hooks**: workers register their own at runtime via `add_hook()`. Three ownership tiers: system (irremovable) > creator > self.
 
 ## Deep Review
 
-Multi-pass adversarial code review pipeline. Reviews diffs and/or content files using parallel workers with specialized focus areas, confidence-based voting, adversarial judging, and optional end-to-end verification.
-
-### Pipeline
-
-```
-Material (diff + content)
-    │
-    ├── Context pre-pass (Rust: dr-context)
-    │   ├── static analysis (tsc --noEmit)
-    │   ├── dependency graph (callers, imports, churn)
-    │   ├── test coverage (sibling test files)
-    │   └── blame context (new vs pre-existing lines)
-    │
-    ├── N workers × M focus areas (parallel, randomized material order)
-    │   ├── Investigation protocol (scan → deep dive → attack vectors)
-    │   ├── Path enumeration (every code path through focus area)
-    │   └── Findings with chain-of-thought evidence
-    │
-    ├── Coordinator
-    │   ├── Aggregate findings across workers
-    │   ├── Graduated voting (≥2 per focus group, confidence thresholds)
-    │   ├── Confidence recalibration
-    │   ├── Adversarial judge validation
-    │   ├── Source verification (read actual code)
-    │   ├── Cross-run dedup (history file)
-    │   ├── Auto-fix bugs/security issues
-    │   ├── Aggregate verification checklist
-    │   └── Report generation
-    │
-    └── Verifier (optional, --verify flag)
-        ├── Deploy to test slot
-        ├── Walk verification checklist
-        ├── Write scripts and tests
-        └── Report pass/fail per path
-```
-
-### Usage
+Multi-pass adversarial code review pipeline:
 
 ```bash
-# Via MCP tool (preferred)
-deep_review(
-  scope="v1.1.3..HEAD",
-  spec="Review all changes for security and correctness",
-  verify=true,
-  verify_roles=["admin", "shenlan-pm"]
-)
+# From CLI
+bash scripts/deep-review.sh --scope main --passes 2 --verify
 
-# Via CLI
-bash scripts/deep-review.sh \
-  --scope "main" \
-  --spec "Security audit" \
-  --passes 3 \
-  --verify \
-  --notify user
+# From inside a worker (MCP)
+deep_review(scope="main", spec="Security audit", verify=true)
 ```
 
-### Focus Areas (auto-detected)
-
-**Code reviews**: security, logic, error-handling, data-integrity, architecture, performance, ux-impact, completeness
-
-**Content reviews**: correctness, completeness, feasibility, risks, clarity, alternatives, priorities
-
-**Smart focus**: Auto-replaces focus areas when patterns are detected (e.g., CLAUDE.md changes → `claude-md` focus, many try/catch → `silent-failure` focus).
-
-### Path Enumeration
-
-Each worker enumerates ALL code paths through their focus area:
-
-- **UI changes**: every page × tab × button × role combination
-- **API changes**: every endpoint × method × auth role × error branch
-- **Logic changes**: every branch × input class × boundary condition
-- **Config changes**: every consumer × migration path
-
-Paths are tagged with a verification method (`chrome`, `curl`, `script`, `test`, `code-review`, `query`). The coordinator aggregates them into a unified `verification-checklist.md`.
-
-### `dr-context` (Rust binary)
-
-The context pre-pass uses a compiled Rust binary (`tools/dr-context/`) for performance:
-
-```bash
-dr-context dep-graph <project_root> <changed_files> <output.json>
-dr-context test-coverage <project_root> <changed_files> <output.json>
-dr-context blame-context <project_root> <material_file> <output.json>
-dr-context shuffle <material_file> <session_dir> <num_workers>
-```
-
-Build: `cd tools/dr-context && cargo build --release && cp target/release/dr-context ../../bin/`
-
-Test: `cd tools/dr-context && cargo test` (14 tests)
-
----
+Parallel workers × focus areas → coordinator aggregates with confidence voting → adversarial judge validates → optional verifier deploys and tests.
 
 ## Docs
 
-| Doc | What it covers |
-|-----|---------------|
-| [Getting Started](docs/getting-started.md) | Installation, first worker, configuration, hooks |
-| [Architecture](docs/architecture.md) | Component deep dive, data flow, file ownership |
-| [Hooks](docs/hooks.md) | Hook lifecycle, context injection, policy enforcement |
-| [Event Bus](docs/event-bus.md) | JSONL event streaming, side-effects |
-| [Worker Types](templates/flat-worker/types/README.md) | 6 archetypes with usage and key differences |
+- [Getting Started](docs/getting-started.md) — installation, first worker, configuration
+- [Architecture](docs/architecture.md) — components, data flow, file ownership
+- [Hooks](docs/hooks.md) — lifecycle, context injection, policy enforcement
+- [Event Bus](docs/event-bus.md) — JSONL event streaming
+- [Worker Types](templates/flat-worker/types/README.md) — 6 archetypes
 
 ## License
 
