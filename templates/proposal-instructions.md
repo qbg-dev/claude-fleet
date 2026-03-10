@@ -27,10 +27,10 @@ Before writing ANY implementation code, produce a proposal document:
 
 5. **Send for approval**:
    ```
-   send_message(to="{{MISSION_AUTHORITY}}", content="Proposal ready for review: claude_files/proposal.html", summary="proposal ready", reply_type="review", options=["APPROVED", "REVISE", "REJECT"])
+   mail_send(to="{{MISSION_AUTHORITY}}", subject="Proposal ready for review", body="Proposal ready: claude_files/proposal.html\n\nPlease reply APPROVED, REVISE, or REJECT.")
    ```
 
-6. **WAIT for approval** before writing any implementation code. Check `read_inbox()` for the response.
+6. **WAIT for approval** before writing any implementation code. Check `mail_inbox()` for the response.
    - **APPROVED**: Proceed with implementation as proposed.
    - **REVISE**: Update the proposal per feedback, re-open in browser, re-send for approval.
    - **REJECT**: Stop and discuss scope with {{MISSION_AUTHORITY}}.

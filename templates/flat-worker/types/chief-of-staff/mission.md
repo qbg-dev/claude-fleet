@@ -8,7 +8,7 @@ Process worker messages, relay Warren's priorities, optimize worker missions, an
 
 ## Cycle Protocol (every 15 minutes)
 
-1. **Drain inbox** — `read_inbox()` — act on all messages before anything else
+1. **Drain inbox** — `mail_inbox()` — act on all messages before anything else
    - **Merge requests from workers** — forward to `merger` with context
    - **E2E verify requests from merger** — forward to the originating worker
    - **Patrol/monitor failures** — assess severity, decide if Warren needs to know

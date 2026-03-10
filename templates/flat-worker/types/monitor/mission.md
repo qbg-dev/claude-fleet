@@ -25,7 +25,7 @@ EVERY CYCLE:
 ```
 
 ## Reporting Issues
-For CRITICAL or WARNING findings, use `send_message(to="chief-of-staff", ...)`.
+For CRITICAL or WARNING findings, use `mail_send(to="chief-of-staff", subject="...", body="...")`.
 Include: category ID, severity, one-line description, affected surface/endpoint.
 
 ## Severity Levels
