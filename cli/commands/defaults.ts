@@ -1,31 +1,29 @@
-import { defineCommand } from "citty";
+import type { Command } from "commander";
 import { defaultsPath } from "../lib/paths";
 import { getDefaults, writeJsonLocked, parseCliValue } from "../lib/config";
 import { ok } from "../lib/fmt";
 
-export default defineCommand({
-  meta: { name: "defaults", description: "Get/set global defaults" },
-  args: {
-    key: { type: "positional", description: "Key to get/set", required: false },
-    value: { type: "positional", description: "New value", required: false },
-  },
-  run({ args }) {
-    const defaults = getDefaults();
+export function register(parent: Command): void {
+  parent
+    .command("defaults [key] [value]")
+    .description("Get/set global defaults")
+    .action((key?: string, value?: string) => {
+      const defaults = getDefaults();
 
-    if (!args.key) {
-      console.log(JSON.stringify(defaults, null, 2));
-      return;
-    }
+      if (!key) {
+        console.log(JSON.stringify(defaults, null, 2));
+        return;
+      }
 
-    if (!args.value) {
-      const val = defaults[args.key];
-      console.log(typeof val === "object" ? JSON.stringify(val, null, 2) : String(val ?? "null"));
-      return;
-    }
+      if (!value) {
+        const val = defaults[key];
+        console.log(typeof val === "object" ? JSON.stringify(val, null, 2) : String(val ?? "null"));
+        return;
+      }
 
-    // Set
-    defaults[args.key] = parseCliValue(args.value);
-    writeJsonLocked(defaultsPath(), defaults);
-    ok(`${args.key} → ${args.value}`);
-  },
-});
+      // Set
+      defaults[key] = parseCliValue(value);
+      writeJsonLocked(defaultsPath(), defaults);
+      ok(`${key} → ${value}`);
+    });
+}

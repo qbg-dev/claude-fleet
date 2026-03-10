@@ -1,4 +1,4 @@
-import { defineCommand } from "citty";
+import type { Command } from "commander";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
@@ -22,47 +22,17 @@ function findFleetServerBinary(): string | null {
   return null;
 }
 
-function defaultsPath(): string {
+function msDefaultsPath(): string {
   return join(FLEET_DATA, "defaults.json");
 }
 
 function updateMailConfig(url: string | null, token: string | null): void {
-  const dp = defaultsPath();
+  const dp = msDefaultsPath();
   const defaults = readJson<Record<string, unknown>>(dp) || {};
   if (url !== undefined) defaults.fleet_mail_url = url;
   if (token !== undefined) defaults.fleet_mail_token = token;
   writeJson(dp, defaults);
 }
-
-export default defineCommand({
-  meta: { name: "mail-server", description: "Fleet Mail server management" },
-  args: {
-    action: {
-      type: "positional",
-      description: "Action: connect, disconnect, status, start",
-      required: false,
-    },
-    url: { type: "positional", description: "Server URL (for connect)", required: false },
-    token: { type: "string", description: "Admin token" },
-    port: { type: "string", description: "Port for local server", default: "8025" },
-  },
-  async run({ args }) {
-    const action = args.action || "status";
-
-    switch (action) {
-      case "connect":
-        return connectAction(args);
-      case "disconnect":
-        return disconnectAction();
-      case "status":
-        return statusAction();
-      case "start":
-        return startAction(args);
-      default:
-        fail(`Unknown action: ${action}\n\nUsage:\n  fleet mail-server connect <url> [--token <token>]\n  fleet mail-server disconnect\n  fleet mail-server status\n  fleet mail-server start [--port 8025]`);
-    }
-  },
-});
 
 async function connectAction(args: { url?: string; token?: string }) {
   const url = args.url;
@@ -260,4 +230,28 @@ function readLocalAdminToken(): string | null {
   if (!existsSync(p)) return null;
   const t = readFileSync(p, "utf-8").trim();
   return t || null;
+}
+
+export function register(parent: Command): void {
+  parent
+    .command("mail-server [action] [url]")
+    .description("Fleet Mail server management")
+    .option("-t, --token <token>", "Admin token")
+    .option("--port <port>", "Port for local server", "8025")
+    .action(async (action: string | undefined, url: string | undefined, opts: { token?: string; port?: string }) => {
+      const act = action || "status";
+
+      switch (act) {
+        case "connect":
+          return connectAction({ url, token: opts.token });
+        case "disconnect":
+          return disconnectAction();
+        case "status":
+          return statusAction();
+        case "start":
+          return startAction({ port: opts.port, token: opts.token });
+        default:
+          fail(`Unknown action: ${act}\n\nUsage:\n  fleet mail-server connect <url> [--token <token>]\n  fleet mail-server disconnect\n  fleet mail-server status\n  fleet mail-server start [--port 8025]`);
+      }
+    });
 }

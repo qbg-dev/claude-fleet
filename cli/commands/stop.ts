@@ -1,10 +1,11 @@
-import { defineCommand } from "citty";
+import type { Command } from "commander";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { FLEET_DATA, workerDir, resolveProject } from "../lib/paths";
 import { getState, writeJsonLocked } from "../lib/config";
 import { info, ok, warn, fail } from "../lib/fmt";
 import { gracefulStop, listPaneIds } from "../lib/tmux";
+import { addGlobalOpts } from "../index";
 
 async function stopWorker(name: string, project: string): Promise<void> {
   const dir = workerDir(project, name);
@@ -37,37 +38,36 @@ async function stopWorker(name: string, project: string): Promise<void> {
   ok(`Worker '${name}' stopped`);
 }
 
-export default defineCommand({
-  meta: { name: "stop", description: "Graceful stop" },
-  args: {
-    name:    { type: "positional", description: "Worker name", required: false },
-    all:     { type: "boolean", description: "Stop all workers", default: false },
-    project: { type: "string", description: "Override project detection" },
-  },
-  async run({ args }) {
-    const project = args.project || resolveProject();
+export function register(parent: Command): void {
+  const sub = parent
+    .command("stop [name]")
+    .description("Graceful stop (use --all for all workers)")
+    .option("-a, --all", "Stop all workers");
+  addGlobalOpts(sub)
+    .action(async (name: string | undefined, opts: { all?: boolean }, cmd: Command) => {
+      const project = cmd.optsWithGlobals().project as string || resolveProject();
 
-    if (args.all) {
-      const projectDir = join(FLEET_DATA, project);
-      if (!existsSync(projectDir)) fail(`Project not found: ${project}`);
+      if (opts.all) {
+        const projectDir = join(FLEET_DATA, project);
+        if (!existsSync(projectDir)) fail(`Project not found: ${project}`);
 
-      let stopped = 0;
-      const workers = readdirSync(projectDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && !["missions", "_user", "_config"].includes(d.name))
-        .map((d) => d.name);
+        let stopped = 0;
+        const workers = readdirSync(projectDir, { withFileTypes: true })
+          .filter((d) => d.isDirectory() && !["missions", "_user", "_config"].includes(d.name))
+          .map((d) => d.name);
 
-      for (const w of workers) {
-        const state = getState(project, w);
-        if (!state || (state.status !== "active" && state.status !== "sleeping")) continue;
-        await stopWorker(w, project);
-        stopped++;
+        for (const w of workers) {
+          const state = getState(project, w);
+          if (!state || (state.status !== "active" && state.status !== "sleeping")) continue;
+          await stopWorker(w, project);
+          stopped++;
+        }
+
+        if (stopped === 0) info("No active workers to stop");
+        return;
       }
 
-      if (stopped === 0) info("No active workers to stop");
-      return;
-    }
-
-    if (!args.name) fail("Usage: fleet stop <name> [--all]");
-    await stopWorker(args.name!, project);
-  },
-});
+      if (!name) fail("Usage: fleet stop <name> [--all]");
+      await stopWorker(name!, project);
+    });
+}

@@ -5,34 +5,61 @@
  * Lightweight, tmux-based Claude Code orchestration platform.
  * Manages persistent worker agents across git worktrees.
  */
-import { defineCommand, runMain } from "citty";
+import { Command, Option } from "commander";
 
-const main = defineCommand({
-  meta: {
-    name: "fleet",
-    version: "2.0.0",
-    description: "Worker fleet management — persistent Claude Code agents in tmux",
-  },
-  subCommands: {
-    setup:    () => import("./commands/setup").then(m => m.default),
-    create:   () => import("./commands/create").then(m => m.default),
-    start:    () => import("./commands/start").then(m => m.default),
-    restart:  () => import("./commands/start").then(m => m.default),
-    stop:     () => import("./commands/stop").then(m => m.default),
-    ls:       () => import("./commands/ls").then(m => m.default),
-    list:     () => import("./commands/ls").then(m => m.default),
-    status:   () => import("./commands/status").then(m => m.default),
-    attach:   () => import("./commands/attach").then(m => m.default),
-    config:   () => import("./commands/config").then(m => m.default),
-    cfg:      () => import("./commands/config").then(m => m.default),
-    defaults: () => import("./commands/defaults").then(m => m.default),
-    log:      () => import("./commands/log").then(m => m.default),
-    logs:     () => import("./commands/log").then(m => m.default),
-    mail:            () => import("./commands/mail").then(m => m.default),
-    "mail-server":   () => import("./commands/mail-server").then(m => m.default),
-    fork:            () => import("./commands/fork").then(m => m.default),
-    mcp:             () => import("./commands/mcp").then(m => m.default),
-  },
+const program = new Command()
+  .name("fleet")
+  .description("Fleet — persistent Claude Code agents in tmux")
+  .version("2.0.0", "-v, --version")
+  .option("-p, --project <name>", "Override project detection")
+  .option("--json", "JSON output for supported commands");
+
+/**
+ * Add hidden copies of global options to a subcommand so they're
+ * recognized after the subcommand name (e.g. `fleet ls --json`).
+ * They don't show in subcommand --help since they're already on root.
+ */
+export function addGlobalOpts(cmd: Command): Command {
+  return cmd
+    .addOption(new Option("-p, --project <name>").hideHelp())
+    .addOption(new Option("--json").hideHelp());
+}
+
+// Default action (no subcommand) → show status dashboard
+program.action(async (_opts: Record<string, unknown>, cmd: Command) => {
+  const { runStatus } = await import("./commands/status");
+  await runStatus(cmd.optsWithGlobals());
 });
 
-runMain(main);
+// Register all subcommands
+import { register as registerSetup } from "./commands/setup";
+import { register as registerCreate } from "./commands/create";
+import { register as registerStart } from "./commands/start";
+import { register as registerStop } from "./commands/stop";
+import { register as registerLs } from "./commands/ls";
+import { register as registerStatus } from "./commands/status";
+import { register as registerAttach } from "./commands/attach";
+import { register as registerConfig } from "./commands/config";
+import { register as registerDefaults } from "./commands/defaults";
+import { register as registerLog } from "./commands/log";
+import { register as registerMail } from "./commands/mail";
+import { register as registerMailServer } from "./commands/mail-server";
+import { register as registerFork } from "./commands/fork";
+import { register as registerMcp } from "./commands/mcp";
+
+registerSetup(program);
+registerCreate(program);
+registerStart(program);
+registerStop(program);
+registerLs(program);
+registerStatus(program);
+registerAttach(program);
+registerConfig(program);
+registerDefaults(program);
+registerLog(program);
+registerMail(program);
+registerMailServer(program);
+registerFork(program);
+registerMcp(program);
+
+program.parse();
