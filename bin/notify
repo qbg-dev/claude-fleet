@@ -35,7 +35,8 @@ if [ "$_NO_TRIAGE" -eq 0 ] && [ -n "$_PROJECT_ROOT" ] && [ -d "$_PROJECT_ROOT/.c
   # Auto-detect calling worker from WORKER_NAME env or registry pane_id lookup
   _FROM_WORKER="${WORKER_NAME:-}"
   if [ -z "$_FROM_WORKER" ] && [ -n "${TMUX_PANE:-}" ]; then
-    _REG="$_PROJECT_ROOT/.claude/workers/registry.json"
+    source "$HOME/.claude-ops/lib/resolve-registry.sh" 2>/dev/null || true
+    _REG=$(resolve_registry "$_PROJECT_ROOT" 2>/dev/null || echo "$_PROJECT_ROOT/.claude/workers/registry.json")
     if [ -f "$_REG" ]; then
       _FROM_WORKER=$(jq -r --arg pid "$TMUX_PANE" '
         to_entries[] | select(.key != "_config") | select(.value.pane_id == $pid) | .key

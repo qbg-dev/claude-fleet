@@ -259,7 +259,7 @@ MEOF
       --arg type "$type" \
       --arg parent "$module" \
       --arg approved_by "$approved_by" \
-      '{name:$name, type:$type, parent:$parent, model:"sonnet", approved_by:$approved_by, monitoring_threshold:5, monitoring_cadence_s:3600}' \
+      '{name:$name, type:$type, parent:$parent, model:"opus", approved_by:$approved_by, monitoring_threshold:3, monitoring_cadence_s:600}' \
       > "$worker_dir/config.json"
   fi
 
@@ -603,7 +603,9 @@ harness_sleep_duration() {
   if [[ "$canonical" == worker/* ]]; then
     # Flat worker: "worker/{name}" → .claude/workers/registry.json[name]
     local worker="${canonical#worker/}"
-    local registry="$project_root/.claude/workers/registry.json"
+    source "$HOME/.claude-ops/lib/resolve-registry.sh" 2>/dev/null || true
+    local registry
+    registry=$(resolve_registry "$project_root" 2>/dev/null || echo "$project_root/.claude/workers/registry.json")
     local cache="$HARNESS_STATE_DIR/harness-runtime/worker/$worker/config-cache.json"
     if [ -f "$registry" ] || [ -f "$cache" ]; then
       # Check perpetual field from registry: if explicitly false, signal watchdog to skip respawn

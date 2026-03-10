@@ -65,7 +65,8 @@ if [ -n "$dir" ]; then
 	if [ -f "$dir/.git" ]; then
 		_main_project=$(sed 's|gitdir: ||; s|/\.git/worktrees/.*||' "$dir/.git" 2>/dev/null)
 	fi
-	_REGISTRY_FILE="$_main_project/.claude/workers/registry.json"
+	source "$HOME/.claude-ops/lib/resolve-registry.sh" 2>/dev/null
+	_REGISTRY_FILE=$(resolve_registry "$_main_project" 2>/dev/null || echo "$_main_project/.claude/workers/registry.json")
 fi
 
 if [ -n "$_pane_id" ] && [ -f "$_REGISTRY_FILE" ]; then

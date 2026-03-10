@@ -26,7 +26,7 @@ spawn_sweep_agent() {
   fi
 
   local model allowed_csv
-  model=$(jq -r '.model // "sonnet"' "$manifest" 2>/dev/null)
+  model=$(jq -r '.model // "opus"' "$manifest" 2>/dev/null)
   allowed_csv=$(jq -r '.allowedTools // [] | join(",")' "$manifest" 2>/dev/null)
 
   local claude_args=(--model "$model" --dangerously-skip-permissions)

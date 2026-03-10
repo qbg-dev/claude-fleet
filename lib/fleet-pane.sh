@@ -25,8 +25,12 @@ find_worker_pane() {
   local _proj="${PROJECT_ROOT:-}"
   local _wn="${harness#worker/}"
 
-  # PRIMARY: registry.json (flat workers — new system)
-  local _flat_reg="${_proj:+$_proj/.claude/workers/registry.json}"
+  # PRIMARY: registry.json (flat workers — fleet-global location)
+  local _flat_reg=""
+  if [ -n "${_proj:-}" ]; then
+    source "$HOME/.claude-ops/lib/resolve-registry.sh" 2>/dev/null || true
+    _flat_reg=$(resolve_registry "$_proj" 2>/dev/null || echo "$_proj/.claude/workers/registry.json")
+  fi
   if [ -n "${_flat_reg:-}" ] && [ -f "$_flat_reg" ]; then
     pane_id=$(jq -r --arg n "$_wn" '.[$n].pane_id // ""' "$_flat_reg" 2>/dev/null || echo "")
   fi

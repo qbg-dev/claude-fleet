@@ -32,7 +32,8 @@ if [[ "$_PROJ_ROOT" == *-w-* ]]; then
 fi
 [ -z "$_PROJ_ROOT" ] && exit 0
 
-REGISTRY="$_PROJ_ROOT/.claude/workers/registry.json"
+source "$HOME/.claude-ops/lib/resolve-registry.sh"
+REGISTRY=$(resolve_registry "$_PROJ_ROOT")
 [ -f "$REGISTRY" ] || exit 0
 
 # Idempotent: skip if session_id already set

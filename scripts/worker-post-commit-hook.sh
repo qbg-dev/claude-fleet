@@ -23,7 +23,8 @@ if [ -f "$PROJECT_ROOT/.git" ]; then
   MAIN_ROOT=$(grep gitdir "$PROJECT_ROOT/.git" | sed 's/gitdir: //' | sed 's|/.git/worktrees/.*||')
 fi
 
-REGISTRY="$MAIN_ROOT/.claude/workers/registry.json"
+source "$HOME/.claude-ops/lib/resolve-registry.sh"
+REGISTRY=$(resolve_registry "$MAIN_ROOT")
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Update registry.json with last_commit info

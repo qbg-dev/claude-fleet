@@ -83,7 +83,8 @@ if [ -n "${TMUX_PANE:-}" ]; then
   if [ -f "$_cwd/.git" ]; then
     _main_project=$(sed 's|gitdir: ||; s|/\.git/worktrees/.*||' "$_cwd/.git" 2>/dev/null || echo "$_cwd")
   fi
-  _REGISTRY="$_main_project/.claude/workers/registry.json"
+  source "$HOME/.claude-ops/lib/resolve-registry.sh"
+  _REGISTRY=$(resolve_registry "$_main_project")
 
   # Auto-derive report_to from parent pane if not given
   if [ -z "$CHILD_ASSIGNED_BY" ] && [ -n "$PARENT_PANE" ] && [ -f "$_REGISTRY" ]; then

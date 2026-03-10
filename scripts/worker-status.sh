@@ -8,7 +8,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel 2>/dev/null || { echo "ERROR: PROJECT_ROOT not set and not in a git repo" >&2; exit 1; })"
-REGISTRY="$PROJECT_ROOT/.claude/workers/registry.json"
+source "$HOME/.claude-ops/lib/resolve-registry.sh"
+REGISTRY=$(resolve_registry "$PROJECT_ROOT")
 
 [ ! -f "$REGISTRY" ] && { echo "No registry found at $REGISTRY"; exit 1; }
 
@@ -32,7 +33,7 @@ cmd_table() {
     local pane_id window model perpetual cycles status
     local _fields
     _fields=$(jq -r --arg n "$worker" '.[$n] | [
-      (.pane_id // "-"), (.window // "-"), (.model // "sonnet"),
+      (.pane_id // "-"), (.window // "-"), (.model // "opus"),
       (.perpetual // false | tostring), (.cycles_completed // 0 | tostring),
       (.status // "unknown")
     ] | join("\t")' "$REGISTRY" 2>/dev/null || echo "")
@@ -97,7 +98,7 @@ cmd_json() {
         name: .key,
         pane_id: (.value.pane_id // null),
         window: (.value.window // null),
-        model: (.value.model // "sonnet"),
+        model: (.value.model // "opus"),
         perpetual: (.value.perpetual // false),
         cycles: (.value.cycles_completed // 0),
         status: (.value.status // "unknown"),

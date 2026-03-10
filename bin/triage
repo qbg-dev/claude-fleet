@@ -27,11 +27,21 @@ function findRepoRoot(): string {
 }
 
 const ROOT = findRepoRoot();
-const PROJECT = basename(ROOT);
+const PROJECT = basename(ROOT).replace(/-w-.*$/, '');
 const TRIAGE_DIR = join(ROOT, ".claude", "triage");
 const QUEUE_FILE = join(TRIAGE_DIR, "queue.jsonl");
 const HISTORY_FILE = join(TRIAGE_DIR, "history.jsonl");
 const WORKERS_DIR = join(ROOT, ".claude", "workers");
+
+function resolveRegistryPath(): string {
+  const HOME = process.env.HOME!;
+  const fleetPath = join(HOME, ".claude/fleet", PROJECT, "registry.json");
+  if (existsSync(fleetPath)) return fleetPath;
+  const legacyPath = join(WORKERS_DIR, "registry.json");
+  if (existsSync(legacyPath)) return legacyPath;
+  return fleetPath;
+}
+const REGISTRY_PATH = resolveRegistryPath();
 mkdirSync(TRIAGE_DIR, { recursive: true });
 
 interface TriageItem {
@@ -139,7 +149,7 @@ function sendToWorkerInbox(workerName: string, response: string, item: TriageIte
   appendFileSync(inboxFile, JSON.stringify(msg) + "\n");
   // tmux delivery (best-effort)
   try {
-    const regPath = join(WORKERS_DIR, "registry.json");
+    const regPath = REGISTRY_PATH;
     if (existsSync(regPath)) {
       const reg = JSON.parse(readFileSync(regPath, "utf-8"));
       const paneId = reg[workerName]?.pane_id;
