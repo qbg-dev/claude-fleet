@@ -1,8 +1,22 @@
 # claude-fleet
 
-Lightweight, tmux-based orchestration for Claude Code. Use as much compute as possible, as effectively as possible.
+Lightweight, tmux-based orchestration for Claude Code. Give agents a name, a function, an identity, and a lifecycle.
 
-**The pitch:** Claude Code is powerful but ephemeral — sessions end, context is lost, and you manage one agent at a time. claude-fleet makes workers *persistent* and *parallel*. Each worker gets its own git worktree, tmux pane, and durable memory. A watchdog respawns them on crash. An MCP server gives them 20+ tools for messaging, state, hooks, and fleet coordination.
+## Why
+
+Claude Code is powerful but ephemeral—sessions end, context is lost, and you manage one agent at a time. We wanted more.
+
+**Persistent, named agents.** Not just sessions—workers with identity, mission, and lifecycle. A watchdog respawns them on crash. By cycle 50, a worker's auto-memory knows things a fresh session never could.
+
+**Dynamic hooks as code-memory.** Claude's auto-memory is good enough for most context. We experimented with complex memory systems and they weren't worth it. But hooks—code that's dynamically injected at runtime—turned out to be the killer feature. Workers register Stop hooks to remind themselves to finish checks before exiting. They register PreToolUse hooks to inject context when touching specific files. It's memory in the form of executable code, not static files.
+
+**Reliability at scale.** With one agent, you can watch it work. With ten, you can't. We built a multi-pass adversarial review pipeline—drawing from Claude's code review, Cursor's bug bot, and Toad's approach—so agents review each other's work with confidence voting, adversarial judging, and optional end-to-end verification.
+
+**Simple, boring collaboration.** Workers need to talk to each other. We built a mail server: Rust + SQLite, LKML-style threads, task labels. The initial version was written by a perpetual worker in the fleet overnight across 30 cycles. It's deliberately boring infrastructure.
+
+**CLI + MCP parity.** Everything is available both through the CLI and through the MCP server. Agents can self-register, create other workers, manage their own hooks. Humans use the same `fleet` CLI to inspect and control. No forced choice between the two.
+
+**Minimal friction.** Three commands to go from zero to a working fleet. Agents teach themselves how to use the tools via seed prompts. The setup checks deps, creates config, registers the MCP server, and verifies Fleet Mail—all in one command.
 
 ## Quick Start
 
@@ -39,14 +53,14 @@ fleet mail-server connect http://server:8025      # or connect to existing
 
 ## What You Get
 
-- **Persistent workers** — Watchdog (launchd, every 30s) detects stopped/stuck/crashed workers and respawns them. Workers survive crashes, context compaction, and `/stop`.
-- **Git worktree isolation** — Each worker gets its own branch and worktree. Claude Code scopes auto-memory by path, so different worktree = isolated memory. By cycle 50, a worker knows things a fresh session never could.
-- **Fleet Mail** — Workers message each other, report to coordinators, and track tasks via a durable mail system (LKML model — tasks are mail threads with labels).
-- **Dynamic hooks** — Workers manage their own guardrails at runtime: blocking gates before recycling, context injection on tool use, safety checks on destructive operations.
-- **Safety gates** — Universal fleet-wide blocks on destructive operations (rm -rf, force push, tmux kill-session, git reset --hard, etc.) enforced via PreToolUse hooks.
-- **Deep review pipeline** — Multi-pass adversarial code review with path enumeration, confidence voting, adversarial judging, and optional end-to-end verification.
-- **MCP server** — 20+ tools available inside every worker: `mail_send`, `mail_inbox`, `update_state`, `add_hook`, `create_worker`, `recycle`, `deep_review`, and more.
-- **Single CLI** — `fleet create`, `fleet start`, `fleet stop`, `fleet ls` — everything from one command.
+- **Named, persistent workers** — Each worker has a name, mission, config, and lifecycle. The watchdog (launchd, 30s) respawns them on crash, recycles them on stuck, and manages perpetual sleep/wake cycles.
+- **Dynamic hooks** — Workers register their own guardrails at runtime. Stop hooks block exit until checks pass. PreToolUse hooks inject context when touching specific files. Hooks are code-as-memory—executable, not just text.
+- **Git worktree isolation** — Each worker gets its own branch and worktree. Claude Code's auto-memory scopes by path, so different worktree = isolated memory that compounds over cycles.
+- **Fleet Mail** — Durable mail server (Rust + SQLite) for inter-agent coordination. LKML-style threads with task labels. Workers message each other, send merge requests, escalate to humans.
+- **Deep review** — Multi-pass adversarial code review: parallel workers with randomized focus areas, confidence voting, adversarial judging, and optional end-to-end verification via Chrome MCP.
+- **Safety gates** — 12 irremovable system hooks block destructive operations (rm -rf, force push, kill-session, reset --hard). Workers can't disable them.
+- **CLI + MCP** — Everything available both ways. `fleet create` from the terminal, `create_worker()` from inside a worker. Same operations, same config, same locks.
+- **20 MCP tools** — `mail_send`, `mail_inbox`, `update_state`, `add_hook`, `complete_hook`, `create_worker`, `recycle`, `save_checkpoint`, `deep_review`, and more.
 
 ---
 
