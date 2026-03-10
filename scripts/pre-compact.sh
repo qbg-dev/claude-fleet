@@ -115,8 +115,10 @@ if [ -n "$SESSION_ID" ] && [[ "$BRANCH" != worker/* ]]; then
   fi
 fi
 
-# Only fire for flat workers (branch: worker/* in a worktree)
-[[ "$BRANCH" == worker/* ]] && is_worktree 2>/dev/null || exit 0
+# Only fire for flat workers (branch: worker/* in a worktree).
+# Use PROJECT_ROOT (already resolved via pane-registry above) rather than CWD-based is_worktree(),
+# which would incorrectly return false when the hook fires from the main repo directory.
+[[ "$BRANCH" == worker/* ]] && [ -f "$PROJECT_ROOT/.git" ] || exit 0
 
 WORKER_NAME="${BRANCH#worker/}"
 MAIN_ROOT=$(resolve_main_root)
@@ -142,7 +144,8 @@ if [ -f "$_HOOKS_FILE" ]; then
   _CP_HOOKS=$(jq '[.[] | {id, event, description, blocking, completed}]' "$_HOOKS_FILE" 2>/dev/null || echo "[]")
 fi
 
-# Write checkpoint JSON
+# Write checkpoint JSON — write to temp file first, then atomically move.
+# Direct redirect creates an empty file on jq failure, which JSON.parse would throw on during seed generation.
 jq -n \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg summary "Auto-checkpoint before context compaction" \
@@ -159,13 +162,14 @@ jq -n \
     dynamic_hooks: $hooks,
     key_facts: [],
     transcript_ref: ""
-  }' > "$_CP_FILE" 2>/dev/null || true
+  }' > "${_CP_FILE}.tmp" 2>/dev/null && mv "${_CP_FILE}.tmp" "$_CP_FILE" 2>/dev/null || true
 
 # Update latest symlink
 ln -sf "checkpoint-${_CP_TS}.json" "$CHECKPOINT_DIR/latest.json" 2>/dev/null || true
 
 # GC: keep last 5 checkpoints
-_CP_ALL=$(ls -1 "$CHECKPOINT_DIR"/checkpoint-*.json 2>/dev/null | grep -v latest.json | sort)
+# Note: latest.json is a symlink and does not match checkpoint-*.json glob — no filter needed.
+_CP_ALL=$(ls -1 "$CHECKPOINT_DIR"/checkpoint-*.json 2>/dev/null | sort)
 _CP_COUNT=$(echo "$_CP_ALL" | grep -c . 2>/dev/null || echo "0")
 if [ "$_CP_COUNT" -gt 5 ]; then
   echo "$_CP_ALL" | head -n $((_CP_COUNT - 5)) | while read -r f; do rm -f "$f" 2>/dev/null; done
