@@ -636,16 +636,31 @@ function resolveRecipient(to: string): {
   return { type: "worker", workerName: to };
 }
 
+/** Patterns indicating the Claude TUI is waiting for input (safe to paste). */
+const IDLE_PATTERNS = [
+  "bypass permissions",  // standard idle
+  "plan mode on",        // plan mode (accepts input)
+  "ctrl-g to edit",      // plan file editor prompt
+  "Context left",        // compact / low-context warning
+];
+
+/** Patterns indicating the Claude TUI is actively running (do NOT paste). */
+const BUSY_PATTERNS = [
+  "(running)",           // tool execution in progress
+];
+
 /** Check if a tmux pane is idle (at the Claude REPL prompt, not running tools).
- *  Captures the last visible line — if it contains "bypass permissions" without "(running)",
- *  the worker is waiting for input. Returns true on error (assume idle — safer to deliver). */
+ *  Captures the last non-empty visible line and matches against known idle/busy patterns.
+ *  Returns true on error (assume idle — safer to deliver than silently drop). */
 function isPaneIdle(paneId: string): boolean {
   try {
     const capture = spawnSync("tmux", ["capture-pane", "-t", paneId, "-p"], {
       encoding: "utf-8", timeout: 3000,
     });
-    const lastLine = (capture.stdout || "").trim().split("\n").pop() || "";
-    return lastLine.includes("bypass permissions") && !lastLine.includes("(running)");
+    const lines = (capture.stdout || "").trim().split("\n");
+    const lastLine = lines.filter(l => l.trim()).pop() || "";
+    if (BUSY_PATTERNS.some(p => lastLine.includes(p))) return false;
+    return IDLE_PATTERNS.some(p => lastLine.includes(p));
   } catch {
     return true; // assume idle on error — better to deliver than silently drop
   }
@@ -655,11 +670,19 @@ function isPaneIdle(paneId: string): boolean {
  *  Uses spawnSync (no shell) to avoid backtick/dollar-sign interpretation that was
  *  silently truncating messages containing code references like `--service web`.
  *
- *  If the pane is busy (mid-response), writes the message to a tmpfile and spawns a
- *  background retry via deliver-tmux-msg.sh (15s delay, max 2 retries). The inbox.jsonl
- *  write already happened before this point, so no message is ever lost — this only
- *  controls when the tmux paste+Enter fires. */
+ *  Always fires a tmux overlay banner (visible in any TUI state). If the pane is busy,
+ *  writes the message to a tmpfile and spawns deliver-tmux-msg.sh which force-delivers
+ *  after 15s. The inbox.jsonl write already happened before this — no message is ever
+ *  lost, this only controls when the tmux paste+Enter fires. */
 function tmuxSendMessage(paneId: string, text: string): void {
+  // Always fire overlay notification (works in ANY pane state)
+  try {
+    const preview = text.length > 80 ? text.slice(0, 77) + "..." : text;
+    spawnSync("tmux", ["display-message", "-t", paneId, "-d", "5000", `📬 ${preview}`], {
+      timeout: 3000,
+    });
+  } catch {}
+
   if (!isPaneIdle(paneId)) {
     // Pane is busy — schedule background retry in 15s
     const tmpDir = join(HOME, ".claude-ops/tmp");
