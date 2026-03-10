@@ -2,7 +2,7 @@ import { defineCommand } from "citty";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
-import { FLEET_DIR, FLEET_DATA, FLEET_MAIL_URL } from "../lib/paths";
+import { FLEET_DIR, FLEET_DATA, FLEET_MAIL_URL, FLEET_MAIL_TOKEN } from "../lib/paths";
 import { ok, info, warn, fail } from "../lib/fmt";
 
 export default defineCommand({
@@ -100,10 +100,12 @@ export default defineCommand({
         try { settings = JSON.parse(readFileSync(settingsFile, "utf-8")); } catch {}
       }
       if (!settings.mcpServers) settings.mcpServers = {};
+      const mcpEnv: Record<string, string> = {};
+      if (FLEET_MAIL_URL) mcpEnv.FLEET_MAIL_URL = FLEET_MAIL_URL;
       settings.mcpServers["worker-fleet"] = {
         command: bunPath,
         args: ["run", mcpScript],
-        env: { FLEET_MAIL_URL },
+        env: mcpEnv,
       };
       writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + "\n");
       ok("MCP server registered in settings.json");
@@ -121,11 +123,36 @@ export default defineCommand({
       }
     }
 
+    // 8. Fleet Mail status
+    info("Fleet Mail...");
+    if (FLEET_MAIL_URL) {
+      try {
+        const resp = await fetch(`${FLEET_MAIL_URL}/health`, { signal: AbortSignal.timeout(3000) });
+        if (resp.ok) {
+          ok(`Fleet Mail: ${FLEET_MAIL_URL} ${chalk.green("(reachable)")}`);
+        } else {
+          warn(`Fleet Mail: ${FLEET_MAIL_URL} (returned ${resp.status})`);
+        }
+      } catch {
+        warn(`Fleet Mail: ${FLEET_MAIL_URL} (unreachable)`);
+      }
+      if (FLEET_MAIL_TOKEN) {
+        ok(`Admin token: ${FLEET_MAIL_TOKEN.slice(0, 8)}...`);
+      }
+    } else {
+      warn("Fleet Mail not configured");
+      console.log(`    Connect: ${chalk.cyan("fleet mail-server connect <url> --token <token>")}`);
+      console.log(`    Local:   ${chalk.cyan("fleet mail-server start")}`);
+    }
+
     console.log("");
     ok("Fleet setup complete!");
     console.log("");
-    console.log("  fleet ls              — list workers");
-    console.log(`  fleet create <n> "m" — create a worker`);
-    console.log("  fleet help            — all commands");
+    console.log("  fleet ls                    — list workers");
+    console.log(`  fleet create <n> "m"        — create a worker`);
+    if (!FLEET_MAIL_URL) {
+      console.log(`  fleet mail-server connect   — connect Fleet Mail`);
+    }
+    console.log("  fleet help                  — all commands");
   },
 });

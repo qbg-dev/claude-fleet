@@ -166,23 +166,28 @@ export default defineCommand({
 
     // 9. Provision Fleet Mail
     let mailToken = "";
-    try {
-      const resp = await fetch(`${FLEET_MAIL_URL}/api/accounts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: `${name}@${project}` }),
-      });
-      if (resp.ok) {
-        const data = await resp.json() as { token?: string };
-        mailToken = data.token || "";
-      }
-    } catch { /* non-fatal */ }
+    if (FLEET_MAIL_URL) {
+      try {
+        const resp = await fetch(`${FLEET_MAIL_URL}/api/accounts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: `${name}@${project}` }),
+        });
+        if (resp.ok) {
+          const data = await resp.json() as { token?: string };
+          mailToken = data.token || "";
+        }
+      } catch { /* non-fatal */ }
 
-    if (mailToken) {
-      writeFileSync(join(dir, "token"), mailToken);
-      ok("Fleet Mail provisioned");
+      if (mailToken) {
+        writeFileSync(join(dir, "token"), mailToken);
+        ok("Fleet Mail provisioned");
+      } else {
+        warn("Fleet Mail provisioning failed (worker will use MCP fallback)");
+        writeFileSync(join(dir, "token"), "");
+      }
     } else {
-      warn("Fleet Mail provisioning failed (worker will use MCP fallback)");
+      info("Fleet Mail not configured — run: fleet mail-server connect <url>");
       writeFileSync(join(dir, "token"), "");
     }
 

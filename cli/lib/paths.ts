@@ -3,7 +3,7 @@
  * Single source of truth — every other module imports from here.
  */
 import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const HOME = process.env.HOME || process.env.USERPROFILE || "/tmp";
 
@@ -16,9 +16,39 @@ export const FLEET_DIR =
 /** Data: per-project worker configs, states */
 export const FLEET_DATA = join(HOME, ".claude", "fleet");
 
-/** Fleet Mail server URL */
-export const FLEET_MAIL_URL =
-  process.env.FLEET_MAIL_URL || "http://5.161.107.142:8026";
+/**
+ * Fleet Mail config — resolved from env > defaults.json > null.
+ * Stored in defaults.json as fleet_mail_url and fleet_mail_token.
+ */
+function resolveMailConfig(): { url: string | null; token: string | null } {
+  const envUrl = process.env.FLEET_MAIL_URL || null;
+  const envToken = process.env.FLEET_MAIL_TOKEN || null;
+
+  // Read from defaults.json
+  let fileUrl: string | null = null;
+  let fileToken: string | null = null;
+  const dp = defaultsPath();
+  if (existsSync(dp)) {
+    try {
+      const d = JSON.parse(readFileSync(dp, "utf-8"));
+      if (d.fleet_mail_url) fileUrl = String(d.fleet_mail_url);
+      if (d.fleet_mail_token) fileToken = String(d.fleet_mail_token);
+    } catch {}
+  }
+
+  return {
+    url: envUrl || fileUrl,
+    token: envToken || fileToken,
+  };
+}
+
+const _mailConfig = resolveMailConfig();
+
+/** Fleet Mail server URL (null = not configured) */
+export const FLEET_MAIL_URL: string | null = _mailConfig.url;
+
+/** Fleet Mail admin token (null = not configured) */
+export const FLEET_MAIL_TOKEN: string | null = _mailConfig.token;
 
 /** Default tmux session */
 export const DEFAULT_SESSION = "w";

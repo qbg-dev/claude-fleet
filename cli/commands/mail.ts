@@ -21,6 +21,8 @@ export default defineCommand({
     const token = readFileSync(tokenPath, "utf-8").trim();
     if (!token) fail(`Empty token for '${name}'`);
 
+    if (!FLEET_MAIL_URL) fail("Fleet Mail not configured — run: fleet mail-server connect <url>");
+
     try {
       const resp = await fetch(
         `${FLEET_MAIL_URL}/api/messages?label=${args.label}`,

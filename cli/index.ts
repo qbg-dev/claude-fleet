@@ -28,9 +28,10 @@ const main = defineCommand({
     defaults: () => import("./commands/defaults").then(m => m.default),
     log:      () => import("./commands/log").then(m => m.default),
     logs:     () => import("./commands/log").then(m => m.default),
-    mail:     () => import("./commands/mail").then(m => m.default),
-    fork:     () => import("./commands/fork").then(m => m.default),
-    mcp:      () => import("./commands/mcp").then(m => m.default),
+    mail:            () => import("./commands/mail").then(m => m.default),
+    "mail-server":   () => import("./commands/mail-server").then(m => m.default),
+    fork:            () => import("./commands/fork").then(m => m.default),
+    mcp:             () => import("./commands/mcp").then(m => m.default),
   },
 });
 

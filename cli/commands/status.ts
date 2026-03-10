@@ -66,12 +66,14 @@ export default defineCommand({
     }
 
     // Fleet Mail reachability
-    let mailStatus = "unknown";
-    try {
-      const resp = await fetch(`${FLEET_MAIL_URL}/health`, { signal: AbortSignal.timeout(3000) });
-      mailStatus = resp.ok ? "reachable" : `error (${resp.status})`;
-    } catch {
-      mailStatus = "unreachable";
+    let mailStatus = "not configured";
+    if (FLEET_MAIL_URL) {
+      try {
+        const resp = await fetch(`${FLEET_MAIL_URL}/health`, { signal: AbortSignal.timeout(3000) });
+        mailStatus = resp.ok ? "reachable" : `error (${resp.status})`;
+      } catch {
+        mailStatus = "unreachable";
+      }
     }
 
     if (args.json) {
@@ -108,7 +110,11 @@ export default defineCommand({
     console.log(`  ${chalk.cyan("MCP:")}       ${mcpRegistered ? chalk.green("registered") : chalk.red("not registered")}`);
 
     // Fleet Mail
-    const mailColor = mailStatus === "reachable" ? chalk.green : chalk.red;
-    console.log(`  ${chalk.cyan("Mail:")}      ${mailColor(mailStatus)} ${chalk.dim(`(${FLEET_MAIL_URL})`)}`);
+    if (FLEET_MAIL_URL) {
+      const mailColor = mailStatus === "reachable" ? chalk.green : chalk.red;
+      console.log(`  ${chalk.cyan("Mail:")}      ${mailColor(mailStatus)} ${chalk.dim(`(${FLEET_MAIL_URL})`)}`);
+    } else {
+      console.log(`  ${chalk.cyan("Mail:")}      ${chalk.dim("not configured")} — fleet mail-server connect <url>`);
+    }
   },
 });
