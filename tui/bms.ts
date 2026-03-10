@@ -1,5 +1,5 @@
 /**
- * BMS (Boring Mail Server) client + registry utilities.
+ * BMS (Fleet Mail Server) client + registry utilities.
  * Extracted from harness REPL for shared use.
  */
 

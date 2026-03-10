@@ -28,8 +28,8 @@ import { acquireLock, releaseLock } from "./mcp/shared/lock-utils.js";
 
 const HOME = process.env.HOME!;
 const PORT = parseInt(process.env.FLEET_RELAY_PORT || "9100");
-const FLEET_MAIL_URL = process.env.FLEET_MAIL_URL || "http://5.161.107.142:8026";
-const BMS_ADMIN_TOKEN = process.env.BORING_MAIL_ADMIN_TOKEN || "";
+const FLEET_MAIL_URL = process.env.FLEET_MAIL_URL || "http://127.0.0.1:8025";
+const BMS_ADMIN_TOKEN = process.env.FLEET_SERVER_ADMIN_TOKEN || "";
 const FLEET_DIR = join(HOME, ".claude/fleet");
 const LOCK_DIR = join(HOME, ".claude-ops/state/locks");
 

@@ -6,18 +6,17 @@ import { FLEET_DATA, FLEET_MAIL_URL, FLEET_MAIL_TOKEN } from "../lib/paths";
 import { ok, info, warn, fail } from "../lib/fmt";
 import { readJson, writeJson } from "../../shared/io";
 
-const BORING_MAIL_PATHS = [
-  join(process.env.HOME || "", ".cargo/bin/boring-mail"),
-  join(process.env.HOME || "", "Desktop/zPersonalProjects/boring-mail-server/target/release/boring-mail"),
+const FLEET_SERVER_PATHS = [
+  join(process.env.HOME || "", ".cargo/bin/fleet-server"),
 ];
 
-function findBoringMailBinary(): string | null {
+function findFleetServerBinary(): string | null {
   // Check PATH first
-  const which = Bun.spawnSync(["which", "boring-mail"], { stderr: "pipe" });
+  const which = Bun.spawnSync(["which", "fleet-server"], { stderr: "pipe" });
   if (which.exitCode === 0) return which.stdout.toString().trim();
 
   // Check known locations
-  for (const p of BORING_MAIL_PATHS) {
+  for (const p of FLEET_SERVER_PATHS) {
     if (existsSync(p)) return p;
   }
   return null;
@@ -158,22 +157,22 @@ async function statusAction() {
 
 async function startAction(args: { port?: string; token?: string }) {
   const port = args.port || "8025";
-  const binary = findBoringMailBinary();
+  const binary = findFleetServerBinary();
 
   if (!binary) {
     return fail(
-      "boring-mail binary not found.\n\n" +
+      "fleet-server binary not found.\n\n" +
       "  Install options:\n" +
       "    1. Build from source:\n" +
-      "       cd ~/Desktop/zPersonalProjects/boring-mail-server\n" +
-      "       cargo build --release\n" +
-      "       cp target/release/boring-mail ~/.cargo/bin/\n\n" +
+      "       git clone https://github.com/qbg-dev/fleet-server.git\n" +
+      "       cd fleet-server && cargo build --release\n" +
+      "       cp target/release/fleet-server ~/.cargo/bin/\n\n" +
       "    2. Or connect to an existing server:\n" +
       "       fleet mail-server connect http://your-server:8025"
     );
   }
 
-  info(`Found boring-mail at ${binary}`);
+  info(`Found fleet-server at ${binary}`);
 
   // Check if already running
   try {
@@ -193,27 +192,27 @@ async function startAction(args: { port?: string; token?: string }) {
 
   // Generate admin token if not provided and none exists locally
   let adminToken = args.token || null;
-  const adminTokenPath = join(process.env.HOME || "", ".boring-mail/admin-token");
+  const adminTokenPath = join(process.env.HOME || "", ".fleet-server/admin-token");
 
   if (!adminToken && existsSync(adminTokenPath)) {
     adminToken = readFileSync(adminTokenPath, "utf-8").trim();
-    if (adminToken) info(`Using existing admin token from ~/.boring-mail/admin-token`);
+    if (adminToken) info(`Using existing admin token from ~/.fleet-server/admin-token`);
   }
 
   if (!adminToken) {
     adminToken = crypto.randomUUID();
     // Write it for the server to read
-    mkdirSync(join(process.env.HOME || "", ".boring-mail"), { recursive: true });
+    mkdirSync(join(process.env.HOME || "", ".fleet-server"), { recursive: true });
     writeFileSync(adminTokenPath, adminToken + "\n");
-    info(`Generated admin token → ~/.boring-mail/admin-token`);
+    info(`Generated admin token → ~/.fleet-server/admin-token`);
   }
 
   // Start the server
   info(`Starting Fleet Mail on port ${port}...`);
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
-    BORING_MAIL_BIND: `0.0.0.0:${port}`,
-    BORING_MAIL_ADMIN_TOKEN: adminToken,
+    FLEET_SERVER_BIND: `0.0.0.0:${port}`,
+    FLEET_SERVER_ADMIN_TOKEN: adminToken,
   };
 
   const proc = Bun.spawn([binary, "serve"], {
@@ -257,7 +256,7 @@ async function startAction(args: { port?: string; token?: string }) {
 }
 
 function readLocalAdminToken(): string | null {
-  const p = join(process.env.HOME || "", ".boring-mail/admin-token");
+  const p = join(process.env.HOME || "", ".fleet-server/admin-token");
   if (!existsSync(p)) return null;
   const t = readFileSync(p, "utf-8").trim();
   return t || null;

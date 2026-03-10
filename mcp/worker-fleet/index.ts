@@ -619,7 +619,7 @@ interface RegistryWorkerEntry {
   issues_found?: number;
   issues_fixed?: number;
 
-  // Boring Mail Server token (auto-provisioned)
+  // Fleet Mail Server token (auto-provisioned)
   bms_token?: string;
 }
 

@@ -248,7 +248,7 @@ Workers don't `sleep` — they exit cleanly, and the watchdog owns the timer.
 
 ## Fleet Mail
 
-Workers coordinate via a durable mail server ([boring-mail](https://github.com/qbg-dev/boring-mail-server) — Rust + SQLite):
+Workers coordinate via a durable mail server ([fleet-server](https://github.com/qbg-dev/fleet-server) — Rust + SQLite):
 
 - **Messaging**: Direct, broadcast, mailing lists
 - **Tasks**: LKML model — tasks are mail threads with labels (`[TASK]`, `P1`, `IN_PROGRESS`)
@@ -261,7 +261,7 @@ Workers coordinate via a durable mail server ([boring-mail](https://github.com/q
 # Option A: Connect to an existing server
 fleet mail-server connect http://your-server:8025 --token <admin-token>
 
-# Option B: Start a local server (requires boring-mail binary)
+# Option B: Start a local server (requires fleet-server binary)
 fleet mail-server start
 
 # Check connection
@@ -276,19 +276,19 @@ Fleet Mail is required. `fleet setup` checks connectivity and fails if Fleet Mai
 
 ### Self-Hosting
 
-boring-mail is a single Rust binary with SQLite storage. No external database needed.
+fleet-server is a single Rust binary with SQLite storage. No external database needed.
 
 ```bash
 # Build
-git clone https://github.com/qbg-dev/boring-mail-server.git
-cd boring-mail-server && cargo build --release
-cp target/release/boring-mail ~/.cargo/bin/
+git clone https://github.com/qbg-dev/fleet-server.git
+cd fleet-server && cargo build --release
+cp target/release/fleet-server ~/.cargo/bin/
 
 # Start (fleet CLI handles token generation)
 fleet mail-server start
 
 # Or run manually
-BORING_MAIL_BIND=0.0.0.0:8025 BORING_MAIL_ADMIN_TOKEN=$(uuidgen) boring-mail serve
+FLEET_SERVER_BIND=0.0.0.0:8025 FLEET_SERVER_ADMIN_TOKEN=$(uuidgen) fleet-server serve
 ```
 
 Data lives in `./mail.db` (SQLite). Back up this single file.
