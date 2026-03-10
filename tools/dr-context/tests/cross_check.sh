@@ -59,7 +59,7 @@ echo ""
 # ── 1. dep-graph ────────────────────────────────────────────────
 echo "1. dep-graph"
 
-# Python
+# Python (uses grep -E and path-anchored pattern to match Rust behavior)
 python3 << 'DEPEOF' - "$PROJECT_ROOT" "$CHANGED_FILES" "$TMPDIR/dep-py.json"
 import sys, json, os, subprocess, re
 
@@ -73,16 +73,17 @@ for cf in changed_files:
     basename = os.path.splitext(os.path.basename(cf))[0]
     try:
         result = subprocess.run(
-            ["grep", "-rn", "--include=*.ts", "--include=*.tsx", "--include=*.js",
-             f"from.*['\"].*{basename}['\"]", project_root],
+            ["grep", "-E", "-rn", "--include=*.ts", "--include=*.tsx", "--include=*.js",
+             f"from.*['\"].*[/]{basename}['\"]", project_root],
             capture_output=True, text=True, timeout=10
         )
         for line in result.stdout.strip().split('\n'):
-            if line and cf not in line:
+            if line:
                 parts = line.split(':', 2)
                 if len(parts) >= 2:
                     rel = os.path.relpath(parts[0], project_root)
-                    entry["imported_by"].append(f"{rel}:{parts[1]}")
+                    if rel != cf:
+                        entry["imported_by"].append(f"{rel}:{parts[1]}")
         entry["imported_by"] = entry["imported_by"][:20]
     except Exception:
         pass
@@ -128,21 +129,50 @@ project_root = sys.argv[1]
 changed_files = [f.strip() for f in sys.argv[2].strip().split('\n') if f.strip()]
 out_path = sys.argv[3]
 
+EXCLUDED = ['node_modules/', 'dist/', '.git/', '.next/', 'build/']
+
+def is_excluded(rel_path):
+    for d in EXCLUDED:
+        if rel_path.startswith(d) or f'/{d}' in rel_path:
+            return True
+    return False
+
 coverage = {}
 for cf in changed_files:
     basename = os.path.splitext(os.path.basename(cf))[0]
-    test_patterns = [
-        f"**/tests/**/{basename}.test.*",
-        f"**/tests/**/{basename}.spec.*",
-        f"**/__tests__/{basename}.*",
-        f"**/{basename}.test.*",
-        f"**/{basename}.spec.*",
-    ]
+
+    # Phase 1: co-located tests
+    source_dir = os.path.dirname(cf)
     found_tests = []
-    for pattern in test_patterns:
-        matches = glob.glob(os.path.join(project_root, pattern), recursive=True)
-        for m in matches:
-            found_tests.append(os.path.relpath(m, project_root))
+
+    if source_dir:
+        colocated_patterns = [
+            f"{source_dir}/**/{basename}.test.*",
+            f"{source_dir}/**/{basename}.spec.*",
+            f"{source_dir}/**/__tests__/{basename}.*",
+        ]
+        for pattern in colocated_patterns:
+            matches = glob.glob(os.path.join(project_root, pattern), recursive=True)
+            for m in matches:
+                rel = os.path.relpath(m, project_root)
+                if not is_excluded(rel) and rel not in found_tests:
+                    found_tests.append(rel)
+
+    # Phase 2: project-wide fallback
+    if not found_tests:
+        global_patterns = [
+            f"**/tests/**/{basename}.test.*",
+            f"**/tests/**/{basename}.spec.*",
+            f"**/__tests__/{basename}.*",
+            f"**/{basename}.test.*",
+            f"**/{basename}.spec.*",
+        ]
+        for pattern in global_patterns:
+            matches = glob.glob(os.path.join(project_root, pattern), recursive=True)
+            for m in matches:
+                rel = os.path.relpath(m, project_root)
+                if not is_excluded(rel) and rel not in found_tests:
+                    found_tests.append(rel)
 
     coverage[cf] = {
         "has_tests": len(found_tests) > 0,
@@ -165,7 +195,7 @@ echo "3. blame-context"
 MATERIAL="$TMPDIR/material.txt"
 (cd "$PROJECT_ROOT" && git diff HEAD~5..HEAD) > "$MATERIAL" 2>/dev/null || true
 
-# Python
+# Python (fixed: collect files from diff headers, use b/ path, use hex check — #9, #5, #18)
 python3 << 'BLAMEEOF' - "$PROJECT_ROOT" "$MATERIAL" "$TMPDIR/blame-py.json"
 import sys, json, os, subprocess, re
 
@@ -176,30 +206,17 @@ out_path = sys.argv[3]
 with open(material_file) as f:
     content = f.read()
 
-blame_data = {}
-current_file = None
-current_new_lines = []
-
+# Collect changed files from diff headers (use b/ path for renames)
+changed_files = []
 for line in content.split('\n'):
-    m = re.match(r'^diff --git a/(\S+)', line)
+    m = re.match(r'^diff --git a/\S+ b/(\S+)', line)
     if m:
-        if current_file and current_new_lines:
-            blame_data[current_file] = current_new_lines
-        current_file = m.group(1)
-        current_new_lines = []
-        continue
-
-    m = re.match(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@', line)
-    if m:
-        start = int(m.group(1))
-        count = int(m.group(2)) if m.group(2) else 1
-        continue
-
-if current_file and current_new_lines:
-    blame_data[current_file] = current_new_lines
+        f = m.group(1)
+        if f not in changed_files:
+            changed_files.append(f)
 
 result = {}
-for filepath in list(blame_data.keys())[:30]:
+for filepath in changed_files[:30]:
     full_path = os.path.join(project_root, filepath)
     if not os.path.exists(full_path):
         continue
@@ -220,20 +237,23 @@ for filepath in list(blame_data.keys())[:30]:
             new_lines = 0
             old_lines = 0
             for bl in blame_result.stdout.split('\n'):
-                if bl.startswith('author-time '):
-                    pass
-                if len(bl) >= 40 and bl[0:8].isalnum():
+                # Skip content lines (tab-prefixed in porcelain)
+                if bl.startswith('\t'):
+                    continue
+                if len(bl) >= 40 and all(c in '0123456789abcdef' for c in bl[0:8]):
                     sha = bl[:8]
                     if sha == head_sha or sha == '00000000':
                         new_lines += 1
                     else:
                         old_lines += 1
 
-            result[filepath] = {
-                "new_in_diff": new_lines,
-                "pre_existing": old_lines,
-                "ratio_new": round(new_lines / max(new_lines + old_lines, 1), 2)
-            }
+            total = new_lines + old_lines
+            if total > 0:
+                result[filepath] = {
+                    "new_in_diff": new_lines,
+                    "pre_existing": old_lines,
+                    "ratio_new": round(new_lines / max(new_lines + old_lines, 1), 2)
+                }
     except Exception:
         pass
 

@@ -1,10 +1,12 @@
 use regex::Regex;
 use serde::Serialize;
 use serde_json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+
+use crate::util;
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[cfg_attr(test, derive(serde::Deserialize))]
@@ -17,31 +19,39 @@ pub struct BlameEntry {
 /// Build blame context for changed files.
 ///
 /// Parses the diff material to find changed files, runs `git blame --porcelain`
-/// on each, classifies lines as new (HEAD commit) vs pre-existing.
-/// Equivalent to the inline Python blame-context script in deep-review.sh.
+/// on each, classifies lines as new (in commit range) vs pre-existing.
+///
+/// When `base_ref` is provided, all commits in `base_ref..HEAD` are counted as "new".
+/// Without it, only the HEAD commit is counted as "new" (backward-compatible).
 pub fn run(
     project_root: &str,
     material_file: &str,
     out_path: &str,
+    base_ref: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(material_file)?;
-    let diff_re = Regex::new(r"^diff --git a/(\S+)")?;
+    // Capture b/ path (new name) to handle renames correctly (#5)
+    let diff_re = Regex::new(r"^diff --git a/\S+ b/(\S+)")?;
 
-    // Parse diff to find changed file names
+    // Parse diff to find changed file names (use HashSet for O(1) dedup — #16)
+    let mut seen = HashSet::new();
     let mut changed_files: Vec<String> = Vec::new();
     for line in content.lines() {
         if let Some(cap) = diff_re.captures(line) {
             if let Some(m) = cap.get(1) {
                 let file = m.as_str().to_string();
-                if !changed_files.contains(&file) {
+                if seen.insert(file.clone()) {
                     changed_files.push(file);
                 }
             }
         }
     }
 
-    // Get HEAD sha (first 8 chars)
-    let head_sha = get_head_sha(project_root);
+    // Collect all "new" commit SHAs (#2: multi-commit support)
+    let new_shas = get_new_shas(project_root, base_ref);
+    if new_shas.is_empty() {
+        eprintln!("WARN: could not determine any new commit SHAs — blame data may be inaccurate");
+    }
 
     let mut result: BTreeMap<String, BlameEntry> = BTreeMap::new();
 
@@ -52,7 +62,7 @@ pub fn run(
             continue;
         }
 
-        if let Some(entry) = blame_file(project_root, filepath, &head_sha) {
+        if let Some(entry) = blame_file(project_root, filepath, &new_shas) {
             result.insert(filepath.clone(), entry);
         }
     }
@@ -62,29 +72,54 @@ pub fn run(
     Ok(format!("    {} files blame-analyzed", result.len()))
 }
 
-fn get_head_sha(project_root: &str) -> String {
-    Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(project_root)
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.len() >= 8 {
-                Some(s[..8].to_string())
-            } else {
-                None
+/// Collect commit SHAs that should be considered "new".
+///
+/// With base_ref: all commits in base_ref..HEAD (multi-commit branches).
+/// Without: only HEAD commit (backward-compatible single-commit mode).
+fn get_new_shas(project_root: &str, base_ref: Option<&str>) -> HashSet<String> {
+    let mut shas = HashSet::new();
+
+    match base_ref {
+        Some(base) => {
+            // Multi-commit: get all SHAs in range
+            let range = format!("{}..HEAD", base);
+            let mut cmd = Command::new("git");
+            cmd.args(["rev-list", &range]).current_dir(project_root);
+            if let Ok(output) = util::run_cmd(cmd, util::CMD_TIMEOUT) {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.len() >= 8 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                        shas.insert(trimmed[..8].to_string());
+                    }
+                }
             }
-        })
-        .unwrap_or_default()
+        }
+        None => {
+            // Single-commit: HEAD only
+            let mut cmd = Command::new("git");
+            cmd.args(["rev-parse", "HEAD"]).current_dir(project_root);
+            if let Ok(output) = util::run_cmd(cmd, util::CMD_TIMEOUT) {
+                let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if s.len() >= 8 {
+                    shas.insert(s[..8].to_string());
+                }
+            }
+        }
+    }
+
+    shas
 }
 
-fn blame_file(project_root: &str, filepath: &str, head_sha: &str) -> Option<BlameEntry> {
-    let output = Command::new("git")
-        .args(["blame", "--porcelain", filepath])
-        .current_dir(project_root)
-        .output()
-        .ok()?;
+fn blame_file(
+    project_root: &str,
+    filepath: &str,
+    new_shas: &HashSet<String>,
+) -> Option<BlameEntry> {
+    let mut cmd = Command::new("git");
+    cmd.args(["blame", "--porcelain", filepath])
+        .current_dir(project_root);
+    let output = util::run_cmd(cmd, util::CMD_TIMEOUT).ok()?;
 
     if !output.status.success() {
         return None;
@@ -95,12 +130,16 @@ fn blame_file(project_root: &str, filepath: &str, head_sha: &str) -> Option<Blam
     let mut old_lines: usize = 0;
 
     for line in stdout.lines() {
+        // Skip content lines (prefixed with tab in porcelain format)
+        if line.starts_with('\t') {
+            continue;
+        }
         // Lines starting with a 40-char hex SHA (porcelain format)
         if line.len() >= 40 {
             let first_word = line.split_whitespace().next().unwrap_or("");
             if first_word.len() >= 40 && first_word.chars().all(|c| c.is_ascii_hexdigit()) {
                 let sha8 = &first_word[..8];
-                if sha8 == head_sha || sha8 == "00000000" {
+                if new_shas.contains(sha8) || sha8 == "00000000" {
                     new_lines += 1;
                 } else {
                     old_lines += 1;
@@ -125,6 +164,7 @@ fn blame_file(project_root: &str, filepath: &str, head_sha: &str) -> Option<Blam
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn setup_git_project() -> TempDir {
@@ -202,7 +242,7 @@ mod tests {
         let material = dir.path().join("material.txt").to_string_lossy().to_string();
         let out = dir.path().join("blame.json");
 
-        let result = run(root, &material, out.to_str().unwrap());
+        let result = run(root, &material, out.to_str().unwrap(), None);
         assert!(result.is_ok(), "blame failed: {:?}", result);
 
         let json: BTreeMap<String, BlameEntry> =
@@ -250,6 +290,7 @@ mod tests {
             root.to_str().unwrap(),
             material.to_str().unwrap(),
             out.to_str().unwrap(),
+            None,
         );
         assert!(result.is_ok());
         assert!(result.unwrap().contains("0 files blame-analyzed"));
@@ -257,8 +298,308 @@ mod tests {
 
     #[test]
     fn test_blame_caps_at_30() {
-        // Verify the 30-file cap logic exists (unit test, no git needed)
-        let files: Vec<String> = (0..50).map(|i| format!("src/file{}.ts", i)).collect();
-        assert_eq!(files.iter().take(30).count(), 30);
+        // Create a git repo with 35+ files, modify all, verify output capped at 30
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        // Create 35 files with initial content
+        for i in 0..35 {
+            fs::write(
+                root.join(format!("src/file{}.ts", i)),
+                format!("old_line_{}\n", i),
+            )
+            .unwrap();
+        }
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Modify all 35 files
+        for i in 0..35 {
+            fs::write(
+                root.join(format!("src/file{}.ts", i)),
+                format!("old_line_{}\nnew_line_{}\n", i, i),
+            )
+            .unwrap();
+        }
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "modify all"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Generate diff
+        let diff = Command::new("git")
+            .args(["diff", "HEAD~1..HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let material = root.join("material.txt");
+        fs::write(
+            &material,
+            String::from_utf8_lossy(&diff.stdout).as_ref(),
+        )
+        .unwrap();
+
+        let out = root.join("blame.json");
+        let result = run(
+            root.to_str().unwrap(),
+            material.to_str().unwrap(),
+            out.to_str().unwrap(),
+            None,
+        );
+        assert!(result.is_ok(), "blame failed: {:?}", result);
+
+        let json: BTreeMap<String, BlameEntry> =
+            serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        assert!(
+            json.len() <= 30,
+            "should cap at 30 files, got {}",
+            json.len()
+        );
+        assert!(!json.is_empty(), "should have some blame results");
+    }
+
+    #[test]
+    fn test_blame_multi_commit() {
+        // Test that base_ref correctly counts intermediate commits as "new"
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        // Base commit
+        fs::write(root.join("src/multi.ts"), "base_line\n").unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "base"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Tag the base
+        Command::new("git")
+            .args(["tag", "base-tag"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Commit 2 (intermediate)
+        fs::write(root.join("src/multi.ts"), "base_line\ncommit2_line\n").unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "commit2"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Commit 3 (HEAD)
+        fs::write(
+            root.join("src/multi.ts"),
+            "base_line\ncommit2_line\ncommit3_line\n",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "commit3"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Generate diff from base
+        let diff = Command::new("git")
+            .args(["diff", "base-tag..HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let material = root.join("material.txt");
+        fs::write(
+            &material,
+            String::from_utf8_lossy(&diff.stdout).as_ref(),
+        )
+        .unwrap();
+
+        let out = root.join("blame.json");
+
+        // Without base_ref: only HEAD counted as new (1 line)
+        run(
+            root.to_str().unwrap(),
+            material.to_str().unwrap(),
+            out.to_str().unwrap(),
+            None,
+        )
+        .unwrap();
+        let json: BTreeMap<String, BlameEntry> =
+            serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        let entry = &json["src/multi.ts"];
+        assert_eq!(entry.new_in_diff, 1, "without base_ref, only HEAD line is new");
+        assert_eq!(entry.pre_existing, 2, "base + commit2 are pre-existing");
+
+        // With base_ref: both commit2 and commit3 lines are new
+        run(
+            root.to_str().unwrap(),
+            material.to_str().unwrap(),
+            out.to_str().unwrap(),
+            Some("base-tag"),
+        )
+        .unwrap();
+        let json2: BTreeMap<String, BlameEntry> =
+            serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        let entry2 = &json2["src/multi.ts"];
+        assert_eq!(
+            entry2.new_in_diff, 2,
+            "with base_ref, both commit2 and commit3 lines are new"
+        );
+        assert_eq!(entry2.pre_existing, 1, "only base line is pre-existing");
+    }
+
+    #[test]
+    fn test_blame_renamed_file() {
+        // Test that renamed files are handled correctly (#5)
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        // Create and commit original file
+        fs::write(root.join("src/original.ts"), "content\n").unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Rename the file
+        Command::new("git")
+            .args(["mv", "src/original.ts", "src/renamed.ts"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "rename"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Generate diff with rename detection
+        let diff = Command::new("git")
+            .args(["diff", "-M", "HEAD~1..HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let material = root.join("material.txt");
+        let diff_str = String::from_utf8_lossy(&diff.stdout);
+        fs::write(&material, diff_str.as_ref()).unwrap();
+
+        // The diff header for renames is:
+        // diff --git a/src/original.ts b/src/renamed.ts
+        // Our regex should capture b/src/renamed.ts (the new name)
+        let out = root.join("blame.json");
+        let result = run(
+            root.to_str().unwrap(),
+            material.to_str().unwrap(),
+            out.to_str().unwrap(),
+            None,
+        );
+        assert!(result.is_ok());
+
+        let json: BTreeMap<String, BlameEntry> =
+            serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        // Should contain renamed.ts (new name), not original.ts (old name)
+        assert!(
+            !json.contains_key("src/original.ts"),
+            "should not contain old name"
+        );
+        // renamed.ts should be present if the file exists on disk
+        if root.join("src/renamed.ts").exists() {
+            assert!(
+                json.contains_key("src/renamed.ts"),
+                "should contain new name after rename"
+            );
+        }
     }
 }

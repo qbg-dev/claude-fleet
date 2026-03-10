@@ -6,6 +6,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use crate::util;
+
 #[derive(Serialize, Debug, Clone)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 pub struct DepEntry {
@@ -16,7 +18,7 @@ pub struct DepEntry {
 
 /// Build a dependency graph for changed files.
 ///
-/// For each file: find callers (grep), parse imports (regex), count git churn.
+/// For each file: find callers (grep -E), parse imports (regex), count git churn.
 /// Equivalent to the inline Python dep-graph script in deep-review.sh.
 pub fn run(
     project_root: &str,
@@ -47,27 +49,30 @@ pub fn run(
 
         if !basename.is_empty() {
             // Find callers: grep for imports of this file
-            let pattern = format!("from.*['\"].*{}['\"]", regex::escape(basename));
-            if let Ok(output) = Command::new("grep")
-                .args([
-                    "-rn",
-                    "--include=*.ts",
-                    "--include=*.tsx",
-                    "--include=*.js",
-                    &pattern,
-                    project_root,
-                ])
-                .output()
-            {
+            // Use grep -E (ERE) for compatibility with regex::escape output (#6)
+            // Anchor with path separator to avoid substring matches (#3)
+            let escaped = regex::escape(basename);
+            let pattern = format!("from.*['\"].*[/]{}['\"]", escaped);
+            let mut cmd = Command::new("grep");
+            cmd.args([
+                "-E", // ERE mode — compatible with regex::escape (#6)
+                "-rn",
+                "--include=*.ts",
+                "--include=*.tsx",
+                "--include=*.js",
+                &pattern,
+                project_root,
+            ]);
+            if let Ok(output) = util::run_cmd(cmd, util::CMD_TIMEOUT) {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
-                    // Skip self-imports
-                    if line.contains(*cf) {
-                        continue;
-                    }
                     let parts: Vec<&str> = line.splitn(3, ':').collect();
                     if parts.len() >= 2 {
                         if let Ok(rel) = pathdiff(parts[0], project_root) {
+                            // Skip self-imports: compare full relative path, not substring (#4)
+                            if rel == *cf {
+                                continue;
+                            }
                             entry.imported_by.push(format!("{}:{}", rel, parts[1]));
                         }
                     }
@@ -90,11 +95,10 @@ pub fn run(
         }
 
         // Git churn (commits in last 30 days)
-        if let Ok(output) = Command::new("git")
-            .args(["log", "--oneline", "--since=30 days ago", "--", cf])
-            .current_dir(project_root)
-            .output()
-        {
+        let mut cmd = Command::new("git");
+        cmd.args(["log", "--oneline", "--since=30 days ago", "--", cf])
+            .current_dir(project_root);
+        if let Ok(output) = util::run_cmd(cmd, util::CMD_TIMEOUT) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             entry.churn_30d = stdout.lines().filter(|l| !l.is_empty()).count();
         }
@@ -121,6 +125,7 @@ fn pathdiff(path: &str, base: &str) -> Result<String, Box<dyn std::error::Error>
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn setup_project() -> TempDir {
@@ -206,6 +211,70 @@ console.log(foo());
             entry.imported_by.iter().any(|s| s.contains("caller.ts")),
             "Expected caller.ts in imported_by, got: {:?}",
             entry.imported_by
+        );
+    }
+
+    #[test]
+    fn test_dep_graph_no_false_positive_substring() {
+        // Regression test for #3 and #4: substring-based matching
+        let dir = setup_project();
+        let root = dir.path();
+
+        // Create files that would cause false positives with substring matching:
+        // - sidebar.ts imports something (contains "bar" as substring)
+        // - foo.tsx (should not be filtered as self-import of foo.ts)
+        fs::write(
+            root.join("src/sidebar.ts"),
+            r#"import { x } from './sidebar-utils';
+export function sidebar() {}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/foo.tsx"),
+            r#"import { foo } from './foo';
+export function FooComponent() {}
+"#,
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "add sidebar and foo.tsx"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let out = root.join("dep-graph.json");
+        let result = run(root.to_str().unwrap(), "src/bar.ts", out.to_str().unwrap());
+        assert!(result.is_ok());
+
+        let json: BTreeMap<String, DepEntry> =
+            serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        let entry = &json["src/bar.ts"];
+
+        // sidebar.ts should NOT appear as a caller of bar.ts (#3)
+        assert!(
+            !entry.imported_by.iter().any(|s| s.contains("sidebar.ts")),
+            "sidebar.ts should not be a false positive caller of bar.ts, got: {:?}",
+            entry.imported_by
+        );
+
+        // Now test that foo.tsx is NOT filtered out as self-import of foo.ts (#4)
+        let out2 = root.join("dep-graph2.json");
+        let result2 = run(root.to_str().unwrap(), "src/foo.ts", out2.to_str().unwrap());
+        assert!(result2.is_ok());
+
+        let json2: BTreeMap<String, DepEntry> =
+            serde_json::from_str(&fs::read_to_string(&out2).unwrap()).unwrap();
+        let entry2 = &json2["src/foo.ts"];
+        assert!(
+            entry2.imported_by.iter().any(|s| s.contains("foo.tsx")),
+            "foo.tsx should be listed as caller of foo.ts (not filtered as self-import), got: {:?}",
+            entry2.imported_by
         );
     }
 

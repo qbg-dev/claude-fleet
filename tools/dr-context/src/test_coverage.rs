@@ -12,10 +12,20 @@ pub struct CoverageEntry {
     pub test_files: Vec<String>,
 }
 
+/// Directories to exclude from test file matching (#14).
+const EXCLUDED_DIRS: &[&str] = &["node_modules/", "dist/", ".git/", ".next/", "build/"];
+
+/// Check if a relative path should be excluded from test results.
+fn is_excluded_path(rel_path: &str) -> bool {
+    EXCLUDED_DIRS
+        .iter()
+        .any(|dir| rel_path.starts_with(dir) || rel_path.contains(&format!("/{}", dir)))
+}
+
 /// Check test coverage for changed files by looking for sibling test files.
 ///
 /// Matches patterns: **/{name}.test.*, **/{name}.spec.*, **/__tests__/{name}.*
-/// Equivalent to the inline Python test-coverage script in deep-review.sh.
+/// Prioritizes co-located tests (same directory subtree) over project-wide matches (#8).
 pub fn run(
     project_root: &str,
     changed_files_str: &str,
@@ -47,28 +57,42 @@ pub fn run(
             continue;
         }
 
-        let patterns = [
-            format!("**/tests/**/{}.test.*", basename),
-            format!("**/tests/**/{}.spec.*", basename),
-            format!("**/__tests__/{}.*", basename),
-            format!("**/{}.test.*", basename),
-            format!("**/{}.spec.*", basename),
-        ];
+        // Escape glob metacharacters in basename (#19: brackets, *, ? in filenames)
+        let safe_basename = escape_glob(basename);
 
         let mut found_tests: Vec<String> = Vec::new();
-        for pattern in &patterns {
-            let full_pattern = root.join(pattern).to_string_lossy().to_string();
-            if let Ok(entries) = glob(&full_pattern) {
-                for entry in entries.flatten() {
-                    if let Ok(rel) = entry.strip_prefix(root) {
-                        let rel_str = rel.to_string_lossy().to_string();
-                        if !found_tests.contains(&rel_str) {
-                            found_tests.push(rel_str);
-                        }
-                    }
-                }
+
+        // Phase 1: search co-located (same directory subtree) — prioritized (#8)
+        let source_dir = Path::new(cf)
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|s| !s.is_empty());
+
+        if let Some(dir) = source_dir {
+            let colocated_patterns = [
+                format!("{}/**/{}.test.*", dir, safe_basename),
+                format!("{}/**/{}.spec.*", dir, safe_basename),
+                format!("{}/**/__tests__/{}.*", dir, safe_basename),
+            ];
+            for pattern in &colocated_patterns {
+                search_glob(root, pattern, &mut found_tests);
             }
         }
+
+        // Phase 2: fall back to project-wide if no co-located tests found
+        if found_tests.is_empty() {
+            let global_patterns = [
+                format!("**/tests/**/{}.test.*", safe_basename),
+                format!("**/tests/**/{}.spec.*", safe_basename),
+                format!("**/__tests__/{}.*", safe_basename),
+                format!("**/{}.test.*", safe_basename),
+                format!("**/{}.spec.*", safe_basename),
+            ];
+            for pattern in &global_patterns {
+                search_glob(root, pattern, &mut found_tests);
+            }
+        }
+
         found_tests.truncate(5);
 
         coverage.insert(
@@ -86,6 +110,37 @@ pub fn run(
     let json = serde_json::to_string_pretty(&coverage)?;
     fs::write(out_path, &json)?;
     Ok(format!("    {}/{} files have tests", tested, total))
+}
+
+/// Search for files matching a glob pattern, filtering excluded directories.
+fn search_glob(root: &Path, pattern: &str, results: &mut Vec<String>) {
+    let full_pattern = root.join(pattern).to_string_lossy().to_string();
+    if let Ok(entries) = glob(&full_pattern) {
+        for entry in entries.flatten() {
+            if let Ok(rel) = entry.strip_prefix(root) {
+                let rel_str = rel.to_string_lossy().to_string();
+                if !is_excluded_path(&rel_str) && !results.contains(&rel_str) {
+                    results.push(rel_str);
+                }
+            }
+        }
+    }
+}
+
+/// Escape glob metacharacters in a string (#19).
+fn escape_glob(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '[' | ']' | '*' | '?' => {
+                result.push('[');
+                result.push(c);
+                result.push(']');
+            }
+            _ => result.push(c),
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -165,7 +220,7 @@ mod tests {
 
         // Create 7 test files matching "foo"
         for i in 0..7 {
-            let dir_name = format!("tests{}", i);
+            let dir_name = format!("src/tests{}", i);
             fs::create_dir_all(root.join(&dir_name)).unwrap();
             fs::write(root.join(format!("{}/foo.test.ts", dir_name)), "").unwrap();
         }
@@ -179,6 +234,86 @@ mod tests {
             json["src/foo.ts"].test_files.len() <= 5,
             "should cap at 5, got {}",
             json["src/foo.ts"].test_files.len()
+        );
+    }
+
+    #[test]
+    fn test_coverage_excludes_node_modules() {
+        // Regression test for #14: node_modules should not produce false positives
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/utils.ts"), "").unwrap();
+
+        // Create a test file in node_modules (should be excluded)
+        fs::create_dir_all(root.join("node_modules/some-pkg")).unwrap();
+        fs::write(
+            root.join("node_modules/some-pkg/utils.test.ts"),
+            "test('npm')",
+        )
+        .unwrap();
+
+        // Create a real test file (should be included)
+        fs::create_dir_all(root.join("src/tests")).unwrap();
+        fs::write(root.join("src/tests/utils.test.ts"), "test('real')").unwrap();
+
+        let out = root.join("test-coverage.json");
+        run(root.to_str().unwrap(), "src/utils.ts", out.to_str().unwrap()).unwrap();
+
+        let json: BTreeMap<String, CoverageEntry> =
+            serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        assert!(json["src/utils.ts"].has_tests);
+        // Verify no node_modules paths in results
+        for tf in &json["src/utils.ts"].test_files {
+            assert!(
+                !tf.contains("node_modules"),
+                "node_modules path should be excluded: {}",
+                tf
+            );
+        }
+    }
+
+    #[test]
+    fn test_coverage_prioritizes_colocated() {
+        // Regression test for #8: co-located tests should appear first
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Source in src/api/
+        fs::create_dir_all(root.join("src/api")).unwrap();
+        fs::write(root.join("src/api/utils.ts"), "").unwrap();
+
+        // Co-located test
+        fs::write(root.join("src/api/utils.test.ts"), "test('colocated')").unwrap();
+
+        // Far-away test
+        fs::create_dir_all(root.join("tests/integration")).unwrap();
+        fs::write(
+            root.join("tests/integration/utils.test.ts"),
+            "test('far')",
+        )
+        .unwrap();
+
+        let out = root.join("test-coverage.json");
+        run(
+            root.to_str().unwrap(),
+            "src/api/utils.ts",
+            out.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let json: BTreeMap<String, CoverageEntry> =
+            serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        assert!(json["src/api/utils.ts"].has_tests);
+        // Co-located test should be found (it's in the same directory subtree)
+        assert!(
+            json["src/api/utils.ts"]
+                .test_files
+                .iter()
+                .any(|f| f.contains("src/api/")),
+            "co-located test should be found: {:?}",
+            json["src/api/utils.ts"].test_files
         );
     }
 }

@@ -23,6 +23,9 @@ pub fn run(
     num_workers_str: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let num_workers: usize = num_workers_str.parse()?;
+    if num_workers == 0 {
+        return Err("num_workers must be >= 1".into());
+    }
     let content = fs::read_to_string(material_file)?;
 
     // Split into chunks at natural boundaries
@@ -69,11 +72,11 @@ pub fn run(
         }
 
         let outpath = Path::new(session_dir).join(format!("material-pass-{}.txt", i));
-        fs::write(&outpath, shuffled.join("\n"))?;
+        fs::write(&outpath, format!("{}\n", shuffled.join("\n")))?;
     }
 
     // Write session metadata
-    let now = chrono_lite_utc_now();
+    let now = utc_now();
     let session_id = Path::new(session_dir)
         .file_name()
         .and_then(|s| s.to_str())
@@ -93,19 +96,41 @@ pub fn run(
     Ok(format!("  Split into {} chunks", num_chunks))
 }
 
-/// Simple UTC timestamp without pulling in chrono crate.
-fn chrono_lite_utc_now() -> String {
-    use std::process::Command;
-    Command::new("date")
-        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            String::from_utf8(o.stdout)
-                .ok()
-                .map(|s| s.trim().to_string())
-        })
-        .unwrap_or_else(|| "unknown".to_string())
+/// UTC timestamp using std::time (no external deps, no shelling out).
+/// Replaces the previous `date -u` approach (#15) which was platform-dependent
+/// and could produce empty strings (#23).
+fn utc_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let secs = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(_) => return "unknown".to_string(),
+    };
+
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Days since Unix epoch (1970-01-01)
+    let days = (secs / 86400) as i64;
+
+    // Civil calendar from epoch days (Howard Hinnant's algorithm)
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y, m, d, hours, minutes, seconds
+    )
 }
 
 #[cfg(test)]
@@ -138,6 +163,8 @@ mod tests {
             let content = fs::read_to_string(&path).unwrap();
             // Each worker file should contain both chunks (just in different order)
             assert!(content.contains("foo.ts") && content.contains("bar.ts"));
+            // Should end with trailing newline (#11)
+            assert!(content.ends_with('\n'), "output should end with newline");
         }
 
         // Check meta.json
@@ -147,6 +174,16 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
         assert_eq!(meta["num_chunks"], 2);
         assert_eq!(meta["num_workers"], 3);
+
+        // created_at should be a valid ISO 8601 timestamp, not "unknown" (#15, #23)
+        let created = meta["created_at"].as_str().unwrap();
+        assert_ne!(created, "unknown", "timestamp should not be 'unknown'");
+        assert!(
+            created.ends_with('Z'),
+            "timestamp should end with Z: {}",
+            created
+        );
+        assert!(created.len() == 20, "timestamp format: {}", created);
     }
 
     #[test]
@@ -199,9 +236,38 @@ mod tests {
         // Same seed → same output
         assert_eq!(first_pass1, second_pass1, "shuffle should be deterministic");
         assert_eq!(first_pass2, second_pass2, "shuffle should be deterministic");
+    }
 
-        // Different workers should (usually) have different orderings
-        // With 3 chunks, the probability of identical order is 1/6
-        // We don't assert inequality since it's probabilistic
+    #[test]
+    fn test_shuffle_zero_workers_rejected() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        let material_path = root.join("material.txt");
+        fs::write(&material_path, "content").unwrap();
+
+        let result = run(
+            material_path.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "0",
+        );
+        assert!(result.is_err(), "num_workers=0 should be rejected");
+        assert!(
+            result.unwrap_err().to_string().contains("must be >= 1"),
+            "error message should mention the constraint"
+        );
+    }
+
+    #[test]
+    fn test_utc_now_format() {
+        let ts = utc_now();
+        assert_ne!(ts, "unknown");
+        assert!(ts.ends_with('Z'));
+        assert_eq!(ts.len(), 20); // YYYY-MM-DDTHH:MM:SSZ
+        assert_eq!(&ts[4..5], "-");
+        assert_eq!(&ts[7..8], "-");
+        assert_eq!(&ts[10..11], "T");
+        assert_eq!(&ts[13..14], ":");
+        assert_eq!(&ts[16..17], ":");
     }
 }
