@@ -123,25 +123,6 @@ _get_session_id() {
   echo ""
 }
 
-# ── CPU-based activity check ──────────────────────────────────────
-# Returns 0 (true) if the pane's process tree is actively consuming CPU.
-# This catches long thinking phases where Claude is computing but no hooks fire.
-_is_pane_process_busy() {
-  local pane_id="$1"
-  local pane_pid
-  pane_pid=$(tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null | awk -v p="$pane_id" '$1==p{print $2}')
-  [ -z "$pane_pid" ] && return 1
-
-  # Sum CPU of the pane process and all descendants (node + workers)
-  # macOS ps: %cpu is cumulative for each process
-  local total_cpu
-  total_cpu=$(ps -o %cpu= -g "$pane_pid" 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s}')
-  [ -z "$total_cpu" ] && return 1
-
-  # >5% aggregate CPU means the process tree is actively computing
-  [ "$total_cpu" -gt 5 ] 2>/dev/null
-}
-
 # ── Scrollback-based stuck detection ───────────────────────────────
 # Hash the pane content and compare with previous check.
 # If content changed → worker is active. If unchanged → idle.
@@ -757,15 +738,6 @@ check_worker() {
       # Seed the file so the sleep-complete logic can measure idle time.
       echo "$now_ts" > "$liveness_file"
       _log "LIVENESS-SEED: $worker — created initial liveness file"
-      return
-    fi
-
-    # ── CPU activity gate ──
-    # If the pane process tree is actively consuming CPU, the agent is thinking.
-    # Skip all heuristic checks (bare-shell, scrollback) — it's working.
-    if _is_pane_process_busy "$pane_id"; then
-      rm -f "$(_worker_runtime "$worker")/stuck-candidate" 2>/dev/null || true
-      _clear_cos_notified "$worker"
       return
     fi
 
