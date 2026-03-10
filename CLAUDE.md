@@ -32,41 +32,43 @@ Flags: `--model opus|sonnet|haiku`, `--effort high|max`, `--save`, `--json`, `-p
 
 Config resolution: CLI flag > worker `config.json` > `defaults.json` > hardcoded defaults
 
-## MCP Tools (20)
+## MCP tools
 
-| Tool | Description |
+20 tools available inside every worker:
+
+| Tool | What it does |
 |------|-------------|
-| `mail_send(to, subject, body)` | Message workers, coordinators, or the operator |
-| `mail_inbox(label?)` | Read inbox (UNREAD, TASK, INBOX) |
-| `mail_read(thread_id)` | Read specific thread |
-| `mail_help()` | Mail commands reference |
-| `get_worker_state(name?)` | Get single worker or all fleet state |
-| `update_state(key, value)` | Persist state across recycles |
-| `add_hook(event, description, ...)` | Register dynamic hook |
-| `complete_hook(id, result?)` | Mark blocking gate as done |
-| `remove_hook(id)` | Remove non-system hook |
-| `list_hooks(scope?)` | List active dynamic hooks |
-| `recycle(message?)` | Clean restart (blocked until all gates pass) |
-| `save_checkpoint(summary)` | Snapshot working state for crash recovery |
-| `create_worker(name, type, mission)` | Spawn a new worker |
-| `register_worker(name, config)` | Register existing worker |
-| `deregister_worker(name)` | Deregister (mission_authority only) |
-| `move_worker(name, project)` | Move worker to different project |
-| `standby_worker(name)` | Mark as standby (mission_authority only) |
-| `fleet_template(type)` | Preview worker archetype template |
-| `fleet_help()` | Fleet commands reference |
-| `deep_review(scope, spec, ...)` | Launch adversarial review pipeline |
+| `mail_send(to, subject, body)` | message workers, coordinators, or the operator |
+| `mail_inbox(label?)` | read inbox (UNREAD, TASK, INBOX) |
+| `mail_read(thread_id)` | read specific thread |
+| `mail_help()` | mail commands reference |
+| `get_worker_state(name?)` | get single worker or all fleet state |
+| `update_state(key, value)` | persist state across recycles |
+| `add_hook(event, description, ...)` | register dynamic hook |
+| `complete_hook(id, result?)` | mark blocking gate as done |
+| `remove_hook(id)` | remove non-system hook |
+| `list_hooks(scope?)` | list active dynamic hooks |
+| `recycle(message?)` | clean restart (blocked until all gates pass) |
+| `save_checkpoint(summary)` | snapshot working state for crash recovery |
+| `create_worker(name, type, mission)` | spawn a new worker |
+| `register_worker(name, config)` | register existing worker |
+| `deregister_worker(name)` | deregister (mission_authority only) |
+| `move_worker(name, project)` | move worker to different project |
+| `standby_worker(name)` | mark as standby (mission_authority only) |
+| `fleet_template(type)` | preview worker archetype template |
+| `fleet_help()` | fleet commands reference |
+| `deep_review(scope, spec, ...)` | launch adversarial review pipeline |
 
-## Worker Types
+## Worker types
 
 | Type | Lifecycle | Use case |
 |------|-----------|----------|
-| **implementer** | One-shot | Fix bugs, build features |
-| **optimizer** | Perpetual | Run evals, fix gaps |
-| **monitor** | Perpetual | Watch for anomalies |
-| **merger** | Perpetual | Cherry-pick to main, deploy |
-| **chief-of-staff** | Perpetual | Relay messages, monitor fleet |
-| **verifier** | One-shot | Exhaustive testing |
+| implementer | one-shot | fix bugs, build features |
+| optimizer | perpetual | run evals, fix gaps |
+| monitor | perpetual | watch for anomalies |
+| merger | perpetual | cherry-pick to main, deploy |
+| chief-of-staff | perpetual | relay messages, monitor fleet |
+| verifier | one-shot | exhaustive testing |
 
 ## Storage
 
@@ -85,9 +87,9 @@ Config resolution: CLI flag > worker `config.json` > `defaults.json` > hardcoded
 
 ## Hooks
 
-**12 system hooks** (irremovable) block: rm -rf, force push, reset --hard, kill-session, checkout main, merge, direct config/state/token edits.
+12 system hooks (irremovable) block: rm -rf, force push, reset --hard, kill-session, checkout main, merge, direct config/state/token edits.
 
-**Dynamic hooks** — workers register their own at runtime:
+Workers register their own hooks at runtime:
 
 ```
 add_hook(event="Stop", description="verify TypeScript compiles")
@@ -97,37 +99,29 @@ complete_hook("dh-1", result="PASS")
 
 Events: PreToolUse, PostToolUse, Stop, UserPromptSubmit, PreCompact, SubagentStart/Stop.
 
-Ownership: **system** (irremovable) > **creator** (worker can't remove) > **self** (worker manages).
+Three ownership tiers: system (irremovable) > creator (worker can't remove) > self (worker manages).
 
 ## Watchdog
 
-launchd daemon, checks every 30s:
-- Respawns dead workers
-- Kills stuck ones (10min timeout)
-- Crash-loop protection (3/hr max)
-- Perpetual cycles: workers call `recycle()`, watchdog respawns after `sleep_duration`
+launchd daemon, checks every 30s. Respawns dead workers, kills stuck ones (10min timeout), crash-loop protection (3/hr max). Perpetual workers call `recycle()` and the watchdog respawns after `sleep_duration`.
 
-## Key Files
+## Key files
 
-| Path | Purpose |
-|------|---------|
+| Path | What it is |
+|------|-----------|
 | `cli/index.ts` | CLI entry (commander + Bun) |
-| `cli/commands/` | Subcommands |
+| `cli/commands/` | subcommands |
 | `mcp/worker-fleet/index.ts` | MCP server entry |
-| `shared/types.ts` | Canonical types (WorkerConfig, WorkerState, etc.) |
-| `hooks/gates/` | Safety gates (tool-policy, git-safety) |
-| `hooks/interceptors/` | Context injection |
-| `hooks/publishers/` | Event publishing, liveness heartbeat |
-| `scripts/harness-watchdog.sh` | Watchdog daemon |
-| `scripts/launch-flat-worker.sh` | Worker creation |
-| `scripts/deep-review.sh` | Adversarial review pipeline |
-| `templates/flat-worker/types/` | Worker archetypes |
+| `shared/types.ts` | canonical types (WorkerConfig, WorkerState, etc.) |
+| `hooks/gates/` | safety gates (tool-policy, git-safety) |
+| `hooks/interceptors/` | context injection |
+| `hooks/publishers/` | event publishing, liveness heartbeat |
+| `scripts/harness-watchdog.sh` | watchdog daemon |
+| `scripts/launch-flat-worker.sh` | worker creation |
+| `scripts/deep-review.sh` | adversarial review pipeline |
+| `templates/flat-worker/types/` | worker archetypes |
 | `tools/dr-context/` | Rust binary (review context analysis) |
 
 ## Conventions
 
-- Workers never push or merge — merger handles main
-- Shell: `set -euo pipefail`, config locks via `mkdir`
-- tmux: never literal Enter (`send-keys -H 0d`), never `display-message -p '#{pane_id}'`
-- Types: `shared/types.ts` is the single source of truth
-- Hooks: gates block via exit code, context injection via stdout JSON
+Workers never push or merge — merger handles main. Shell scripts use `set -euo pipefail`. Config locks via `mkdir`. tmux: never literal Enter (`send-keys -H 0d`), never `display-message -p '#{pane_id}'`. All shared types live in `shared/types.ts`.

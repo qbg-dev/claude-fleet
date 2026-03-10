@@ -183,7 +183,7 @@ export async function runCreate(
       writeFileSync(join(dir, "token"), mailToken);
       ok("Fleet Mail provisioned");
     } else {
-      warn("Fleet Mail provisioning failed (worker will use MCP fallback)");
+      warn("Fleet Mail provisioning failed — mail_send/mail_inbox won't work until fixed");
       writeFileSync(join(dir, "token"), "");
     }
   } else {
