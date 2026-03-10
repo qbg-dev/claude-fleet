@@ -735,9 +735,19 @@ check_worker() {
         _move_to_inactive "$worker" "$pane_id"
         return
       fi
-      if [ "$since_active" -lt 300 ]; then
-        # Active within last 300s — not stuck. Opus models can think for 2-4 min
-        # without firing PostToolUse hooks, so 60s was too aggressive.
+      # Liveness threshold: how long since last hook event before we consider
+      # the worker potentially stuck. Opus extended thinking is server-side
+      # (0-3% local CPU, no hooks, no scrollback changes) and can last 10+ min.
+      # Perpetual workers get a higher threshold to avoid false-positive respawns.
+      local liveness_threshold=300
+      if [ "$perpetual" = "true" ]; then
+        liveness_threshold=1200  # 20 min — Opus thinking can exceed 10 min
+        # If sleep_duration is even longer, use that
+        if [ "$sleep_dur" -gt "$liveness_threshold" ] 2>/dev/null; then
+          liveness_threshold="$sleep_dur"
+        fi
+      fi
+      if [ "$since_active" -lt "$liveness_threshold" ]; then
         rm -f "$runtime/stuck-candidate" 2>/dev/null || true
         _clear_cos_notified "$worker"
         return
@@ -812,10 +822,16 @@ check_worker() {
     local idle_sec
     idle_sec=$(_check_scrollback_stuck "$pane_id" "$worker" "$now_ts")
 
-    # For perpetual workers, use sleep_duration as threshold if shorter
+    # For perpetual workers, use max(sleep_duration, 1200) as threshold
+    # to avoid false-positive stuck detection during Opus extended thinking.
     local effective_threshold="$STUCK_THRESHOLD_SEC"
-    if [ "$perpetual" = "true" ] && [ "$sleep_dur" -gt 0 ] 2>/dev/null; then
-      [ "$sleep_dur" -lt "$effective_threshold" ] && effective_threshold="$sleep_dur"
+    if [ "$perpetual" = "true" ]; then
+      local min_perp_threshold=1200
+      if [ "$sleep_dur" -gt "$min_perp_threshold" ] 2>/dev/null; then
+        effective_threshold="$sleep_dur"
+      elif [ "$min_perp_threshold" -gt "$effective_threshold" ] 2>/dev/null; then
+        effective_threshold="$min_perp_threshold"
+      fi
     fi
 
     if [ "$idle_sec" -gt "$effective_threshold" ]; then

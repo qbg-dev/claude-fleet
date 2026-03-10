@@ -123,14 +123,11 @@ export async function runCreate(
     info(`Worktree already exists: ${worktreeDir}`);
   }
 
-  // 6. Symlink .mcp.json
-  const mcpSrc = join(projectRoot, ".mcp.json");
-  if (existsSync(mcpSrc) && projectRoot !== worktreeDir) {
-    Bun.spawnSync(["rm", "-f", join(worktreeDir, ".mcp.json")]);
-    Bun.spawnSync(["ln", "-sf", mcpSrc, join(worktreeDir, ".mcp.json")]);
-  }
-
-  // 7. Symlink untracked files (.env, users.json)
+  // 6. Symlink untracked files (.env, users.json)
+  // NOTE: .mcp.json symlink removed — global ~/.claude/settings.json MCP servers
+  // are inherited by all Claude Code sessions. Symlinking .mcp.json from the parent
+  // repo creates broken symlinks when the parent has no .mcp.json, which can cause
+  // Claude Code to error during MCP resolution and skip global servers.
   for (const f of [".env", "data/users.json"]) {
     const src = join(projectRoot, f);
     const dst = join(worktreeDir, f);

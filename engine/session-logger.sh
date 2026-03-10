@@ -45,6 +45,16 @@ BASE_ARGS=(--arg ts "$TS" --arg sid "$SESSION_ID" --arg ev "$EVENT"
   --arg model "$MODEL" --arg worker "$WORKER" --arg project "$PROJECT_NAME"
   --arg cwd "$CWD")
 
+# ── Watchdog liveness heartbeat ─────────────────────────────────
+# Touch liveness file on every hook event so watchdog knows the worker is alive.
+# This prevents false-positive "stuck" detection during Opus extended thinking
+# (which shows 0-3% CPU and no scrollback changes for 5-10+ minutes).
+if [ -n "$WORKER" ]; then
+  _LIVENESS_DIR="$HOME/.claude-ops/state/watchdog-runtime/$WORKER"
+  mkdir -p "$_LIVENESS_DIR" 2>/dev/null || true
+  date +%s > "$_LIVENESS_DIR/liveness" 2>/dev/null || true
+fi
+
 # ── Event-specific logging ──────────────────────────────────────
 case "$EVENT" in
   UserPromptSubmit)
