@@ -85,20 +85,90 @@ if [ "$TOOL_NAME" = "Bash" ]; then
   esac
 
   # ── Universal gates (run regardless of denyList) ──────────────────
+  # These block commands that NO agent should ever run, regardless of role.
 
-  # Block tmux kill-session — agents must never destroy tmux sessions
+  # ── Tmux destruction ──
   if echo "$COMMAND_NORM" | grep -qE 'tmux\s+kill-ses(sion)?'; then
     hook_block "tmux kill-session is blocked fleet-wide. Sessions are managed by the orchestrator, not individual agents."
     exit 0
   fi
-
-  # Block tmux kill-window on own window — agents must not destroy their own pane context
   if echo "$COMMAND_NORM" | grep -qE 'tmux\s+kill-window'; then
     hook_block "tmux kill-window is blocked fleet-wide. Use recycle() to cleanly shut down instead of killing windows."
     exit 0
   fi
+  if echo "$COMMAND_NORM" | grep -qE 'tmux\s+kill-server'; then
+    hook_block "tmux kill-server is blocked fleet-wide. This would destroy ALL tmux sessions across the entire fleet."
+    exit 0
+  fi
 
-  # Block direct prod access from worktrees — workers cannot deploy to prod
+  # ── Git destruction ──
+  if echo "$COMMAND_NORM" | grep -qE 'git\s+push\s+.*(-f\b|--force)'; then
+    hook_block "git push --force is blocked fleet-wide. Force push destroys remote history. Use the merger for push operations."
+    exit 0
+  fi
+  if echo "$COMMAND_NORM" | grep -qE 'git\s+reset\s+--hard'; then
+    hook_block "git reset --hard is blocked fleet-wide. This destroys uncommitted work. Use git stash or git checkout <file> for targeted reverts."
+    exit 0
+  fi
+  if echo "$COMMAND_NORM" | grep -qE 'git\s+clean\s+.*-[a-zA-Z]*f'; then
+    hook_block "git clean -f is blocked fleet-wide. This permanently deletes untracked files. Use rm on specific files instead."
+    exit 0
+  fi
+  if echo "$COMMAND_NORM" | grep -qE 'git\s+(checkout|restore)\s+\.'; then
+    hook_block "git checkout/restore . is blocked fleet-wide. This discards ALL uncommitted changes. Use git checkout <specific-file> instead."
+    exit 0
+  fi
+  if echo "$COMMAND_NORM" | grep -qE 'git\s+branch\s+.*-D'; then
+    hook_block "git branch -D is blocked fleet-wide. Force-deleting branches can lose unmerged work. Use git branch -d (lowercase) for safe deletion."
+    exit 0
+  fi
+  if echo "$COMMAND_NORM" | grep -qE 'git\s+filter-branch'; then
+    hook_block "git filter-branch is blocked fleet-wide. History rewriting is destructive and irreversible."
+    exit 0
+  fi
+  if echo "$COMMAND_NORM" | grep -qE 'git\s+remote\s+(set-url|add)'; then
+    hook_block "git remote set-url/add is blocked fleet-wide. Repo remotes are managed by the orchestrator."
+    exit 0
+  fi
+  # git config (except user.name and user.email which are needed in worktrees)
+  if echo "$COMMAND_NORM" | grep -qE 'git\s+config\s+' && ! echo "$COMMAND_NORM" | grep -qE 'git\s+config\s+(--global\s+)?user\.(name|email)'; then
+    hook_block "git config is blocked fleet-wide (except user.name/email). Git configuration is managed by the orchestrator."
+    exit 0
+  fi
+
+  # ── File destruction ──
+  if echo "$COMMAND_NORM" | grep -qE 'rm\s+.*-[a-zA-Z]*r[a-zA-Z]*f|rm\s+.*-[a-zA-Z]*f[a-zA-Z]*r'; then
+    hook_block "rm -rf is blocked fleet-wide. Use more targeted file removal (rm <specific-file>) or ask the orchestrator."
+    exit 0
+  fi
+
+  # ── Cross-agent process killing ──
+  if echo "$COMMAND_NORM" | grep -qE '(^|\s)(kill|pkill|killall)\s+.*claude'; then
+    hook_block "Killing claude processes is blocked fleet-wide. Agents must not terminate other agents. Use recycle() for self, or notify the orchestrator."
+    exit 0
+  fi
+
+  # ── System-level ──
+  if echo "$COMMAND_NORM" | grep -qE 'launchctl\s+(unload|bootout)'; then
+    hook_block "launchctl unload/bootout is blocked fleet-wide. System services are managed by the orchestrator."
+    exit 0
+  fi
+  if echo "$COMMAND_NORM" | grep -qE '(^|\s)osascript(\s|$)'; then
+    hook_block "osascript is blocked fleet-wide. AppleScript execution is too powerful and unpredictable for agent use."
+    exit 0
+  fi
+  if echo "$COMMAND_NORM" | grep -qE 'crontab\s+-r'; then
+    hook_block "crontab -r is blocked fleet-wide. This deletes ALL cron jobs. Edit specific entries with crontab -e instead."
+    exit 0
+  fi
+
+  # ── Orphan processes ──
+  if echo "$COMMAND_NORM" | grep -qE '(^|\s)nohup\s+'; then
+    hook_block "nohup is blocked fleet-wide. Background processes must be managed through the fleet orchestrator, not spawned as orphans."
+    exit 0
+  fi
+
+  # ── Worktree-specific: prod access ──
   if [ "$_IS_WORKTREE" = true ]; then
     _PROD_IP="120.77.216.196"
     if echo "$COMMAND" | grep -qF "$_PROD_IP" || echo "$COMMAND_NORM" | grep -qF "$_PROD_IP"; then
@@ -107,6 +177,38 @@ if [ "$TOOL_NAME" = "Bash" ]; then
     fi
   fi
 
+fi
+
+# ── Write/Edit universal gates ──────────────────────────────────
+# These block file modifications that NO agent should make, regardless of role.
+if [ "$TOOL_NAME" = "Write" ] || [ "$TOOL_NAME" = "Edit" ]; then
+  _FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // ""' 2>/dev/null || echo "")
+  [ -n "$_FILE_PATH" ] && _FILE_PATH=$(realpath "$_FILE_PATH" 2>/dev/null || echo "$_FILE_PATH")
+
+  # Block editing own permissions.json — privilege escalation
+  if [ -n "${PERMS:-}" ] && [ -n "$_FILE_PATH" ]; then
+    _PERMS_REAL=$(realpath "$PERMS" 2>/dev/null || echo "$PERMS")
+    if [ "$_FILE_PATH" = "$_PERMS_REAL" ]; then
+      hook_block "Editing own permissions.json is blocked fleet-wide — this would be privilege escalation."
+      exit 0
+    fi
+  fi
+
+  # Block editing git hooks — safety hooks are managed by the orchestrator
+  case "$_FILE_PATH" in
+    */.git/hooks/*)
+      hook_block "Editing git hooks is blocked fleet-wide. Safety hooks are managed by the orchestrator."
+      exit 0
+      ;;
+  esac
+
+  # Block editing shell profiles — environment poisoning
+  case "$_FILE_PATH" in
+    */.zshrc|*/.bashrc|*/.profile|*/.bash_profile)
+      hook_block "Editing shell profiles is blocked fleet-wide — environment poisoning risk."
+      exit 0
+      ;;
+  esac
 fi
 
 # Read denyList array (after universal gates so they always run)

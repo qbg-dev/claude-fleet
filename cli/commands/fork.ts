@@ -2,7 +2,7 @@ import { defineCommand } from "citty";
 import { existsSync, mkdirSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  FLEET_DATA, DEFAULT_SESSION, workerDir, resolveProject,
+  DEFAULT_SESSION, workerDir, resolveProject,
 } from "../lib/paths";
 import {
   getConfig, getState, getFleetConfig, writeJson,
@@ -28,10 +28,11 @@ export default defineCommand({
     const parentState = getState(project, args.parent);
     const parentConfig = getConfig(project, args.parent);
 
-    if (!existsSync(parentDir)) fail(`Parent '${args.parent}' not found`);
-    if (!parentState?.pane_id) fail(`Parent '${args.parent}' has no active pane`);
-    if (!parentState.session_id) fail(`Parent '${args.parent}' has no session_id`);
-    if (!parentConfig) fail(`Parent '${args.parent}' has no config`);
+    if (!existsSync(parentDir)) return fail(`Parent '${args.parent}' not found`);
+    if (!parentState) return fail(`Parent '${args.parent}' has no state`);
+    if (!parentState.pane_id) return fail(`Parent '${args.parent}' has no active pane`);
+    if (!parentState.session_id) return fail(`Parent '${args.parent}' has no session_id`);
+    if (!parentConfig) return fail(`Parent '${args.parent}' has no config`);
 
     const NAME_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
     if (!NAME_RE.test(args.child)) fail(`Name must be kebab-case: ${args.child}`);
@@ -118,15 +119,15 @@ export default defineCommand({
     const effort = childConfig?.reasoning_effort || "high";
     const perm = childConfig?.permission_mode || "bypassPermissions";
 
-    let cmd = `cd "${worktree}" && CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME=${args.child} claude`;
-    cmd += ` --model ${model} --effort ${effort}`;
+    let cmd = `cd "${worktree}" && CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${args.child}" claude`;
+    cmd += ` --model "${model}" --effort "${effort}"`;
     if (perm === "bypassPermissions") {
       cmd += " --dangerously-skip-permissions";
     } else {
-      cmd += ` --permission-mode ${perm}`;
+      cmd += ` --permission-mode "${perm}"`;
     }
-    cmd += ` --add-dir ${childDir}`;
-    cmd += ` --resume ${sessionId} --fork-session`;
+    cmd += ` --add-dir "${childDir}"`;
+    cmd += ` --resume "${sessionId}" --fork-session`;
 
     sendKeys(paneId, cmd);
     sendEnter(paneId);
@@ -139,6 +140,7 @@ export default defineCommand({
       tmux_session: session,
       session_id: "",
       past_sessions: [],
+      last_relaunch: { at: new Date().toISOString(), reason: "fork" },
       relaunch_count: 0,
       cycles_completed: 0,
       last_cycle_at: null,

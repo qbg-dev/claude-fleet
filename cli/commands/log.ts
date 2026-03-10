@@ -12,15 +12,17 @@ export default defineCommand({
     project: { type: "string", description: "Override project detection" },
   },
   run({ args }) {
+    const name = args.name;
+    if (!name) fail("Worker name is required");
     const project = args.project || resolveProject();
-    const state = getState(project, args.name);
-    if (!state) fail(`State not found for '${args.name}'`);
+    const state = getState(project, name);
+    if (!state) return fail(`State not found for '${name}'`);
 
-    const paneId = state!.pane_id;
-    if (!paneId) fail(`'${args.name}' has no active pane`);
-    if (!listPaneIds().has(paneId!)) fail(`Pane ${paneId} no longer exists`);
+    const paneId = state.pane_id;
+    if (!paneId) return fail(`'${name}' has no active pane`);
+    if (!listPaneIds().has(paneId)) return fail(`Pane ${paneId} no longer exists`);
 
     const lines = parseInt(args.n, 10) || 100;
-    console.log(capturePane(paneId!, lines));
+    console.log(capturePane(paneId, lines));
   },
 });

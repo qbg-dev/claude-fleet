@@ -12,12 +12,14 @@ export default defineCommand({
     project: { type: "string", description: "Override project detection" },
   },
   async run({ args }) {
+    const name = args.name;
+    if (!name) fail("Worker name is required");
     const project = args.project || resolveProject();
-    const tokenPath = join(workerDir(project, args.name), "token");
+    const tokenPath = join(workerDir(project, name), "token");
 
-    if (!existsSync(tokenPath)) fail(`No token for '${args.name}'`);
+    if (!existsSync(tokenPath)) fail(`No token for '${name}'`);
     const token = readFileSync(tokenPath, "utf-8").trim();
-    if (!token) fail(`Empty token for '${args.name}'`);
+    if (!token) fail(`Empty token for '${name}'`);
 
     try {
       const resp = await fetch(
@@ -26,8 +28,7 @@ export default defineCommand({
       );
 
       if (!resp.ok) {
-        console.log("Fleet Mail unreachable or error:", resp.status);
-        process.exit(1);
+        fail(`Fleet Mail error: ${resp.status}`);
       }
 
       const data = await resp.json() as { messages?: Array<{ id: string; from: string; subject: string; date: string }> };
@@ -40,8 +41,7 @@ export default defineCommand({
         console.log(JSON.stringify({ id: msg.id, from: msg.from, subject: msg.subject, date: msg.date }, null, 2));
       }
     } catch {
-      console.log("Fleet Mail unreachable");
-      process.exit(1);
+      fail("Fleet Mail unreachable");
     }
   },
 });
