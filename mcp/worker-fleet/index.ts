@@ -131,30 +131,356 @@ function resolveProjectName(): string {
   return basename(PROJECT_ROOT).replace(/-w-.*$/, '');
 }
 
-/** Single-source registry outside git — no symlinks needed across worktrees */
+/** Single-source fleet directory outside git — per-worker subdirectories */
 const FLEET_DIR = join(HOME, ".claude/fleet", resolveProjectName());
 const REGISTRY_PATH = join(FLEET_DIR, "registry.json");
+const FLEET_CONFIG_PATH = join(FLEET_DIR, "fleet.json");
 const LEGACY_REGISTRY_PATH = join(PROJECT_ROOT, ".claude/workers/registry.json");
 
-/** Auto-migrate registry from legacy per-worktree path to fleet-global path */
-function migrateRegistryIfNeeded(): void {
-  mkdirSync(FLEET_DIR, { recursive: true });
-  if (existsSync(REGISTRY_PATH)) return;
+// ── Per-Worker Directory Storage ─────────────────────────────────────
+// Each worker gets: {FLEET_DIR}/{name}/config.json, state.json, mission.md, launch.sh, token
 
-  // Resolve legacy path (may be a symlink to main repo)
-  let legacyPath = LEGACY_REGISTRY_PATH;
-  try { legacyPath = realpathSync(LEGACY_REGISTRY_PATH); } catch {}
-  if (!existsSync(legacyPath)) return;
-
-  // Validate it's actual registry content, not a migration stub
-  try {
-    const raw = JSON.parse(readFileSync(legacyPath, "utf-8"));
-    if (raw._migrated_to) return; // Already a stub
-  } catch { return; }
-
-  copyFileSync(legacyPath, REGISTRY_PATH);
+/** Default system hooks applied to ALL workers — nobody can remove these */
+function getDefaultSystemHooks(): Array<{
+  id: string; owner: string; event: string; tool: string;
+  condition: { command_pattern?: string; file_glob?: string };
+  action: string; message: string;
+}> {
+  return [
+    { id: "sys-1", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "rm\\s+-rf\\s+[/~.]" }, action: "block", message: "Catastrophic rm -rf blocked" },
+    { id: "sys-2", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+reset\\s+--hard" }, action: "block", message: "git reset --hard blocked" },
+    { id: "sys-3", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+clean\\s+-[fd]" }, action: "block", message: "git clean blocked" },
+    { id: "sys-4", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+push.*--force" }, action: "block", message: "Force push blocked" },
+    { id: "sys-5", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+checkout\\s+main\\b" }, action: "block", message: "Workers stay on their branch" },
+    { id: "sys-6", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "git\\s+merge\\b" }, action: "block", message: "Workers don't merge — use Fleet Mail" },
+    { id: "sys-7", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/config.json" }, action: "block", message: "Use update_worker_config tool" },
+    { id: "sys-8", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/config.json" }, action: "block", message: "Use update_worker_config tool" },
+    { id: "sys-9", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/state.json" }, action: "block", message: "Use update_state tool" },
+    { id: "sys-10", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/state.json" }, action: "block", message: "Use update_state tool" },
+    { id: "sys-11", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/token" }, action: "block", message: "Token is auto-provisioned" },
+    { id: "sys-12", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/token" }, action: "block", message: "Token is auto-provisioned" },
+  ];
 }
-migrateRegistryIfNeeded();
+
+interface WorkerConfig {
+  model: string;
+  reasoning_effort: string;
+  permission_mode: string;
+  sleep_duration: number | null;
+  window: string | null;
+  worktree: string | null;
+  branch: string;
+  mcp: Record<string, any>;
+  hooks: Array<any>;
+  meta: {
+    created_at: string;
+    created_by: string;
+    forked_from: string | null;
+    project: string;
+  };
+}
+
+interface WorkerState {
+  status: string;
+  pane_id: string | null;
+  pane_target: string | null;
+  tmux_session: string;
+  session_id: string | null;
+  past_sessions: string[];
+  last_relaunch: { at: string; reason: string } | null;
+  relaunch_count: number;
+  cycles_completed: number;
+  last_cycle_at: string | null;
+  custom: Record<string, any>;
+}
+
+/** Read fleet-wide config from fleet.json */
+function readFleetConfig(): RegistryConfig {
+  try {
+    const raw = readJsonFile(FLEET_CONFIG_PATH);
+    if (raw) return raw as RegistryConfig;
+  } catch {}
+  // Fallback defaults
+  return {
+    commit_notify: ["merger"],
+    merge_authority: "merger",
+    deploy_authority: "merger",
+    mission_authority: "chief-of-staff",
+    tmux_session: "w",
+    project_name: resolveProjectName(),
+  };
+}
+
+/** Write fleet-wide config to fleet.json */
+function writeFleetConfig(config: RegistryConfig): void {
+  mkdirSync(FLEET_DIR, { recursive: true });
+  writeFileSync(FLEET_CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+}
+
+/** Read a worker's config.json */
+function readWorkerConfig(name: string): WorkerConfig | null {
+  const configPath = join(FLEET_DIR, name, "config.json");
+  return readJsonFile(configPath) as WorkerConfig | null;
+}
+
+/** Write a worker's config.json */
+function writeWorkerConfig(name: string, config: WorkerConfig): void {
+  const dir = join(FLEET_DIR, name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "config.json"), JSON.stringify(config, null, 2) + "\n");
+}
+
+/** Read a worker's state.json */
+function readWorkerState(name: string): WorkerState | null {
+  const statePath = join(FLEET_DIR, name, "state.json");
+  return readJsonFile(statePath) as WorkerState | null;
+}
+
+/** Write a worker's state.json */
+function writeWorkerState(name: string, state: WorkerState): void {
+  const dir = join(FLEET_DIR, name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "state.json"), JSON.stringify(state, null, 2) + "\n");
+}
+
+/** List all worker names (directories with config.json) */
+function listWorkerNames(): string[] {
+  try {
+    return readdirSync(FLEET_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith(".") && d.name !== "missions")
+      .filter(d => existsSync(join(FLEET_DIR, d.name, "config.json")))
+      .map(d => d.name);
+  } catch {
+    return [];
+  }
+}
+
+/** Generate launch.sh for a worker */
+function generateLaunchScript(name: string, config: WorkerConfig): string {
+  const worktree = config.worktree || PROJECT_ROOT;
+  const model = config.model || "opus";
+  const effort = config.reasoning_effort || "high";
+  const permMode = config.permission_mode || "bypassPermissions";
+  const missionPath = join(FLEET_DIR, name, "mission.md");
+
+  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+  if (permMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
+  if (effort) cmd += ` --effort ${effort}`;
+  // Note: disallowed_tools are now hooks in config.json, not CLI flags
+
+  return `#!/bin/bash
+# Auto-generated by fleet — restart command for ${name}
+# Regenerated on config changes. Do not edit manually.
+cd "${worktree}"
+exec ${cmd} -p "$(cat '${missionPath}')"
+`;
+}
+
+/** Write launch.sh for a worker */
+function writeLaunchScript(name: string, config: WorkerConfig): void {
+  const dir = join(FLEET_DIR, name);
+  mkdirSync(dir, { recursive: true });
+  const script = generateLaunchScript(name, config);
+  const scriptPath = join(dir, "launch.sh");
+  writeFileSync(scriptPath, script, { mode: 0o755 });
+}
+
+// ── Migration: registry.json → per-worker directories ────────────────
+
+/** Convert a flat RegistryWorkerEntry to the new config+state pair */
+function registryEntryToConfigState(
+  name: string, entry: RegistryWorkerEntry, config: RegistryConfig
+): { config: WorkerConfig; state: WorkerState } {
+  const wConfig: WorkerConfig = {
+    model: entry.model || "opus",
+    reasoning_effort: (entry.custom?.reasoning_effort as string) || "high",
+    permission_mode: entry.permission_mode || "bypassPermissions",
+    sleep_duration: entry.perpetual ? (entry.sleep_duration ?? 900) : (entry.sleep_duration || null),
+    window: entry.window || null,
+    worktree: entry.worktree || null,
+    branch: entry.branch || `worker/${name}`,
+    mcp: {},
+    hooks: [...getDefaultSystemHooks()],
+    meta: {
+      created_at: new Date().toISOString(),
+      created_by: "migration",
+      forked_from: entry.forked_from || null,
+      project: config.project_name?.toLowerCase() || resolveProjectName().toLowerCase(),
+    },
+  };
+
+  // Preserve custom state but separate out known config keys
+  const customState = { ...(entry.custom || {}) };
+  // Remove keys that moved to config
+  delete customState.runtime;
+  delete customState.reasoning_effort;
+
+  const wState: WorkerState = {
+    status: entry.status || "idle",
+    pane_id: entry.pane_id || null,
+    pane_target: entry.pane_target || null,
+    tmux_session: entry.tmux_session || "w",
+    session_id: (entry as any).active_session_id || entry.session_id || null,
+    past_sessions: (entry as any).past_session_ids || [],
+    last_relaunch: (entry as any).last_relaunch || null,
+    relaunch_count: (entry as any).watchdog_relaunches || 0,
+    cycles_completed: customState.cycles_completed || 0,
+    last_cycle_at: customState.last_cycle_at || null,
+    custom: customState,
+  };
+
+  // Clean up migrated fields from custom
+  delete wState.custom.cycles_completed;
+  delete wState.custom.last_cycle_at;
+
+  return { config: wConfig, state: wState };
+}
+
+/** Migrate from registry.json to per-worker directories.
+ *  Runs on startup. Idempotent: skips if per-worker dirs already exist. */
+function migrateToPerWorkerDirs(): void {
+  mkdirSync(FLEET_DIR, { recursive: true });
+
+  // Check if migration already happened (fleet.json exists)
+  if (existsSync(FLEET_CONFIG_PATH)) return;
+
+  // Try to read existing registry.json
+  let raw: any = readJsonFile(REGISTRY_PATH);
+
+  // Fallback: try legacy path
+  if ((!raw || raw._migrated_to) && existsSync(LEGACY_REGISTRY_PATH)) {
+    let legacyPath = LEGACY_REGISTRY_PATH;
+    try { legacyPath = realpathSync(LEGACY_REGISTRY_PATH); } catch {}
+    const legacy = readJsonFile(legacyPath);
+    if (legacy && legacy._config && !legacy._migrated_to) {
+      raw = legacy;
+    }
+  }
+
+  if (!raw || !raw._config) {
+    // No registry to migrate — write default fleet.json
+    writeFleetConfig({
+      commit_notify: ["merger"],
+      merge_authority: "merger",
+      deploy_authority: "merger",
+      mission_authority: "chief-of-staff",
+      tmux_session: "w",
+      project_name: resolveProjectName(),
+    });
+    return;
+  }
+
+  const regConfig = raw._config as RegistryConfig;
+
+  // Write fleet.json from _config
+  writeFleetConfig(regConfig);
+
+  // Migrate each worker entry
+  for (const [name, entry] of Object.entries(raw)) {
+    if (name === "_config") continue;
+    const workerEntry = entry as RegistryWorkerEntry;
+
+    // Skip "user" entry (special Fleet Mail account, not a real worker)
+    if (name === "user") {
+      // Preserve user account data in a minimal way
+      const userDir = join(FLEET_DIR, "_user");
+      mkdirSync(userDir, { recursive: true });
+      writeFileSync(join(userDir, "account.json"), JSON.stringify(workerEntry, null, 2) + "\n");
+      continue;
+    }
+
+    const workerDir = join(FLEET_DIR, name);
+    // Skip if already migrated
+    if (existsSync(join(workerDir, "config.json"))) continue;
+
+    mkdirSync(workerDir, { recursive: true });
+    const { config: wConfig, state: wState } = registryEntryToConfigState(name, workerEntry, regConfig);
+    writeWorkerConfig(name, wConfig);
+    writeWorkerState(name, wState);
+
+    // Copy mission.md if it exists in missions/
+    const centralMission = join(FLEET_DIR, "missions", `${name}.md`);
+    const workerMission = join(workerDir, "mission.md");
+    if (existsSync(centralMission) && !existsSync(workerMission)) {
+      try { symlinkSync(centralMission, workerMission); } catch {
+        try { copyFileSync(centralMission, workerMission); } catch {}
+      }
+    }
+
+    // Copy bms_token to token file
+    if (workerEntry.bms_token) {
+      writeFileSync(join(workerDir, "token"), workerEntry.bms_token);
+    }
+
+    // Generate launch.sh
+    writeLaunchScript(name, wConfig);
+  }
+
+  // Backup old registry.json
+  if (existsSync(REGISTRY_PATH)) {
+    try { copyFileSync(REGISTRY_PATH, REGISTRY_PATH + ".bak"); } catch {}
+  }
+}
+
+// Run migration on startup
+migrateToPerWorkerDirs();
+
+// ── Compatibility Shim: reconstruct ProjectRegistry from per-worker dirs ──
+// This allows ALL existing code (lint, diagnostics, fleet handlers) to keep
+// working without changes during the transition period.
+
+/** Reconstruct a RegistryWorkerEntry from per-worker config.json + state.json */
+function workerDirsToRegistryEntry(name: string): RegistryWorkerEntry | null {
+  const config = readWorkerConfig(name);
+  const state = readWorkerState(name);
+  if (!config) return null;
+
+  const s = state || {
+    status: "idle", pane_id: null, pane_target: null, tmux_session: "w",
+    session_id: null, past_sessions: [], last_relaunch: null,
+    relaunch_count: 0, cycles_completed: 0, last_cycle_at: null, custom: {},
+  };
+
+  // Read token from file
+  let bmsToken: string | undefined;
+  try { bmsToken = readFileSync(join(FLEET_DIR, name, "token"), "utf-8").trim(); } catch {}
+
+  // Reconstruct the flat entry format for backward compatibility
+  const entry: RegistryWorkerEntry = {
+    model: config.model || "opus",
+    permission_mode: config.permission_mode || "bypassPermissions",
+    disallowed_tools: [], // Replaced by hooks in config.json
+    status: s.status || "idle",
+    perpetual: config.sleep_duration !== null && config.sleep_duration !== undefined,
+    sleep_duration: config.sleep_duration ?? 1800,
+    branch: config.branch || `worker/${name}`,
+    worktree: config.worktree || null,
+    window: config.window || null,
+    pane_id: s.pane_id || null,
+    pane_target: s.pane_target || null,
+    tmux_session: s.tmux_session || "w",
+    session_id: s.session_id || null,
+    session_file: null,
+    mission_file: join(FLEET_DIR, name, "mission.md"),
+    custom: {
+      ...s.custom,
+      runtime: "claude", // Always reconstruct this
+      reasoning_effort: config.reasoning_effort || "high",
+      ...(s.cycles_completed ? { cycles_completed: s.cycles_completed } : {}),
+      ...(s.last_cycle_at ? { last_cycle_at: s.last_cycle_at } : {}),
+    },
+    forked_from: config.meta?.forked_from || undefined,
+    bms_token: bmsToken,
+  };
+
+  // Carry over extra state fields
+  if (s.past_sessions?.length) (entry as any).past_session_ids = s.past_sessions;
+  if (s.session_id) (entry as any).active_session_id = s.session_id;
+  if (s.last_relaunch) (entry as any).last_relaunch = s.last_relaunch;
+  if (s.relaunch_count) (entry as any).watchdog_relaunches = s.relaunch_count;
+
+  return entry;
+}
 
 
 // ── Worker Identity Detection ────────────────────────────────────────
@@ -360,45 +686,44 @@ function canUpdateWorker(callerName: string, targetName: string, registry: Proje
   return false;
 }
 
-/** Read project registry from disk (no locking — caller handles concurrency) */
+/** Read project registry from per-worker dirs (compatibility shim).
+ *  Reconstructs the old ProjectRegistry shape by reading fleet.json + all per-worker dirs.
+ *  No locking — caller handles concurrency. */
 function readRegistry(): ProjectRegistry {
-  let raw = readJsonFile(REGISTRY_PATH);
+  const config = readFleetConfig();
+  const registry: ProjectRegistry = { _config: config };
 
-  // Fallback: try legacy path if new location doesn't exist yet
-  if ((!raw || raw._migrated_to) && existsSync(LEGACY_REGISTRY_PATH)) {
-    const legacy = readJsonFile(LEGACY_REGISTRY_PATH);
-    if (legacy && legacy._config && !legacy._migrated_to) {
-      raw = legacy;
-      // Auto-migrate on next read
-      migrateRegistryIfNeeded();
-    }
+  // Read all per-worker directories
+  const workerNames = listWorkerNames();
+  for (const name of workerNames) {
+    const entry = workerDirsToRegistryEntry(name);
+    if (entry) registry[name] = entry;
   }
 
-  if (!raw || !raw._config || raw._migrated_to) {
-    // Bootstrap empty registry
-    return {
-      _config: {
-        commit_notify: ["merger"],
-        merge_authority: "merger",
-        deploy_authority: "merger",
-        mission_authority: "chief-of-staff",
-        tmux_session: "w",
-        project_name: resolveProjectName(),
-      },
-    };
-  }
-  return raw as ProjectRegistry;
+  // Also include "user" account if it exists (special Fleet Mail account)
+  const userAccountPath = join(FLEET_DIR, "_user", "account.json");
+  try {
+    const userAccount = readJsonFile(userAccountPath);
+    if (userAccount) registry["user"] = userAccount;
+  } catch {}
+
+  return registry;
 }
 
-/** Get a worker entry from registry (returns null if not found) */
+/** Get a worker entry (reads directly from per-worker dirs, not full registry) */
 function getWorkerEntry(name: string): RegistryWorkerEntry | null {
-  const reg = readRegistry();
-  const entry = reg[name];
-  if (!entry || name === "_config") return null;
-  return entry as RegistryWorkerEntry;
+  if (name === "_config") return null;
+  // Special case: "user" account
+  if (name === "user") {
+    const userAccountPath = join(FLEET_DIR, "_user", "account.json");
+    return readJsonFile(userAccountPath) as RegistryWorkerEntry | null;
+  }
+  return workerDirsToRegistryEntry(name);
 }
 
-/** Atomic read-modify-write under lock. Returns the value from fn(). */
+/** Atomic read-modify-write under lock. Returns the value from fn().
+ *  After fn() mutates the registry, changes are written back to per-worker dirs
+ *  (and fleet.json for _config changes). */
 function withRegistryLocked<T>(fn: (registry: ProjectRegistry) => T): T {
   const lockPath = join(HARNESS_LOCK_DIR, "worker-registry");
   if (!acquireLock(lockPath)) {
@@ -406,15 +731,112 @@ function withRegistryLocked<T>(fn: (registry: ProjectRegistry) => T): T {
   }
   try {
     const registry = readRegistry();
+    // Snapshot worker names before mutation
+    const beforeNames = new Set(Object.keys(registry).filter(k => k !== "_config" && k !== "user"));
+
     const result = fn(registry);
+
+    // Write _config changes back to fleet.json
+    const config = registry._config as RegistryConfig;
+    writeFleetConfig(config);
+
+    // Write worker changes back to per-worker dirs
+    const afterNames = new Set(Object.keys(registry).filter(k => k !== "_config" && k !== "user"));
+
+    for (const name of afterNames) {
+      const entry = registry[name] as RegistryWorkerEntry;
+      if (!entry) continue;
+
+      // Read existing config+state to merge changes
+      const existingConfig = readWorkerConfig(name);
+      const existingState = readWorkerState(name);
+
+      if (existingConfig && existingState) {
+        // Update config fields from entry
+        existingConfig.model = entry.model || existingConfig.model;
+        existingConfig.permission_mode = entry.permission_mode || existingConfig.permission_mode;
+        existingConfig.sleep_duration = entry.perpetual ? (entry.sleep_duration ?? 900) : (entry.sleep_duration || null);
+        existingConfig.window = entry.window || existingConfig.window;
+        existingConfig.worktree = entry.worktree || existingConfig.worktree;
+        existingConfig.branch = entry.branch || existingConfig.branch;
+        if (entry.custom?.reasoning_effort) {
+          existingConfig.reasoning_effort = entry.custom.reasoning_effort as string;
+        }
+        if (entry.forked_from) existingConfig.meta.forked_from = entry.forked_from;
+        writeWorkerConfig(name, existingConfig);
+
+        // Update state fields from entry
+        existingState.status = entry.status || existingState.status;
+        existingState.pane_id = entry.pane_id;
+        existingState.pane_target = entry.pane_target;
+        existingState.tmux_session = entry.tmux_session || existingState.tmux_session;
+        existingState.session_id = (entry as any).active_session_id || entry.session_id || existingState.session_id;
+        if ((entry as any).past_session_ids) existingState.past_sessions = (entry as any).past_session_ids;
+        if ((entry as any).last_relaunch) existingState.last_relaunch = (entry as any).last_relaunch;
+        if ((entry as any).watchdog_relaunches) existingState.relaunch_count = (entry as any).watchdog_relaunches;
+        // Sync custom state (strip config keys that don't belong in state)
+        const stateCustom = { ...(entry.custom || {}) };
+        delete stateCustom.runtime;
+        delete stateCustom.reasoning_effort;
+        if (stateCustom.cycles_completed !== undefined) {
+          existingState.cycles_completed = stateCustom.cycles_completed;
+          delete stateCustom.cycles_completed;
+        }
+        if (stateCustom.last_cycle_at !== undefined) {
+          existingState.last_cycle_at = stateCustom.last_cycle_at;
+          delete stateCustom.last_cycle_at;
+        }
+        existingState.custom = stateCustom;
+        writeWorkerState(name, existingState);
+      } else {
+        // Worker doesn't have per-dir files yet — create from entry
+        const cs = registryEntryToConfigState(name, entry, config);
+        writeWorkerConfig(name, cs.config);
+        writeWorkerState(name, cs.state);
+      }
+
+      // Sync token
+      if (entry.bms_token) {
+        const tokenPath = join(FLEET_DIR, name, "token");
+        try { writeFileSync(tokenPath, entry.bms_token); } catch {}
+      }
+
+      // Regenerate launch.sh
+      const latestConfig = readWorkerConfig(name);
+      if (latestConfig) writeLaunchScript(name, latestConfig);
+    }
+
+    // Handle deleted workers (present in before but not after)
+    for (const name of beforeNames) {
+      if (!afterNames.has(name)) {
+        // Worker was deleted from registry — don't delete per-worker dir
+        // (deregister preserves files), but mark state as deregistered
+        const existingState = readWorkerState(name);
+        if (existingState) {
+          existingState.status = "deregistered";
+          writeWorkerState(name, existingState);
+        }
+      }
+    }
+
+    // Handle "user" account specially
+    if (registry["user"]) {
+      const userDir = join(FLEET_DIR, "_user");
+      mkdirSync(userDir, { recursive: true });
+      writeFileSync(join(userDir, "account.json"), JSON.stringify(registry["user"], null, 2) + "\n");
+    }
+
+    // Also write registry.json for backward compatibility (watchdog, external scripts)
     writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+
     return result;
   } finally {
     releaseLock(join(HARNESS_LOCK_DIR, "worker-registry"));
   }
 }
 
-/** Ensure worker entry exists in registry. Creates default entry if missing. */
+/** Ensure worker entry exists in registry. Creates default entry if missing.
+ *  Also ensures per-worker dir structure exists. */
 function ensureWorkerInRegistry(registry: ProjectRegistry, name: string): RegistryWorkerEntry {
   if (registry[name] && name !== "_config") {
     const e = registry[name] as RegistryWorkerEntry;
@@ -440,9 +862,20 @@ function ensureWorkerInRegistry(registry: ProjectRegistry, name: string): Regist
     tmux_session: registry._config?.tmux_session || "w",
     session_id: null,
     session_file: null,
-    mission_file: join(FLEET_DIR, "missions", `${name}.md`),
+    mission_file: join(FLEET_DIR, name, "mission.md"),
     custom: { runtime: "claude" },
   };
+
+  // Also ensure per-worker dir exists with config+state
+  const workerDir = join(FLEET_DIR, name);
+  if (!existsSync(join(workerDir, "config.json"))) {
+    mkdirSync(workerDir, { recursive: true });
+    const config = registry._config as RegistryConfig;
+    const cs = registryEntryToConfigState(name, entry, config);
+    writeWorkerConfig(name, cs.config);
+    writeWorkerState(name, cs.state);
+    writeLaunchScript(name, cs.config);
+  }
 
   registry[name] = entry;
   return entry;
@@ -459,10 +892,11 @@ function lintRegistry(registry: ProjectRegistry): DiagnosticIssue[] {
     if (name === "_config") continue;
     const w = entry as RegistryWorkerEntry;
 
-    // worker dir doesn't exist
-    const workerDir = join(WORKERS_DIR, name);
-    if (!existsSync(workerDir)) {
-      issues.push({ severity: "error", check: "lint.worker_dir", message: `Worker '${name}' worker_dir doesn't exist: ${workerDir}` });
+    // worker dir doesn't exist (check both fleet dir and legacy workers dir)
+    const fleetWorkerDir = join(FLEET_DIR, name);
+    const legacyWorkerDir = join(WORKERS_DIR, name);
+    if (!existsSync(fleetWorkerDir) && !existsSync(legacyWorkerDir)) {
+      issues.push({ severity: "error", check: "lint.worker_dir", message: `Worker '${name}' fleet dir doesn't exist: ${fleetWorkerDir}` });
     }
 
     // Dead pane
@@ -1116,13 +1550,20 @@ server.registerTool(
         };
 
         const registry = withRegistryLocked((reg) => {
-          // Auto-discover workers from filesystem (only if they have mission.md)
+          // Auto-discover workers from per-worker fleet dirs (config.json) and legacy workers dir (mission.md)
           try {
-            const dirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
+            const fleetDirs = readdirSync(FLEET_DIR, { withFileTypes: true })
+              .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_") && d.name !== "missions")
+              .filter(d => existsSync(join(FLEET_DIR, d.name, "config.json")))
+              .map(d => d.name);
+            for (const n of fleetDirs) ensureWorkerInRegistry(reg, n);
+          } catch {}
+          try {
+            const legacyDirs = readdirSync(WORKERS_DIR, { withFileTypes: true })
               .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
               .filter(d => existsSync(join(WORKERS_DIR, d.name, "mission.md")))
               .map(d => d.name);
-            for (const n of dirs) ensureWorkerInRegistry(reg, n);
+            for (const n of legacyDirs) ensureWorkerInRegistry(reg, n);
           } catch {}
           // Auto-prune dead panes
           for (const [key, entry] of Object.entries(reg)) {
@@ -1275,6 +1716,99 @@ server.registerTool(
       });
 
       return { content: [{ type: "text" as const, text: `Updated _config.${key} = ${JSON.stringify(value)}` }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// WORKER CONFIG TOOL — per-worker config.json updates
+// ═══════════════════════════════════════════════════════════════════
+
+server.registerTool(
+  "update_worker_config",
+  {
+    description: `Update a worker's per-worker config.json. Workers can update their OWN config only. For other workers, suggest changes via Fleet Mail.
+
+Self-writable keys: model, reasoning_effort, sleep_duration, window, mcp, worktree, branch
+Self-writable (add only): hooks (with owner:"self")
+NOT self-writable: permission_mode, meta.*
+Hook removal: workers can only remove hooks where owner === "self"`,
+    inputSchema: {
+      key: z.string().describe('Config key to update. Writable: model, reasoning_effort, sleep_duration, window, mcp, worktree, branch. Hook ops: hooks.add (value=hook object), hooks.remove (value=hook ID)'),
+      value: z.union([z.string(), z.number(), z.boolean(), z.null(), z.record(z.string(), z.any())]).describe("Value to set. For hooks.add: JSON object with event, tool, condition, action, message fields. For hooks.remove: hook ID string"),
+      worker: z.string().optional().describe("Target worker name. Omit for self. Only mission_authority can update others"),
+    },
+  },
+  async ({ key, value, worker }) => {
+    try {
+      const targetName = worker || WORKER_NAME;
+      const isSelf = targetName === WORKER_NAME;
+      const fleetConfig = readFleetConfig();
+
+      // Authorization: self or mission_authority
+      if (!isSelf && !isMissionAuthority(WORKER_NAME, fleetConfig)) {
+        return { content: [{ type: "text" as const, text: `Cannot update '${targetName}' config — only self or mission_authority. Suggest changes via Fleet Mail.` }], isError: true };
+      }
+
+      const config = readWorkerConfig(targetName);
+      if (!config) {
+        return { content: [{ type: "text" as const, text: `Worker '${targetName}' not found in fleet dir` }], isError: true };
+      }
+
+      // Self-writable keys
+      const selfWritable = new Set(["model", "reasoning_effort", "sleep_duration", "window", "mcp", "worktree", "branch"]);
+
+      if (key === "hooks.add") {
+        // Add a hook with owner:"self"
+        const hookData = value as any;
+        if (!hookData || typeof hookData !== "object" || !hookData.event) {
+          return { content: [{ type: "text" as const, text: "Hook must have at least an 'event' field" }], isError: true };
+        }
+        const newHook = {
+          ...hookData,
+          id: `self-${Date.now()}`,
+          owner: "self",
+        };
+        config.hooks.push(newHook);
+        writeWorkerConfig(targetName, config);
+        return withLint({ content: [{ type: "text" as const, text: `Added hook [${newHook.id}] to ${targetName}/config.json` }] });
+      }
+
+      if (key === "hooks.remove") {
+        const hookId = String(value);
+        const hookIdx = config.hooks.findIndex((h: any) => h.id === hookId);
+        if (hookIdx === -1) {
+          return { content: [{ type: "text" as const, text: `Hook '${hookId}' not found` }], isError: true };
+        }
+        const hook = config.hooks[hookIdx] as any;
+        if (isSelf && hook.owner !== "self") {
+          return { content: [{ type: "text" as const, text: `Cannot remove hook '${hookId}' — owner is '${hook.owner}', not 'self'` }], isError: true };
+        }
+        config.hooks.splice(hookIdx, 1);
+        writeWorkerConfig(targetName, config);
+        return withLint({ content: [{ type: "text" as const, text: `Removed hook [${hookId}] from ${targetName}/config.json` }] });
+      }
+
+      // Reject non-self-writable keys for self-updates
+      if (isSelf && !selfWritable.has(key)) {
+        return { content: [{ type: "text" as const, text: `Key '${key}' is not self-writable. Self-writable: ${[...selfWritable].join(", ")}` }], isError: true };
+      }
+      if (key.startsWith("meta.")) {
+        return { content: [{ type: "text" as const, text: `meta.* fields are read-only` }], isError: true };
+      }
+
+      // Update the config
+      (config as any)[key] = value;
+      writeWorkerConfig(targetName, config);
+
+      // Regenerate launch.sh if relevant keys changed
+      if (["model", "reasoning_effort", "permission_mode", "worktree"].includes(key)) {
+        writeLaunchScript(targetName, config);
+      }
+
+      return withLint({ content: [{ type: "text" as const, text: `Updated ${targetName}/config.json: ${key} = ${JSON.stringify(value)}` }] });
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
     }
@@ -2203,14 +2737,22 @@ function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
     writeFileSync(autoMemoryPath, `# ${name} Memory\n\n`);
   }
 
-  // mission.md — write to central fleet missions + symlink from worktree
+  // mission.md — write to per-worker fleet dir + central missions + symlink from worktree
+  const perWorkerFleetDir = join(FLEET_DIR, name);
+  mkdirSync(perWorkerFleetDir, { recursive: true });
+  const perWorkerMission = join(perWorkerFleetDir, "mission.md");
+  writeFileSync(perWorkerMission, mission.trim() + "\n");
+
+  // Also write to central missions dir for backward compatibility
   const centralMissionsDir = join(FLEET_DIR, "missions");
   mkdirSync(centralMissionsDir, { recursive: true });
   const centralMission = join(centralMissionsDir, `${name}.md`);
   writeFileSync(centralMission, mission.trim() + "\n");
+
+  // Symlink from legacy workerDir to per-worker fleet mission
   const worktreeMission = join(workerDir, "mission.md");
   try { unlinkSync(worktreeMission); } catch {}
-  try { symlinkSync(centralMission, worktreeMission); } catch {
+  try { symlinkSync(perWorkerMission, worktreeMission); } catch {
     // Fallback: write a copy if symlink fails
     writeFileSync(worktreeMission, mission.trim() + "\n");
   }
@@ -2357,8 +2899,53 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
       ? WORKER_NAME
       : (report_to || defaultReportTo);
 
-    // Register in unified registry
+    // Register in unified registry + write per-worker dir files
     const { state, permissions, runtime: resolvedRuntime, taskIds, model: selectedModel, perpetual: isPerpetual } = result as Required<CreateWorkerResult>;
+
+    // Write per-worker config.json directly
+    const workerFleetDir = join(FLEET_DIR, name);
+    mkdirSync(workerFleetDir, { recursive: true });
+    const workerConfig: WorkerConfig = {
+      model: permissions.model || "opus",
+      reasoning_effort: permissions.reasoning_effort || "high",
+      permission_mode: permissions.permission_mode || "bypassPermissions",
+      sleep_duration: isPerpetual ? (state.sleep_duration ?? 1800) : null,
+      window: permissions.window || null,
+      worktree: null, // Will be set after worktree creation below
+      branch: `worker/${name}`,
+      mcp: {},
+      hooks: [...getDefaultSystemHooks()],
+      meta: {
+        created_at: new Date().toISOString(),
+        created_by: WORKER_NAME,
+        forked_from: fork_from_session ? WORKER_NAME : null,
+        project: FLEET_MAIL_PROJECT,
+      },
+    };
+    writeWorkerConfig(name, workerConfig);
+
+    // Write per-worker state.json
+    const workerState: WorkerState = {
+      status: state.status || "idle",
+      pane_id: null,
+      pane_target: null,
+      tmux_session: readFleetConfig().tmux_session || "w",
+      session_id: null,
+      past_sessions: [],
+      last_relaunch: null,
+      relaunch_count: 0,
+      cycles_completed: 0,
+      last_cycle_at: null,
+      custom: {
+        ...(proposal_required ? { proposal_required: true } : {}),
+      },
+    };
+    writeWorkerState(name, workerState);
+
+    // Generate launch.sh
+    writeLaunchScript(name, workerConfig);
+
+    // Also update legacy registry for backward compatibility
     withRegistryLocked((registry) => {
       ensureWorkerInRegistry(registry, name);
       const entry = registry[name] as RegistryWorkerEntry;
@@ -2392,6 +2979,13 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
         execSync(`git -C "${PROJECT_ROOT}" worktree add "${worktreeDir}" "${workerBranch}"`, { encoding: "utf-8", timeout: 10000 });
       }
       worktreeReady = true;
+      // Update per-worker config with worktree path
+      const latestConfig = readWorkerConfig(name);
+      if (latestConfig) {
+        latestConfig.worktree = worktreeDir;
+        writeWorkerConfig(name, latestConfig);
+        writeLaunchScript(name, latestConfig);
+      }
       // Symlink .mcp.json to project root (single source of truth for MCP config)
       const wtMcp = join(worktreeDir, ".mcp.json");
       const baseMcp = join(PROJECT_ROOT, ".mcp.json");
@@ -2842,11 +3436,73 @@ async function handleFleetRegister(params: Record<string, any>): Promise<McpResu
       tmuxSession = paneTarget.split(":")[0] || "w";
     }
 
-    const registry = readRegistry();
-    const config = registry._config as RegistryConfig | undefined;
-    const maVal = config?.mission_authority;
+    const fleetConfig = readFleetConfig();
+    const maVal = fleetConfig?.mission_authority;
     const defaultReportTo = Array.isArray(maVal) ? maVal[0] : (maVal || "chief-of-staff");
 
+    // Update per-worker dir files directly
+    const workerDir = join(FLEET_DIR, WORKER_NAME);
+    mkdirSync(workerDir, { recursive: true });
+
+    // Config — create or update
+    let wConfig = readWorkerConfig(WORKER_NAME);
+    if (!wConfig) {
+      const projectName = resolveProjectName();
+      const worktreeDir = join(PROJECT_ROOT, "..", `${projectName}-w-${WORKER_NAME}`);
+      wConfig = {
+        model: model || "opus",
+        reasoning_effort: "high",
+        permission_mode: "bypassPermissions",
+        sleep_duration: perpetual ? (sleep_duration ?? 900) : null,
+        window: null,
+        worktree: existsSync(worktreeDir) ? worktreeDir : null,
+        branch: `worker/${WORKER_NAME}`,
+        mcp: {},
+        hooks: [...getDefaultSystemHooks()],
+        meta: {
+          created_at: new Date().toISOString(),
+          created_by: "self-register",
+          forked_from: null,
+          project: FLEET_MAIL_PROJECT,
+        },
+      };
+    } else {
+      if (model) wConfig.model = model;
+      if (perpetual !== undefined) wConfig.sleep_duration = perpetual ? (sleep_duration ?? 900) : null;
+      if (sleep_duration !== undefined && perpetual !== false) wConfig.sleep_duration = sleep_duration;
+    }
+    writeWorkerConfig(WORKER_NAME, wConfig);
+    writeLaunchScript(WORKER_NAME, wConfig);
+
+    // State — create or update
+    let wState = readWorkerState(WORKER_NAME);
+    const sessionId = ownPane ? getSessionId(ownPane.paneId) : null;
+    if (!wState) {
+      wState = {
+        status: "active",
+        pane_id: ownPane?.paneId || null,
+        pane_target: paneTarget || null,
+        tmux_session: tmuxSession,
+        session_id: sessionId || null,
+        past_sessions: [],
+        last_relaunch: null,
+        relaunch_count: 0,
+        cycles_completed: 0,
+        last_cycle_at: null,
+        custom: {},
+      };
+    } else {
+      wState.status = "active";
+      if (ownPane) {
+        wState.pane_id = ownPane.paneId;
+        wState.pane_target = paneTarget;
+        wState.tmux_session = tmuxSession;
+        if (sessionId) wState.session_id = sessionId;
+      }
+    }
+    writeWorkerState(WORKER_NAME, wState);
+
+    // Also update legacy registry for backward compatibility
     withRegistryLocked((reg) => {
       const entry = ensureWorkerInRegistry(reg, WORKER_NAME);
       entry.status = "active";
@@ -2862,19 +3518,17 @@ async function handleFleetRegister(params: Record<string, any>): Promise<McpResu
         entry.pane_id = ownPane.paneId;
         entry.pane_target = paneTarget;
         entry.tmux_session = tmuxSession;
-        // Session-based identity: capture session_id from pane-map (primary identity)
         const sid = getSessionId(ownPane.paneId);
         if (sid) entry.session_id = sid;
       }
     });
 
-    const sessionId = ownPane ? getSessionId(ownPane.paneId) : null;
     const paneInfo = ownPane ? `pane ${ownPane.paneId} (${paneTarget})` : "no pane detected";
     const sessionInfo = sessionId ? `, session: ${sessionId.slice(0, 8)}…` : "";
     return {
       content: [{
         type: "text" as const,
-        text: `Registered '${WORKER_NAME}' in registry.json — ${paneInfo}${sessionInfo}, model: ${model || "opus"}, report_to: ${report_to || defaultReportTo}`,
+        text: `Registered '${WORKER_NAME}' — ${paneInfo}${sessionInfo}, model: ${model || "opus"}, report_to: ${report_to || defaultReportTo}\n  Fleet dir: ${workerDir}/`,
       }],
     };
   } catch (e: any) {
@@ -3430,12 +4084,25 @@ function refreshFleetMailUnread(): void {
 }
 
 /** Get or auto-provision a Fleet Mail bearer token for the current worker.
- *  Tokens are stored in registry.json under each worker's `bms_token` field (legacy name). */
+ *  Tokens stored in per-worker dir ({name}/token) and registry.json (backward compat). */
 async function getFleetMailToken(): Promise<string> {
-  // Check registry first
-  const registry = readRegistry();
-  const entry = registry[WORKER_NAME] as RegistryWorkerEntry | undefined;
-  if (entry?.bms_token) return entry.bms_token;
+  // Check per-worker token file first (new primary location)
+  const tokenPath = join(FLEET_DIR, WORKER_NAME, "token");
+  try {
+    const token = readFileSync(tokenPath, "utf-8").trim();
+    if (token) return token;
+  } catch {}
+
+  // Fallback: check registry
+  const entry = getWorkerEntry(WORKER_NAME);
+  if (entry?.bms_token) {
+    // Migrate: write to token file for future reads
+    try {
+      mkdirSync(join(FLEET_DIR, WORKER_NAME), { recursive: true });
+      writeFileSync(tokenPath, entry.bms_token);
+    } catch {}
+    return entry.bms_token;
+  }
 
   // Auto-register with the mail server (namespaced: "project/worker")
   const nsName = mailAccountName(WORKER_NAME);
@@ -3455,10 +4122,13 @@ async function getFleetMailToken(): Promise<string> {
           signal: AbortSignal.timeout(15000),
         });
         if (repairResp.ok) {
-          // Re-read registry — daemon should have repaired our token
-          const refreshed = readRegistry();
-          const newToken = (refreshed[WORKER_NAME] as any)?.bms_token;
-          if (newToken) return newToken;
+          // Re-read — daemon should have repaired our token
+          try {
+            const repairedToken = readFileSync(tokenPath, "utf-8").trim();
+            if (repairedToken) return repairedToken;
+          } catch {}
+          const refreshed = getWorkerEntry(WORKER_NAME);
+          if (refreshed?.bms_token) return refreshed.bms_token;
         }
       } catch {}
       throw new Error(`Fleet Mail account '${nsName}' exists but token is not in registry. Auto-repair via fleet-relay daemon failed.`);
@@ -3469,9 +4139,13 @@ async function getFleetMailToken(): Promise<string> {
   const data = await resp.json() as any;
   const token = data.bearerToken as string;
 
-  // Persist to registry — do NOT silently swallow errors here.
-  // If this fails, the token works for this session but is lost on restart,
-  // leading to an unrecoverable 409 on next getFleetMailToken() call.
+  // Persist to per-worker token file (primary) + registry (backward compat)
+  try {
+    mkdirSync(join(FLEET_DIR, WORKER_NAME), { recursive: true });
+    writeFileSync(tokenPath, token);
+  } catch (e) {
+    console.error(`[getFleetMailToken] WARN: Failed to write token file: ${e}`);
+  }
   try {
     withRegistryLocked((reg) => {
       if (!reg[WORKER_NAME]) ensureWorkerInRegistry(reg, WORKER_NAME);
@@ -3479,7 +4153,6 @@ async function getFleetMailToken(): Promise<string> {
     });
   } catch (e) {
     console.error(`[getFleetMailToken] WARN: Failed to persist bms_token for ${WORKER_NAME} to registry.json: ${e}`);
-    console.error(`[getFleetMailToken] Token works for this session but will be lost on restart — 409 on next call.`);
   }
 
   return token;
@@ -3972,7 +4645,14 @@ export {
   readRegistry, getWorkerEntry, withRegistryLocked, ensureWorkerInRegistry,
   lintRegistry, _replaceMemorySection, getReportTo, canUpdateWorker,
   _captureGitState, _captureHooksSnapshot, _timestampFilename, _writeCheckpoint,
-  WORKER_NAME, WORKERS_DIR, HARNESS_LOCK_DIR, REGISTRY_PATH,
+  WORKER_NAME, WORKERS_DIR, HARNESS_LOCK_DIR, REGISTRY_PATH, FLEET_DIR, FLEET_CONFIG_PATH,
+  // Per-worker dir storage
+  readFleetConfig, writeFleetConfig,
+  readWorkerConfig, writeWorkerConfig,
+  readWorkerState, writeWorkerState,
+  listWorkerNames, getDefaultSystemHooks,
+  generateLaunchScript, writeLaunchScript,
+  type WorkerConfig, type WorkerState,
   type DiagnosticIssue,
   type RegistryConfig, type RegistryWorkerEntry, type ProjectRegistry,
   type WorkerRuntime, type ReasoningEffort, type RuntimeConfig,
