@@ -93,7 +93,7 @@ export async function waitForPrompt(paneId: string, timeoutMs = 60_000): Promise
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const output = capturePane(paneId, 5);
-    if (/❯|> $/.test(output)) return true;
+    if (/[❯>]\s*$/m.test(output)) return true;
     await Bun.sleep(2000);
   }
   return false;
@@ -102,15 +102,20 @@ export async function waitForPrompt(paneId: string, timeoutMs = 60_000): Promise
 /** Inject text via tmux buffer (safer for large content) */
 export function pasteBuffer(paneId: string, content: string): boolean {
   const tmpFile = `/tmp/fleet-paste-${process.pid}.txt`;
-  Bun.write(tmpFile, content);
+  const { writeFileSync, unlinkSync } = require("node:fs");
+  writeFileSync(tmpFile, content);
 
-  const bufName = `fleet-${process.pid}`;
-  run(["delete-buffer", "-b", bufName]); // ignore error
-  const load = run(["load-buffer", "-b", bufName, tmpFile]);
-  if (!load.ok) return false;
+  try {
+    const bufName = `fleet-${process.pid}`;
+    run(["delete-buffer", "-b", bufName]); // ignore error
+    const load = run(["load-buffer", "-b", bufName, tmpFile]);
+    if (!load.ok) return false;
 
-  run(["paste-buffer", "-b", bufName, "-t", paneId, "-d"]);
-  return true;
+    run(["paste-buffer", "-b", bufName, "-t", paneId, "-d"]);
+    return true;
+  } finally {
+    try { unlinkSync(tmpFile); } catch {}
+  }
 }
 
 /** Send /stop to a pane and wait for exit */
@@ -122,9 +127,10 @@ export async function gracefulStop(paneId: string, timeoutMs = 30_000): Promise<
   while (Date.now() - start < timeoutMs) {
     // Check if pane still exists
     if (!listPaneIds().has(paneId)) return true;
-    // Check if shell prompt appeared (claude exited)
+    // Check if shell prompt appeared (claude exited) — test last line only
     const output = capturePane(paneId, 3);
-    if (/^\$|^➜|zsh/.test(output)) return true;
+    const lastLine = output.split("\n").filter(Boolean).pop() || "";
+    if (/^\$\s|^➜|^%\s/.test(lastLine)) return true;
     await Bun.sleep(2000);
   }
 

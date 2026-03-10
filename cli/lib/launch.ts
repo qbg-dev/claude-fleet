@@ -64,15 +64,15 @@ export async function launchInTmux(
     sendEnter(paneId);
   }
 
-  // Build claude command
+  // Build claude command (quote all values for shell safety)
   const { model, reasoning_effort: effort, permission_mode: perm } = config!;
-  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME=${name} claude --model ${model} --effort ${effort}`;
+  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${name}" claude --model "${model}" --effort "${effort}"`;
   if (perm === "bypassPermissions") {
     cmd += " --dangerously-skip-permissions";
   } else {
-    cmd += ` --permission-mode ${perm}`;
+    cmd += ` --permission-mode "${perm}"`;
   }
-  cmd += ` --add-dir ${dir}`;
+  cmd += ` --add-dir "${dir}"`;
 
   sendKeys(paneId, cmd);
   sendEnter(paneId);

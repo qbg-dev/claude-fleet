@@ -68,10 +68,11 @@ export default defineCommand({
     try {
       await launchInTmux(args.name, project, session, window, windowIndex);
     } finally {
-      // Restore config backup if temporary override
+      // Restore config backup if temporary override + regenerate launch.sh
       if (hasOverrides && !args.save && existsSync(backupPath)) {
         copyFileSync(backupPath, configPath);
         Bun.spawnSync(["rm", "-f", backupPath]);
+        generateLaunchSh(project, args.name);
       }
     }
   },

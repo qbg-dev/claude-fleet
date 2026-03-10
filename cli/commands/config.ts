@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import { resolveProject } from "../lib/paths";
-import { getConfig, setConfigValue, resolveValue } from "../lib/config";
+import { getConfig, setConfigValue, resolveValue, parseCliValue } from "../lib/config";
 import { ok, fail } from "../lib/fmt";
 
 export default defineCommand({
@@ -30,13 +30,7 @@ export default defineCommand({
     }
 
     // Set key=value
-    let parsed: unknown = args.value;
-    if (args.value === "null") parsed = null;
-    else if (args.value === "true") parsed = true;
-    else if (args.value === "false") parsed = false;
-    else if (/^\d+$/.test(args.value)) parsed = parseInt(args.value, 10);
-
-    setConfigValue(project, args.name, args.key, parsed);
+    setConfigValue(project, args.name, args.key, parseCliValue(args.value));
     ok(`${args.key} → ${args.value} (launch.sh regenerated)`);
   },
 });

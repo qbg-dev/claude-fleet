@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import { defaultsPath } from "../lib/paths";
-import { getDefaults, writeJson } from "../lib/config";
+import { getDefaults, writeJson, parseCliValue } from "../lib/config";
 import { ok } from "../lib/fmt";
 
 export default defineCommand({
@@ -24,13 +24,7 @@ export default defineCommand({
     }
 
     // Set
-    let parsed: unknown = args.value;
-    if (args.value === "null") parsed = null;
-    else if (args.value === "true") parsed = true;
-    else if (args.value === "false") parsed = false;
-    else if (/^\d+$/.test(args.value)) parsed = parseInt(args.value, 10);
-
-    defaults[args.key] = parsed;
+    defaults[args.key] = parseCliValue(args.value);
     writeJson(defaultsPath(), defaults);
     ok(`${args.key} → ${args.value}`);
   },

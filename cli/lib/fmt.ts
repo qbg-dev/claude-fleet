@@ -6,7 +6,7 @@ import chalk from "chalk";
 export const ok = (msg: string) => console.log(`${chalk.green("✓")} ${msg}`);
 export const info = (msg: string) => console.log(`${chalk.cyan("→")} ${msg}`);
 export const warn = (msg: string) => console.log(`${chalk.yellow("⚠")} ${msg}`);
-export const fail = (msg: string) => {
+export const fail = (msg: string): never => {
   console.error(`${chalk.red("ERROR:")} ${msg}`);
   process.exit(1);
 };
