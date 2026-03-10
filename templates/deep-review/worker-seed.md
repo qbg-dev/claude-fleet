@@ -114,6 +114,12 @@ For every changed file relevant to your specialization, enumerate ALL code paths
 - The verification method: `chrome` (Chrome MCP click-through), `curl` (API call), `script` (write a test script), `test` (unit/integration test), `code-review` (read-only verification), `query` (database query)
 - The expected behavior
 
+**Prefer active verification methods.** Don't just read code when you can test it:
+- For API changes: include concrete `curl` commands with expected responses
+- For logic changes: propose specific test cases (bun:test assertions)
+- For data flows: write a script that exercises the path end-to-end
+- Code-review is the last resort — use it only when runtime testing isn't possible
+
 Write these in a `## Enumerated Paths` section AFTER your findings.
 
 ### Step 5: Write findings with chain-of-thought evidence
