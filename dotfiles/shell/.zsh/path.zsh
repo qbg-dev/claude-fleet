@@ -8,7 +8,7 @@ export PATH="$HOME/.local/bin:$PATH"
 # ===== Claude & LLM tools =====
 export PATH="$HOME/.claude/local:$PATH"
 export PATH="$HOME/.codex/bin:$PATH"
-export PATH="$HOME/.claude-ops/bin:$PATH"
+export PATH="$HOME/.claude-fleet/bin:$PATH"
 
 # ===== Package managers =====
 export PATH="$HOME/.pixi/bin:$PATH"

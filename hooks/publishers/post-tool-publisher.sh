@@ -7,8 +7,8 @@ exec 2>/dev/null
 
 INPUT=$(cat)
 
-source "$HOME/.claude-ops/lib/pane-resolve.sh"
-source "$HOME/.claude-ops/lib/event-bus.sh"
+source "$HOME/.claude-fleet/lib/pane-resolve.sh"
+source "$HOME/.claude-fleet/lib/event-bus.sh"
 
 hook_parse_input "$INPUT"
 # Subagent tool traces are noise — lifecycle hooks capture the aggregate

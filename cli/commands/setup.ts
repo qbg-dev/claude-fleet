@@ -63,11 +63,11 @@ export function register(parent: Command): void {
         ok("~/.claude-fleet exists");
       }
 
-      if (!existsSync(join(HOME, ".claude-ops"))) {
-        Bun.spawnSync(["ln", "-sfn", realDir, join(HOME, ".claude-ops")]);
-        ok("Created ~/.claude-ops → (compat)");
+      if (!existsSync(join(HOME, ".claude-fleet"))) {
+        Bun.spawnSync(["ln", "-sfn", realDir, join(HOME, ".claude-fleet")]);
+        ok("Created ~/.claude-fleet → (compat)");
       } else {
-        ok("~/.claude-ops exists");
+        ok("~/.claude-fleet exists");
       }
 
       mkdirSync(join(HOME, ".claude"), { recursive: true });
@@ -251,7 +251,7 @@ export function register(parent: Command): void {
         const isFleetHook = (entry: HookEntry) =>
           entry.hooks?.some((h: any) =>
             h.command?.includes("/.claude-fleet/") ||
-            h.command?.includes("/.claude-ops/") ||
+            h.command?.includes("/.claude-fleet/") ||
             h.command?.includes("/.claude-hooks/") ||
             h.command?.includes("/.tmux-agents/"));
 
@@ -337,7 +337,7 @@ export function register(parent: Command): void {
       const watchdogPlugin = join(fleetDir, "extensions/watchdog/src/watchdog.ts");
       if (existsSync(watchdogPlugin)) {
         const watchdogPlist = join(HOME, "Library/LaunchAgents/com.tmux-agents.watchdog.plist");
-        const legacyPlist = join(HOME, "Library/LaunchAgents/com.claude-ops.harness-watchdog.plist");
+        const legacyPlist = join(HOME, "Library/LaunchAgents/com.claude-fleet.harness-watchdog.plist");
         if (existsSync(watchdogPlist) || existsSync(legacyPlist)) {
           ok("Watchdog: installed (launchd daemon active)");
         } else {

@@ -4,7 +4,7 @@
 # v3 changes: single stream.jsonl (no topics), pluggable side-effect scripts,
 # named filters in schema.json, simplified query API.
 #
-# Usage: source ~/.claude-ops/lib/event-bus.sh
+# Usage: source ~/.claude-fleet/lib/event-bus.sh
 #
 # Functions:
 #   bus_publish <event_type> <json_payload>       — Enrich with _seq, append to stream, run side-effects
@@ -74,7 +74,7 @@ _bus_resolve_dir() {
     fi
     echo "$pr/.claude/bus"
   else
-    echo "$HOME/.claude-ops/bus"  # last resort only
+    echo "$HOME/.claude-fleet/bus"  # last resort only
   fi
 }
 
@@ -84,7 +84,7 @@ BUS_CURSORS_DIR="$BUS_DIR/cursors"
 BUS_DLQ_DIR="$BUS_DIR/dlq"
 BUS_SCHEMA="$BUS_DIR/schema.json"
 BUS_SEQ_FILE="$BUS_DIR/seq.json"
-BUS_SIDE_EFFECTS_DIR="$HOME/.claude-ops/bus/side-effects"
+BUS_SIDE_EFFECTS_DIR="$HOME/.claude-fleet/bus/side-effects"
 
 EVENT_BUS_ENABLED="${EVENT_BUS_ENABLED:-true}"
 
@@ -143,7 +143,7 @@ _bus_next_seq() {
 
 # ── Pluggable side-effects ───────────────────────────────────────────
 # Reads side_effects array from schema.json for the event type,
-# then executes matching scripts from ~/.claude-ops/bus/side-effects/.
+# then executes matching scripts from ~/.claude-fleet/bus/side-effects/.
 
 _bus_run_side_effects() {
   local event_type="$1" payload="$2"

@@ -50,7 +50,7 @@ fi
 
 WORKER_NAME="${BRANCH#worker/}"
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
-BUS_EMIT="${HOME}/.claude-ops/scripts/worker-bus-emit.sh"
+BUS_EMIT="${HOME}/.claude-fleet/scripts/worker-bus-emit.sh"
 
 echo "Requesting merge for branch: $BRANCH"
 [[ -n "$SERVICE" ]] && echo "  service: $SERVICE"

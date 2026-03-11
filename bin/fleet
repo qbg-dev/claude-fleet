@@ -2,7 +2,7 @@
 # fleet — Worker fleet management CLI
 # Delegates to TypeScript CLI via bun.
 
-FLEET_DIR="${CLAUDE_FLEET_DIR:-${CLAUDE_OPS_DIR:-$HOME/.claude-fleet}}"
+FLEET_DIR="${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
 
 if ! command -v bun >/dev/null 2>&1; then
   echo "ERROR: bun is required. Install: curl -fsSL https://bun.sh/install | bash" >&2

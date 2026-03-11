@@ -1,1 +1,1 @@
-export PATH="$HOME/.claude-ops/bin:$PATH"
+export PATH="$HOME/.claude-fleet/bin:$PATH"

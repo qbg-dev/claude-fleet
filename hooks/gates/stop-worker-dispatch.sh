@@ -7,13 +7,13 @@
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-source "$HOME/.claude-ops/lib/fleet-jq.sh"
-EVENT_BUS_ENABLED=false source "$HOME/.claude-ops/lib/event-bus.sh" 2>/dev/null || true
+source "$HOME/.claude-fleet/lib/fleet-jq.sh"
+EVENT_BUS_ENABLED=false source "$HOME/.claude-fleet/lib/event-bus.sh" 2>/dev/null || true
 
 _log() {
   local _aid_tag=""
   [ -n "${_HOOK_AGENT_ID:-}" ] && _aid_tag=" agent=${_HOOK_AGENT_TYPE:-}:${_HOOK_AGENT_ID}"
-  echo "[$(date -u +%FT%TZ)] stop-hook:${_aid_tag} $*" >> "${HOME}/.claude-ops/state/watchdog.log" 2>/dev/null || true
+  echo "[$(date -u +%FT%TZ)] stop-hook:${_aid_tag} $*" >> "${HOME}/.claude-fleet/state/watchdog.log" 2>/dev/null || true
 }
 
 INPUT=$(cat)
@@ -101,7 +101,7 @@ _check_child_parent_notification() {
   [ "$_tool_count" -lt 3 ] && return
   [ -z "$_parent_name" ] && return
 
-  hook_block "$(echo -e "## Forked child — notify parent before stopping\n\nYou are a child pane of **${_parent_name}** (${_child_target}, ${_tool_count} tool calls).\n\n1. Send a summary to your parent:\n\n   bash ~/.claude-ops/scripts/worker-message.sh send ${_parent_name} \\\\\n     \"Child session ${SESSION_ID} (${_child_target}): <2-3 sentence summary of what you found/fixed/decided>\"\n\n2. Mark done:\n   touch ${_SESSION_DIR}/parent-notified\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
+  hook_block "$(echo -e "## Forked child — notify parent before stopping\n\nYou are a child pane of **${_parent_name}** (${_child_target}, ${_tool_count} tool calls).\n\n1. Send a summary to your parent:\n\n   bash ~/.claude-fleet/scripts/worker-message.sh send ${_parent_name} \\\\\n     \"Child session ${SESSION_ID} (${_child_target}): <2-3 sentence summary of what you found/fixed/decided>\"\n\n2. Mark done:\n   touch ${_SESSION_DIR}/parent-notified\n\nEscape: touch ${_SESSION_DIR}/allow-stop")"
   exit 0
 }
 

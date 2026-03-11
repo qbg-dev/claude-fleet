@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
-import { CLAUDE_OPS, PROJECT_ROOT, WORKER_NAME, FLEET_DIR } from "../config";
+import { CLAUDE_FLEET, PROJECT_ROOT, WORKER_NAME, FLEET_DIR } from "../config";
 import {
   dynamicHooks, _incrementHookCounter, _persistHooks, _pendingHooksSummary,
   writeScriptFile, _archiveHook, readOtherWorkerHooks,
@@ -288,7 +288,7 @@ server.registerTool(
     // ── Static hooks (infrastructure, from manifest) — only for own worker ──
     if (showStatic && !isOtherWorker) {
       try {
-        const manifestPath = join(CLAUDE_OPS, "hooks", "manifest.json");
+        const manifestPath = join(CLAUDE_FLEET, "hooks", "manifest.json");
         const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
         const staticHooks = (manifest.hooks || []).filter((h: any) =>
           h.id && h.event && (!event || h.event === event) && !h._comment

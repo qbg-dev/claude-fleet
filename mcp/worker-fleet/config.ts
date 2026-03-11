@@ -9,13 +9,15 @@ import { join, basename } from "path";
 // ── Path Constants ──────────────────────────────────────────────────
 export const HOME = process.env.HOME!;
 export const PROJECT_ROOT = process.env.PROJECT_ROOT || process.cwd();
-export const CLAUDE_OPS = process.env.TMUX_AGENTS_DIR || process.env.CLAUDE_OPS_DIR || join(HOME, ".tmux-agents");
+export const CLAUDE_FLEET = process.env.CLAUDE_FLEET_DIR || join(HOME, ".claude-fleet");
+/** @deprecated Use CLAUDE_FLEET */
+export const CLAUDE_OPS = CLAUDE_FLEET;
 export let WORKERS_DIR = join(PROJECT_ROOT, ".claude/workers");
 
 /** For testing — override the workers directory */
 export function _setWorkersDir(dir: string) { WORKERS_DIR = dir; }
 
-export const HARNESS_LOCK_DIR = join(CLAUDE_OPS, "state/locks");
+export const HARNESS_LOCK_DIR = join(CLAUDE_FLEET, "state/locks");
 
 /** Derive canonical project name — strips worktree suffix (-w-*) */
 export function resolveProjectName(): string {

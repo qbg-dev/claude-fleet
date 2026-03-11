@@ -106,7 +106,7 @@ function checkPrerequisites(): CheckResult {
 function checkSymlinks(): CheckResult {
   const symlinks: Array<{ path: string; label: string; checkDir?: boolean; checkExec?: boolean }> = [
     { path: join(HOME, ".claude-fleet"), label: "~/.claude-fleet", checkDir: true },
-    { path: join(HOME, ".claude-ops"), label: "~/.claude-ops" },
+    { path: join(HOME, ".claude-fleet"), label: "~/.claude-fleet" },
     { path: join(HOME, ".claude/ops"), label: "~/.claude/ops" },
     { path: join(HOME, ".tmux-agents"), label: "~/.tmux-agents" },
     { path: join(HOME, ".local/bin/fleet"), label: "~/.local/bin/fleet", checkExec: true },
@@ -312,7 +312,7 @@ function checkHooks(): CheckResult {
   let totalHooks = 0;
   let validHooks = 0;
   const brokenScripts: string[] = [];
-  const fleetPathPattern = /\.claude-fleet|\.claude-ops|\.tmux-agents/;
+  const fleetPathPattern = /\.claude-fleet|\.claude-fleet|\.tmux-agents/;
 
   for (const [_event, hookGroups] of Object.entries(settings.hooks)) {
     if (!Array.isArray(hookGroups)) continue;
@@ -473,7 +473,7 @@ function checkWatchdog(): CheckResult {
 
   // Check launchd agent (macOS)
   const plistPath = join(HOME, "Library/LaunchAgents/com.tmux-agents.watchdog.plist");
-  const legacyPlist = join(HOME, "Library/LaunchAgents/com.claude-ops.harness-watchdog.plist");
+  const legacyPlist = join(HOME, "Library/LaunchAgents/com.claude-fleet.harness-watchdog.plist");
 
   if (!existsSync(plistPath) && !existsSync(legacyPlist)) {
     return {
@@ -493,7 +493,7 @@ function checkWatchdog(): CheckResult {
   if (result.exitCode !== 0) {
     // Try legacy name
     const legacyResult = Bun.spawnSync(
-      ["launchctl", "list", "com.claude-ops.harness-watchdog"],
+      ["launchctl", "list", "com.claude-fleet.harness-watchdog"],
       { stderr: "pipe" },
     );
     if (legacyResult.exitCode !== 0) {

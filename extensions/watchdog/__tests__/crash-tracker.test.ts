@@ -4,7 +4,7 @@ import { join } from "path";
 
 // Override CRASH_DIR before importing
 const TEST_CRASH_DIR = `/tmp/watchdog-test-crashes-${process.pid}`;
-process.env.CLAUDE_OPS_DIR = `/tmp/watchdog-test-ops-${process.pid}`;
+process.env.CLAUDE_FLEET_DIR = `/tmp/watchdog-test-ops-${process.pid}`;
 
 import { incrementCrashCount, readCrashTimestamps, isCrashLooped, markCrashLoop, clearCrashLoop, clearCrashData } from "../src/crash-tracker";
 
@@ -14,14 +14,14 @@ describe("crash-tracker", () => {
     rmSync(TEST_CRASH_DIR, { recursive: true, force: true });
     mkdirSync(TEST_CRASH_DIR, { recursive: true });
     // Also create the parent dir structure that crash-tracker expects
-    const crashDir = join(process.env.CLAUDE_OPS_DIR!, "state/watchdog-crashes");
+    const crashDir = join(process.env.CLAUDE_FLEET_DIR!, "state/watchdog-crashes");
     rmSync(crashDir, { recursive: true, force: true });
     mkdirSync(crashDir, { recursive: true });
   });
 
   afterEach(() => {
     rmSync(TEST_CRASH_DIR, { recursive: true, force: true });
-    rmSync(process.env.CLAUDE_OPS_DIR!, { recursive: true, force: true });
+    rmSync(process.env.CLAUDE_FLEET_DIR!, { recursive: true, force: true });
   });
 
   test("0 crashes returns 1 after first increment", () => {

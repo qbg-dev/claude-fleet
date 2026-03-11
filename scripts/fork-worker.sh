@@ -16,12 +16,12 @@
 #   --cwd DIR           Launch claude from this directory (used with --no-worktree when create_worker pre-creates worktree + copies session)
 #
 # Example:
-#   bash ~/.claude-ops/scripts/fork-worker.sh %612 abc123def456 --name swagger-audit --assigned-by chief-of-staff --model opus --dangerously-skip-permissions
+#   bash ~/.claude-fleet/scripts/fork-worker.sh %612 abc123def456 --name swagger-audit --assigned-by chief-of-staff --model opus --dangerously-skip-permissions
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLAUDE_OPS_DIR="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
+CLAUDE_FLEET_DIR="${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
 
 PARENT_PANE="${1:-}"
 PARENT_SESSION="${2:-}"
@@ -83,7 +83,7 @@ if [ -n "${TMUX_PANE:-}" ]; then
   if [ -f "$_cwd/.git" ]; then
     _main_project=$(sed 's|gitdir: ||; s|/\.git/worktrees/.*||' "$_cwd/.git" 2>/dev/null || echo "$_cwd")
   fi
-  source "$HOME/.claude-ops/lib/resolve-registry.sh"
+  source "$HOME/.claude-fleet/lib/resolve-registry.sh"
   _REGISTRY=$(resolve_registry "$_main_project")
 
   # Auto-derive report_to from parent pane if not given

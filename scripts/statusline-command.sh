@@ -65,7 +65,7 @@ if [ -n "$dir" ]; then
 	if [ -f "$dir/.git" ]; then
 		_main_project=$(sed 's|gitdir: ||; s|/\.git/worktrees/.*||' "$dir/.git" 2>/dev/null)
 	fi
-	source "$HOME/.claude-ops/lib/resolve-registry.sh" 2>/dev/null
+	source "$HOME/.claude-fleet/lib/resolve-registry.sh" 2>/dev/null
 	_REGISTRY_FILE=$(resolve_registry "$_main_project" 2>/dev/null || echo "$_main_project/.claude/workers/registry.json")
 fi
 
@@ -89,7 +89,7 @@ if [ -n "$_pane_id" ] && [ -f "$_REGISTRY_FILE" ]; then
 		_cur_sid=$(jq -r --arg n "$_reg_worker_name" '.[$n].active_session_id // empty' "$_REGISTRY_FILE" 2>/dev/null)
 		if [ "$_cur_sid" != "$session_id" ]; then
 			(
-				_LOCK_DIR="${HOME}/.claude-ops/state/locks/worker-registry"
+				_LOCK_DIR="${HOME}/.claude-fleet/state/locks/worker-registry"
 				mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
 				_W=0; while ! mkdir "$_LOCK_DIR" 2>/dev/null; do sleep 0.2; _W=$((_W+1)); [ "$_W" -ge 5 ] && exit 0; done
 				_tmp=$(mktemp)
@@ -206,19 +206,11 @@ if [ -f "$SPENDING_FILE" ] && [ -s "$SPENDING_FILE" ]; then
 		' "$SPENDING_FILE" 2>/dev/null || echo "0 0 0"
 	)
 
-	# Probabilistic rotation: 1% chance, only if file > 3000 lines. Prunes > 30 days.
-	if [ $((RANDOM % 100)) -eq 0 ]; then
-		_lc=$(wc -l < "$SPENDING_FILE" 2>/dev/null || echo 0)
-		if [ "${_lc}" -gt 3000 ]; then
-			_cutoff=$((now_epoch - 2592000))
-			jq -R -s --argjson cutoff "$_cutoff" '
-				[split("\n")[] | select(length > 0) | fromjson? |
-				 select(.ts and .cost and .ts >= $cutoff)] |
-				group_by(.sid) | map(max_by(.cost)) | .[]
-			' "$SPENDING_FILE" > "${SPENDING_FILE}.rot.$$" 2>/dev/null && \
-			mv "${SPENDING_FILE}.rot.$$" "$SPENDING_FILE" || \
-			rm -f "${SPENDING_FILE}.rot.$$"
-		fi
+	# Warn if spending file exceeds 1GB (no rotation — data is append-only)
+	_spending_size=$(stat -f%z "$SPENDING_FILE" 2>/dev/null || echo 0)
+	if [ "${_spending_size}" -gt 1073741824 ]; then
+		spending_totals="⚠️ spending.jsonl > 1GB ($((_spending_size / 1048576))MB) — consider pruning${spending_totals:+
+}${spending_totals}"
 	fi
 
 	# Color helper: green < threshold1 < yellow < threshold2 < red

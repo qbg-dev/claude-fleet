@@ -12,10 +12,10 @@ set -uo pipefail
 trap 'echo "{}"; exit 0' ERR
 exec 2>/dev/null  # suppress stderr — Claude Code treats any stderr as hook error
 
-source "$HOME/.claude-ops/lib/pane-resolve.sh"
+source "$HOME/.claude-fleet/lib/pane-resolve.sh"
 
 # Source event bus if available
-[ -f "$HOME/.claude-ops/lib/event-bus.sh" ] && source "$HOME/.claude-ops/lib/event-bus.sh"
+[ -f "$HOME/.claude-fleet/lib/event-bus.sh" ] && source "$HOME/.claude-fleet/lib/event-bus.sh"
 
 INPUT=$(cat)
 hook_parse_input "$INPUT"

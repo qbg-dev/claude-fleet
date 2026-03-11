@@ -42,15 +42,15 @@ function getArtifacts(): Artifact[] {
     // LaunchAgents
     {
       label: "Watchdog launchd agent",
-      path: join(HOME, "Library/LaunchAgents/com.claude-ops.harness-watchdog.plist"),
+      path: join(HOME, "Library/LaunchAgents/com.claude-fleet.harness-watchdog.plist"),
       kind: "launchd",
-      launchdLabel: "com.claude-ops.harness-watchdog",
+      launchdLabel: "com.claude-fleet.harness-watchdog",
     },
     {
       label: "Fleet relay launchd agent",
-      path: join(HOME, "Library/LaunchAgents/com.claude-ops.fleet-relay.plist"),
+      path: join(HOME, "Library/LaunchAgents/com.claude-fleet.fleet-relay.plist"),
       kind: "launchd",
-      launchdLabel: "com.claude-ops.fleet-relay",
+      launchdLabel: "com.claude-fleet.fleet-relay",
     },
 
     // Symlinks
@@ -60,8 +60,8 @@ function getArtifacts(): Artifact[] {
       kind: "symlink",
     },
     {
-      label: "~/.claude-ops",
-      path: join(HOME, ".claude-ops"),
+      label: "~/.claude-fleet",
+      path: join(HOME, ".claude-fleet"),
       kind: "symlink",
     },
     {
@@ -167,7 +167,7 @@ function settingsHasFleetEntries(): { hasMcp: boolean; hasHooks: boolean } {
     const hasMcp = !!settings.mcpServers?.["worker-fleet"];
 
     let hasHooks = false;
-    const fleetPatterns = ["/.claude-fleet/", "/.claude-ops/", "/.claude-hooks/", "/.tmux-agents/"];
+    const fleetPatterns = ["/.claude-fleet/", "/.claude-fleet/", "/.claude-hooks/", "/.tmux-agents/"];
     for (const key of Object.keys(settings.hooks || {})) {
       const hookArray = settings.hooks[key];
       if (!Array.isArray(hookArray)) continue;
@@ -215,7 +215,7 @@ function cleanSettings(dryRun: boolean): void {
   let modified = false;
   // Match both tilde and expanded paths
   const fleetPatterns = [
-    "/.claude-fleet/", "/.claude-ops/", "/.claude-hooks/", "/.tmux-agents/",
+    "/.claude-fleet/", "/.claude-fleet/", "/.claude-hooks/", "/.tmux-agents/",
   ];
 
   // Remove mcpServers["worker-fleet"]

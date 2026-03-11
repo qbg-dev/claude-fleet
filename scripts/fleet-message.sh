@@ -53,8 +53,8 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd
 
 # ── Route: user escalation → desktop notification ────────────
 if [ "$TO" = "user" ]; then
-  CLAUDE_OPS="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
-  NOTIFY="$CLAUDE_OPS/bin/notify"
+  CLAUDE_FLEET="${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
+  NOTIFY="$CLAUDE_FLEET/bin/notify"
   if [ -x "$NOTIFY" ]; then
     "$NOTIFY" --no-triage "[$FROM] $SUMMARY" "Deep Review" 2>/dev/null || true
   fi

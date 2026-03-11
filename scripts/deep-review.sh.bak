@@ -31,13 +31,13 @@
 #   HEAD (default when no --content) → current commit
 set -euo pipefail
 
-CLAUDE_OPS="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
+CLAUDE_FLEET="${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
 # Ensure dr-context binary is ad-hoc signed (macOS kills unsigned binaries)
-DR_CONTEXT_BIN="$CLAUDE_OPS/bin/dr-context"
+DR_CONTEXT_BIN="$CLAUDE_FLEET/bin/dr-context"
 if [ -x "$DR_CONTEXT_BIN" ] && ! codesign -v "$DR_CONTEXT_BIN" 2>/dev/null; then
   codesign -s - "$DR_CONTEXT_BIN" 2>/dev/null || true
 fi
-TEMPLATE_DIR="$CLAUDE_OPS/templates/deep-review"
+TEMPLATE_DIR="$CLAUDE_FLEET/templates/deep-review"
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 PASSES_PER_FOCUS=2
 WORKER_MODEL="${DEEP_REVIEW_WORKER_MODEL:-opus}"
@@ -56,7 +56,7 @@ VERIFY_ROLES=""
 V1_MODE=false
 MAX_WORKERS=""
 NO_WORKTREE=false
-VALIDATOR="$CLAUDE_OPS/scripts/validate-findings.sh"
+VALIDATOR="$CLAUDE_FLEET/scripts/validate-findings.sh"
 
 # ── Attack vectors per specialization ──────────────────────
 get_attack_vectors() {
@@ -701,17 +701,17 @@ if $HAS_DIFF && ! $NO_CONTEXT; then
     # 2. Dependency graph — imports and callers
     echo "  Building dependency graph..."
     DEP_FILE="$SESSION_DIR/dep-graph.json"
-    "$CLAUDE_OPS/bin/dr-context" dep-graph "$PROJECT_ROOT" "$CHANGED_FILES" "$DEP_FILE"
+    "$CLAUDE_FLEET/bin/dr-context" dep-graph "$PROJECT_ROOT" "$CHANGED_FILES" "$DEP_FILE"
 
     # 3. Test coverage — check for test file siblings
     echo "  Checking test coverage..."
     TEST_FILE="$SESSION_DIR/test-coverage.json"
-    "$CLAUDE_OPS/bin/dr-context" test-coverage "$PROJECT_ROOT" "$CHANGED_FILES" "$TEST_FILE"
+    "$CLAUDE_FLEET/bin/dr-context" test-coverage "$PROJECT_ROOT" "$CHANGED_FILES" "$TEST_FILE"
 
     # 4. Blame context — classify lines as new vs pre-existing
     echo "  Building blame context..."
     BLAME_FILE="$SESSION_DIR/blame-context.json"
-    "$CLAUDE_OPS/bin/dr-context" blame-context "$PROJECT_ROOT" "$MATERIAL_FILE" "$BLAME_FILE"
+    "$CLAUDE_FLEET/bin/dr-context" blame-context "$PROJECT_ROOT" "$MATERIAL_FILE" "$BLAME_FILE"
 
     echo "  Context gathering complete."
   ) || echo "  WARN: Context pre-pass had errors (non-fatal, continuing)"
@@ -721,7 +721,7 @@ fi
 # ── Split material + generate randomized orderings ───────────
 echo "Generating $TOTAL_WORKERS randomized orderings..."
 
-"$CLAUDE_OPS/bin/dr-context" shuffle "$MATERIAL_FILE" "$SESSION_DIR" "$TOTAL_WORKERS"
+"$CLAUDE_FLEET/bin/dr-context" shuffle "$MATERIAL_FILE" "$SESSION_DIR" "$TOTAL_WORKERS"
 
 # ── Build focus assignment table ─────────────────────────────
 FOCUS_LIST_CSV=$(IFS=','; echo "${FOCUS_AREAS[*]}")

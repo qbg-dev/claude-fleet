@@ -13,7 +13,7 @@ interface CrashData {
 /** Resolve crash dir lazily (env may not be set at import time in tests) */
 function getCrashDir(): string {
   const HOME = process.env.HOME || "/tmp";
-  const opsDir = process.env.CLAUDE_OPS_DIR || process.env.TMUX_AGENTS_DIR || join(HOME, ".tmux-agents");
+  const opsDir = process.env.CLAUDE_FLEET_DIR || join(HOME, ".claude-fleet");
   return join(opsDir, "state", "watchdog-crashes");
 }
 

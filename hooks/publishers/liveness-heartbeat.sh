@@ -3,13 +3,13 @@
 # Registered on PostToolUse + UserPromptSubmit so the watchdog has a
 # reliable "last activity" signal without parsing scrollback.
 #
-# File: ~/.claude-ops/state/watchdog-runtime/{worker}/liveness
+# File: ~/.claude-fleet/state/watchdog-runtime/{worker}/liveness
 # Contains: epoch timestamp of last activity
 
 WORKER="${WORKER_NAME:-}"
 [ -z "$WORKER" ] && exit 0
 
-RUNTIME_DIR="${HOME}/.claude-ops/state/watchdog-runtime/${WORKER}"
+RUNTIME_DIR="${HOME}/.claude-fleet/state/watchdog-runtime/${WORKER}"
 mkdir -p "$RUNTIME_DIR" 2>/dev/null || true
 
 # Write epoch + optional subagent identity

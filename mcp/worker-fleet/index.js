@@ -6585,7 +6585,7 @@ function defaultsPath() {
 var HOME2, FLEET_DIR2, FLEET_DATA, _mailConfig, FLEET_MAIL_URL2, FLEET_MAIL_TOKEN;
 var init_paths = __esm(() => {
   HOME2 = process.env.HOME || process.env.USERPROFILE || "/tmp";
-  FLEET_DIR2 = process.env.CLAUDE_FLEET_DIR || process.env.CLAUDE_OPS_DIR || join12(HOME2, ".claude-fleet");
+  FLEET_DIR2 = process.env.CLAUDE_FLEET_DIR || process.env.CLAUDE_FLEET_DIR || join12(HOME2, ".claude-fleet");
   FLEET_DATA = join12(HOME2, ".claude", "fleet");
   _mailConfig = resolveMailConfig();
   FLEET_MAIL_URL2 = _mailConfig.url;
@@ -6622,7 +6622,7 @@ var HOME3, FLEET_ROOT, REGISTRY_LOCK_PATH;
 var init_io = __esm(() => {
   init_lock_utils();
   HOME3 = process.env.HOME || process.env.USERPROFILE || "/tmp";
-  FLEET_ROOT = process.env.CLAUDE_FLEET_DIR || process.env.CLAUDE_OPS_DIR || join13(HOME3, ".claude-fleet");
+  FLEET_ROOT = process.env.CLAUDE_FLEET_DIR || process.env.CLAUDE_FLEET_DIR || join13(HOME3, ".claude-fleet");
   REGISTRY_LOCK_PATH = join13(FLEET_ROOT, "state", "locks", "worker-registry");
 });
 
@@ -20448,12 +20448,12 @@ import { execSync } from "child_process";
 import { join, basename } from "path";
 var HOME = process.env.HOME;
 var PROJECT_ROOT = process.env.PROJECT_ROOT || process.cwd();
-var CLAUDE_OPS = process.env.TMUX_AGENTS_DIR || process.env.CLAUDE_OPS_DIR || join(HOME, ".tmux-agents");
+var CLAUDE_FLEET = process.env.TMUX_AGENTS_DIR || process.env.CLAUDE_FLEET_DIR || join(HOME, ".tmux-agents");
 var WORKERS_DIR = join(PROJECT_ROOT, ".claude/workers");
 function _setWorkersDir(dir) {
   WORKERS_DIR = dir;
 }
-var HARNESS_LOCK_DIR = join(CLAUDE_OPS, "state/locks");
+var HARNESS_LOCK_DIR = join(CLAUDE_FLEET, "state/locks");
 function resolveProjectName() {
   return basename(PROJECT_ROOT).replace(/-w-.*$/, "");
 }
@@ -21154,7 +21154,7 @@ function tmuxSendMessage(paneId, text) {
     setTimeout(() => {
       try {
         const bufName2 = `force-${Date.now()}-${process.pid}`;
-        const tmpDir = join4(HOME, ".claude-ops/tmp");
+        const tmpDir = join4(HOME, ".claude-fleet/tmp");
         if (!existsSync3(tmpDir))
           mkdirSync4(tmpDir, { recursive: true });
         const tmpFile2 = join4(tmpDir, `${bufName2}.txt`);
@@ -21177,9 +21177,9 @@ function tmuxSendMessage(paneId, text) {
     return;
   }
   const bufName = `msg-${paneId.replace("%", "")}-${Date.now()}`;
-  const tmpFile = join4(HOME, `.claude-ops/tmp/${bufName}.txt`);
+  const tmpFile = join4(HOME, `.claude-fleet/tmp/${bufName}.txt`);
   try {
-    const tmpDir = join4(HOME, ".claude-ops/tmp");
+    const tmpDir = join4(HOME, ".claude-fleet/tmp");
     if (!existsSync3(tmpDir))
       mkdirSync4(tmpDir, { recursive: true });
     writeFileSync3(tmpFile, text);
@@ -21838,7 +21838,7 @@ ${new Date().toISOString()}
 `;
       });
       try {
-        const cacheDir = join7(process.env.HOME || "/tmp", ".claude-ops/state/harness-runtime/worker", targetName);
+        const cacheDir = join7(process.env.HOME || "/tmp", ".claude-fleet/state/harness-runtime/worker", targetName);
         if (!existsSync5(cacheDir))
           mkdirSync6(cacheDir, { recursive: true });
         writeFileSync5(join7(cacheDir, "config-cache.json"), stateJson);
@@ -21851,7 +21851,7 @@ ${new Date().toISOString()}
           channel: "worker-fleet-mcp",
           updated_by: WORKER_NAME
         });
-        execSync5(`source "${CLAUDE_OPS}/lib/event-bus.sh" && bus_publish "agent.state-changed" '${payload.replace(/'/g, "'\\''")}'`, { cwd: PROJECT_ROOT, timeout: 5000, encoding: "utf-8", shell: "/bin/bash" });
+        execSync5(`source "${CLAUDE_FLEET}/lib/event-bus.sh" && bus_publish "agent.state-changed" '${payload.replace(/'/g, "'\\''")}'`, { cwd: PROJECT_ROOT, timeout: 5000, encoding: "utf-8", shell: "/bin/bash" });
       } catch {}
       const prefix = targetName !== WORKER_NAME ? `${targetName}.` : "state.";
       return withLint({ content: [{ type: "text", text: `Updated ${prefix}${key} = ${JSON.stringify(value)}` }] });
@@ -22068,7 +22068,7 @@ ${pending.length} blocking hook(s) remaining.`
     }
     if (showStatic) {
       try {
-        const manifestPath = join9(CLAUDE_OPS, "hooks", "manifest.json");
+        const manifestPath = join9(CLAUDE_FLEET, "hooks", "manifest.json");
         const manifest = JSON.parse(readFileSync7(manifestPath, "utf-8"));
         const staticHooks = (manifest.hooks || []).filter((h) => h.id && h.event && (!event || h.event === event) && !h._comment);
         if (staticHooks.length > 0) {
@@ -22221,7 +22221,7 @@ import { readFileSync as readFileSync8, existsSync as existsSync7 } from "fs";
 import { join as join10 } from "path";
 function loadSeedContext(branch, missionAuthority, workerName) {
   const name = workerName || WORKER_NAME;
-  const tmplPath = join10(CLAUDE_OPS, "templates/seed-context.md");
+  const tmplPath = join10(CLAUDE_FLEET, "templates/seed-context.md");
   try {
     return readFileSync8(tmplPath, "utf-8").replace(/\{\{WORKER_NAME\}\}/g, name).replace(/\{\{BRANCH\}\}/g, branch).replace(/\{\{MISSION_AUTHORITY\}\}/g, missionAuthority);
   } catch {
@@ -22251,8 +22251,8 @@ ${JSON.stringify(entry.custom, null, 2)}
 These values were saved by your previous instance via \`update_state()\`. Use them to resume context.`;
     }
     if (entry?.custom?.proposal_required) {
-      const instrPath = join10(CLAUDE_OPS, "templates/proposal-instructions.md");
-      const tmplPath = join10(CLAUDE_OPS, "templates/proposal-template.html");
+      const instrPath = join10(CLAUDE_FLEET, "templates/proposal-instructions.md");
+      const tmplPath = join10(CLAUDE_FLEET, "templates/proposal-template.html");
       try {
         let instrContent = readFileSync8(instrPath, "utf-8");
         instrContent = instrContent.replace(/\{\{WORKER_NAME\}\}/g, effectiveName).replace(/\{\{MISSION_AUTHORITY\}\}/g, _missionAuth).replace(/\{\{TEMPLATE_PATH\}\}/g, tmplPath);
@@ -22889,7 +22889,7 @@ Facts: ${(key_facts || []).length} saved`
 import { readFileSync as readFileSync12, writeFileSync as writeFileSync10, appendFileSync as appendFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync10, lstatSync, rmSync as rmSync4, unlinkSync as unlinkSync2, symlinkSync as symlinkSync3, copyFileSync as copyFileSync3, cpSync } from "fs";
 import { join as join15 } from "path";
 import { execSync as execSync7, spawnSync as spawnSync3 } from "child_process";
-var TEMPLATE_TYPES_DIR = join15(CLAUDE_OPS, "templates/flat-worker/types");
+var TEMPLATE_TYPES_DIR = join15(CLAUDE_FLEET, "templates/flat-worker/types");
 function loadTypeTemplate(type) {
   const typeDir = join15(TEMPLATE_TYPES_DIR, type);
   const result = {};
@@ -23195,7 +23195,7 @@ async function handleFleetCreate(params) {
   Launch: SKIPPED \u2014 pane creation failed. Run manually.`;
             } else {
               registerPane(childPaneId);
-              const forkScript = join15(CLAUDE_OPS, "scripts/fork-worker.sh");
+              const forkScript = join15(CLAUDE_FLEET, "scripts/fork-worker.sh");
               const workerModel = selectedModel || "opus";
               const workerDir2 = join15(PROJECT_ROOT, ".claude/workers", name);
               const cwdFlag = worktreeReady ? `--cwd ${worktreeDir}` : "";

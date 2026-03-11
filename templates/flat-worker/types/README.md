@@ -19,7 +19,7 @@ get_worker_template(type="merger")      # Preview template
 create_worker(name="my-merger", type="merger", mission="# My Merger\n...")
 
 # Manual
-cp -r ~/.claude-ops/templates/flat-worker/types/optimizer/ .claude/workers/my-worker/
+cp -r ~/.claude-fleet/templates/flat-worker/types/optimizer/ .claude/workers/my-worker/
 # Fill in {{placeholders}} in mission.md
 ```
 

@@ -7,7 +7,7 @@ import { join } from "path";
 import type { WatchdogConfig } from "./types";
 
 const HOME = process.env.HOME || "/tmp";
-const FLEET_DIR = process.env.CLAUDE_FLEET_DIR || process.env.CLAUDE_OPS_DIR || join(HOME, ".claude-fleet");
+const FLEET_DIR = process.env.CLAUDE_FLEET_DIR || join(HOME, ".claude-fleet");
 
 const HARDCODED: WatchdogConfig = {
   checkInterval: 30,
@@ -71,8 +71,8 @@ function envInt(key: string): number | undefined {
 
 // ── Path Constants ──
 
-export const CLAUDE_OPS_DIR = process.env.CLAUDE_OPS_DIR || process.env.TMUX_AGENTS_DIR || join(HOME, ".tmux-agents");
-export const STATE_DIR = join(CLAUDE_OPS_DIR, "state");
+export const CLAUDE_FLEET_DIR = process.env.CLAUDE_FLEET_DIR || join(HOME, ".claude-fleet");
+export const STATE_DIR = join(CLAUDE_FLEET_DIR, "state");
 export const CRASH_DIR = join(STATE_DIR, "watchdog-crashes");
 export const RUNTIME_DIR = join(STATE_DIR, "watchdog-runtime");
 export const LOG_FILE = process.env.WATCHDOG_LOG || join(STATE_DIR, "watchdog.log");

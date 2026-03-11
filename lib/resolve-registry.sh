@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # resolve-registry.sh — Find the canonical registry.json path.
-# Usage: source ~/.claude-ops/lib/resolve-registry.sh
+# Usage: source ~/.claude-fleet/lib/resolve-registry.sh
 #        REGISTRY=$(resolve_registry "$PROJECT_ROOT")
 
 resolve_registry() {

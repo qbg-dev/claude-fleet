@@ -10,7 +10,6 @@ const HOME = process.env.HOME || process.env.USERPROFILE || "/tmp";
 /** Infrastructure: scripts, hooks, MCP server, templates */
 export const FLEET_DIR =
   process.env.CLAUDE_FLEET_DIR ||
-  process.env.CLAUDE_OPS_DIR ||
   join(HOME, ".claude-fleet");
 
 /** Data: per-project worker configs, states */

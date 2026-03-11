@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to claude-fleet (formerly claude-ops) are documented here.
+All notable changes to claude-fleet (formerly claude-fleet) are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
@@ -48,10 +48,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Liveness detection** in `fleet ls` — cross-references tmux panes to detect dead workers
 
 ### Changed
-- **Renamed** `claude-ops` → `claude-fleet` (GitHub repo, symlinks, env vars, docs)
+- **Renamed** `claude-fleet` → `claude-fleet` (GitHub repo, symlinks, env vars, docs)
 - **MCP server** runs from TypeScript source via `bun run index.ts` instead of compiled `node index.js`
 - **Storage model** migrated from monolithic `registry.json` to per-worker directories
-- **`CLAUDE_OPS_DIR`** → `CLAUDE_FLEET_DIR` (both still work via `resolve-deps.sh` compat shim)
+- **`CLAUDE_FLEET_DIR`** → `CLAUDE_FLEET_DIR` (both still work via `resolve-deps.sh` compat shim)
 - **Settings.json** hook paths updated from `~/.claude/ops/` to `~/.claude-fleet/`
 - **README.md** rewritten — positions as lightweight tmux-based Claude Code orchestration platform
 - **`docs/getting-started.md`** rewritten for `fleet` CLI workflow
@@ -68,14 +68,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - **oss-steward harness** — dogfooding demo: an autonomous agent manages this repo's own docs (`feat: scaffold oss-steward harness`)
 - **Notification event type** — `notification` events go through the bus as side-effects, triggering `terminal-notifier` via `notify_human_agent.sh` (`feat(bus): notification event type`)
-- **README.md + install.sh** — full pitch, quick-start, architecture diagram, feature comparison table, curl-pipe-bash installer (`feat: prepare claude-ops for open-source release`)
+- **README.md + install.sh** — full pitch, quick-start, architecture diagram, feature comparison table, curl-pipe-bash installer (`feat: prepare claude-fleet for open-source release`)
 
 ### Changed
 - **Portability fix** — all hardcoded `/Users/wz/` paths replaced with `$HOME` or dynamic resolution (`fix: remove all hardcoded /Users/wz/ paths for portability`)
 
 ### Security
 - **Tool policy gate hardened** — oss-steward permissions sandboxed to repo only + Nexus; red-team fixes applied (`security: harden tool-policy-gate + oss-steward permissions`)
-- **oss-steward permissions tightened** — write access restricted to `~/.claude-ops/` only (`chore(oss-steward): tighten permissions`)
+- **oss-steward permissions tightened** — write access restricted to `~/.claude-fleet/` only (`chore(oss-steward): tighten permissions`)
 
 ---
 

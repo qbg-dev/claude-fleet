@@ -11,8 +11,8 @@ exec 2>/dev/null
 
 INPUT=$(cat)
 
-source "$HOME/.claude-ops/lib/event-bus.sh" 2>/dev/null || { echo '{}'; exit 0; }
-source "$HOME/.claude-ops/lib/pane-resolve.sh" 2>/dev/null || true
+source "$HOME/.claude-fleet/lib/event-bus.sh" 2>/dev/null || { echo '{}'; exit 0; }
+source "$HOME/.claude-fleet/lib/pane-resolve.sh" 2>/dev/null || true
 
 # Extract fields from hook input (works for ALL events)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")

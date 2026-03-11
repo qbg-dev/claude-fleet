@@ -157,7 +157,7 @@ Display the report summary in your output.
 2. Desktop: `notify "Deep review complete: $(grep -c '###' {{REPORT_FILE}} 2>/dev/null || echo 0) findings in {{REPORT_FILE}}" "Deep Review" "file://{{REPORT_FILE}}"`
 3. Fleet message (if `{{NOTIFY_TARGET}}` non-empty):
 ```bash
-bash ~/.claude-ops/scripts/fleet-message.sh \
+bash ~/.claude-fleet/scripts/fleet-message.sh \
   --to "{{NOTIFY_TARGET}}" --from "deep-review" --fyi \
   --summary "Deep review complete: N fixed, N content, N design, N suggestions" \
   --content "Report: {{REPORT_FILE}} | Session: {{SESSION_ID}} | tmux: {{REVIEW_SESSION}}

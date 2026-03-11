@@ -14,7 +14,7 @@ import { z } from "zod";
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, lstatSync, rmSync, unlinkSync, symlinkSync, copyFileSync, cpSync } from "fs";
 import { join } from "path";
 import { execSync, spawnSync } from "child_process";
-import { HOME, PROJECT_ROOT, CLAUDE_OPS, WORKERS_DIR, FLEET_DIR, WORKER_NAME, FLEET_MAIL_PROJECT, resolveProjectName } from "../config";
+import { HOME, PROJECT_ROOT, CLAUDE_FLEET, WORKERS_DIR, FLEET_DIR, WORKER_NAME, FLEET_MAIL_PROJECT, resolveProjectName } from "../config";
 import {
   readRegistry, getWorkerEntry, withRegistryLocked, ensureWorkerInRegistry,
   readFleetConfig, readWorkerConfig, writeWorkerConfig, readWorkerState, writeWorkerState,
@@ -43,7 +43,7 @@ interface CreateWorkerInput {
   proposal_required?: boolean;
 }
 
-const TEMPLATE_TYPES_DIR = join(CLAUDE_OPS, "templates/flat-worker/types");
+const TEMPLATE_TYPES_DIR = join(CLAUDE_FLEET, "templates/flat-worker/types");
 
 function loadTypeTemplate(type: WorkerType): { model?: string; sleep_duration?: number | null; disallowedTools?: string[]; permission_mode?: string } {
   const typeDir = join(TEMPLATE_TYPES_DIR, type);
@@ -451,7 +451,7 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
               launchInfo = `\n  Launch: SKIPPED — pane creation failed. Run manually.`;
             } else {
               registerPane(childPaneId);
-              const forkScript = join(CLAUDE_OPS, "scripts/fork-worker.sh");
+              const forkScript = join(CLAUDE_FLEET, "scripts/fork-worker.sh");
               const workerModel = selectedModel || "opus";
               const workerDir = join(PROJECT_ROOT, ".claude/workers", name);
               const cwdFlag = worktreeReady ? `--cwd ${worktreeDir}` : "";

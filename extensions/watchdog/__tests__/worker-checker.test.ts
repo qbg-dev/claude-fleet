@@ -4,7 +4,7 @@ import { checkWorker, checkWorkerAsync, parseIsoEpoch } from "../src/worker-chec
 import { makeMockEffects, makeSnapshot, makeConfig } from "./fixtures";
 
 // Override crash dir for tests
-process.env.CLAUDE_OPS_DIR = `/tmp/watchdog-test-ops-${process.pid}`;
+process.env.CLAUDE_FLEET_DIR = `/tmp/watchdog-test-ops-${process.pid}`;
 
 describe("parseIsoEpoch", () => {
   test("parses standard ISO string", () => {
@@ -30,12 +30,12 @@ describe("parseIsoEpoch", () => {
 
 describe("checkWorker — skip conditions", () => {
   beforeEach(() => {
-    const crashDir = `${process.env.CLAUDE_OPS_DIR}/state/watchdog-crashes`;
+    const crashDir = `${process.env.CLAUDE_FLEET_DIR}/state/watchdog-crashes`;
     rmSync(crashDir, { recursive: true, force: true });
     mkdirSync(crashDir, { recursive: true });
   });
   afterEach(() => {
-    rmSync(process.env.CLAUDE_OPS_DIR!, { recursive: true, force: true });
+    rmSync(process.env.CLAUDE_FLEET_DIR!, { recursive: true, force: true });
   });
 
   test("skips standby workers", () => {
@@ -99,12 +99,12 @@ describe("checkWorker — skip conditions", () => {
 
 describe("checkWorker — sleeping", () => {
   beforeEach(() => {
-    const crashDir = `${process.env.CLAUDE_OPS_DIR}/state/watchdog-crashes`;
+    const crashDir = `${process.env.CLAUDE_FLEET_DIR}/state/watchdog-crashes`;
     rmSync(crashDir, { recursive: true, force: true });
     mkdirSync(crashDir, { recursive: true });
   });
   afterEach(() => {
-    rmSync(process.env.CLAUDE_OPS_DIR!, { recursive: true, force: true });
+    rmSync(process.env.CLAUDE_FLEET_DIR!, { recursive: true, force: true });
   });
 
   test("sleeping with future timer → skip", () => {
@@ -150,12 +150,12 @@ describe("checkWorker — sleeping", () => {
 
 describe("checkWorker — pane alive", () => {
   beforeEach(() => {
-    const crashDir = `${process.env.CLAUDE_OPS_DIR}/state/watchdog-crashes`;
+    const crashDir = `${process.env.CLAUDE_FLEET_DIR}/state/watchdog-crashes`;
     rmSync(crashDir, { recursive: true, force: true });
     mkdirSync(crashDir, { recursive: true });
   });
   afterEach(() => {
-    rmSync(process.env.CLAUDE_OPS_DIR!, { recursive: true, force: true });
+    rmSync(process.env.CLAUDE_FLEET_DIR!, { recursive: true, force: true });
   });
 
   test("healthy worker with recent liveness → ok", () => {
@@ -375,12 +375,12 @@ describe("checkWorker — pane alive", () => {
 
 describe("checkWorker — pane dead", () => {
   beforeEach(() => {
-    const crashDir = `${process.env.CLAUDE_OPS_DIR}/state/watchdog-crashes`;
+    const crashDir = `${process.env.CLAUDE_FLEET_DIR}/state/watchdog-crashes`;
     rmSync(crashDir, { recursive: true, force: true });
     mkdirSync(crashDir, { recursive: true });
   });
   afterEach(() => {
-    rmSync(process.env.CLAUDE_OPS_DIR!, { recursive: true, force: true });
+    rmSync(process.env.CLAUDE_FLEET_DIR!, { recursive: true, force: true });
   });
 
   test("non-perpetual dead pane → move-inactive", () => {
@@ -429,12 +429,12 @@ describe("checkWorker — pane dead", () => {
 
 describe("checkWorkerAsync — early wake", () => {
   beforeEach(() => {
-    const crashDir = `${process.env.CLAUDE_OPS_DIR}/state/watchdog-crashes`;
+    const crashDir = `${process.env.CLAUDE_FLEET_DIR}/state/watchdog-crashes`;
     rmSync(crashDir, { recursive: true, force: true });
     mkdirSync(crashDir, { recursive: true });
   });
   afterEach(() => {
-    rmSync(process.env.CLAUDE_OPS_DIR!, { recursive: true, force: true });
+    rmSync(process.env.CLAUDE_FLEET_DIR!, { recursive: true, force: true });
   });
 
   test("sleeping worker with unread mail → fleet-start (early wake)", async () => {

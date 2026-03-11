@@ -32,7 +32,7 @@ if [[ "$_PROJ_ROOT" == *-w-* ]]; then
 fi
 [ -z "$_PROJ_ROOT" ] && exit 0
 
-source "$HOME/.claude-ops/lib/resolve-registry.sh"
+source "$HOME/.claude-fleet/lib/resolve-registry.sh"
 REGISTRY=$(resolve_registry "$_PROJ_ROOT")
 [ -f "$REGISTRY" ] || exit 0
 
@@ -41,7 +41,7 @@ EXISTING=$(jq -r --arg n "$WORKER_NAME" '.[$n].session_id // ""' "$REGISTRY" 2>/
 [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ] && [ "$EXISTING" != "" ] && exit 0
 
 # Write session_id to registry.json
-_LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-ops/state/locks}/worker-registry"
+_LOCK_DIR="${HARNESS_LOCK_DIR:-${HOME}/.claude-fleet/state/locks}/worker-registry"
 mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
 _WAIT=0
 while ! mkdir "$_LOCK_DIR" 2>/dev/null; do

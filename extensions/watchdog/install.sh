@@ -3,7 +3,7 @@
 # Part of tmux-agents fleet. Monitors workers, respawns on crash.
 set -euo pipefail
 
-FLEET_DIR="${TMUX_AGENTS_DIR:-${CLAUDE_OPS_DIR:-$HOME/.tmux-agents}}"
+FLEET_DIR="${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
 WATCHDOG_SCRIPT="$FLEET_DIR/extensions/watchdog/src/watchdog.ts"
 STATE_DIR="$FLEET_DIR/state"
 PLIST_NAME="com.tmux-agents.watchdog"
@@ -14,7 +14,7 @@ BUN_PATH="$(which bun 2>/dev/null || echo /opt/homebrew/bin/bun)"
 
 if [ ! -f "$WATCHDOG_SCRIPT" ]; then
   echo "ERROR: watchdog.ts not found at $WATCHDOG_SCRIPT"
-  echo "Install tmux-agents first: git clone ... ~/.tmux-agents"
+  echo "Install claude-fleet first: git clone ... ~/.claude-fleet"
   exit 1
 fi
 
@@ -44,7 +44,7 @@ cat > "$PLIST_PATH" <<EOPLIST
     <key>HOME</key><string>$HOME</string>
     <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
     <key>PROJECT_ROOT</key><string>$PROJECT_ROOT</string>
-    <key>CLAUDE_OPS_DIR</key><string>$FLEET_DIR</string>
+    <key>CLAUDE_FLEET_DIR</key><string>$FLEET_DIR</string>
   </dict>
   <key>KeepAlive</key><true/>
   <key>RunAtLoad</key><true/>

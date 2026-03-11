@@ -45,12 +45,12 @@ done
 COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "")
 
 # ── Source event bus (handles worktree → main repo resolution) ───
-# Try ~/.claude-ops/lib first, then ~/.claude-ops/lib (same place via symlink)
-_LIB_DIR="${CLAUDE_OPS_DIR:-${CLAUDE_OPS_DIR:-$HOME/.claude-ops}}/lib"
+# Try ~/.claude-fleet/lib first, then ~/.claude-fleet/lib (same place via symlink)
+_LIB_DIR="${CLAUDE_FLEET_DIR:-${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}}/lib"
 if [ -f "$_LIB_DIR/event-bus.sh" ]; then
   source "$_LIB_DIR/event-bus.sh"
-elif [ -f "$HOME/.claude-ops/lib/event-bus.sh" ]; then
-  source "$HOME/.claude-ops/lib/event-bus.sh"
+elif [ -f "$HOME/.claude-fleet/lib/event-bus.sh" ]; then
+  source "$HOME/.claude-fleet/lib/event-bus.sh"
 else
   echo "ERROR: event-bus.sh not found" >&2
   exit 1

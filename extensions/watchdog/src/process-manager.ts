@@ -60,7 +60,7 @@ export function buildAgentCmd(snap: WorkerSnapshot, projectName: string, session
 
 /** Generate seed content for a worker (via bun subprocess) */
 export function generateSeed(workerName: string, projectRoot: string): string {
-  const claudeOps = process.env.CLAUDE_OPS_DIR || process.env.TMUX_AGENTS_DIR || join(process.env.HOME!, ".tmux-agents");
+  const claudeOps = process.env.CLAUDE_FLEET_DIR || join(process.env.HOME!, ".claude-fleet");
   const result = Bun.spawnSync(
     [Bun.which("bun") || "bun", "-e", `
       const { generateSeedContent } = await import(process.env._FLEET_OPS_DIR + '/mcp/worker-fleet/index.ts');

@@ -2,18 +2,18 @@
 # setup-hooks.sh — Install hooks from manifest.json into ~/.claude/settings.json
 #
 # Usage:
-#   bash ~/.claude-ops/scripts/setup-hooks.sh              # Install all hooks
-#   bash ~/.claude-ops/scripts/setup-hooks.sh --dry-run     # Show what would change
-#   bash ~/.claude-ops/scripts/setup-hooks.sh --core-only   # Only required hooks
-#   bash ~/.claude-ops/scripts/setup-hooks.sh --diff        # Show diff vs current
+#   bash ~/.claude-fleet/scripts/setup-hooks.sh              # Install all hooks
+#   bash ~/.claude-fleet/scripts/setup-hooks.sh --dry-run     # Show what would change
+#   bash ~/.claude-fleet/scripts/setup-hooks.sh --core-only   # Only required hooks
+#   bash ~/.claude-fleet/scripts/setup-hooks.sh --diff        # Show diff vs current
 #
 # Reads manifest.json, builds the hooks object, merges into settings.json.
 # Project-specific hooks (category=project) are skipped — they belong in
 # per-project .claude/settings.local.json.
 set -euo pipefail
 
-CLAUDE_OPS_DIR="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
-MANIFEST="$CLAUDE_OPS_DIR/hooks/manifest.json"
+CLAUDE_FLEET_DIR="${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
+MANIFEST="$CLAUDE_FLEET_DIR/hooks/manifest.json"
 SETTINGS="$HOME/.claude/settings.json"
 BACKUP_DIR="$HOME/.claude/settings-backups"
 
@@ -245,7 +245,7 @@ echo ""
 # ── Post-install lint ──
 info "Running lint to verify installation..."
 echo ""
-bash "$CLAUDE_OPS_DIR/scripts/lint-hooks.sh" || {
+bash "$CLAUDE_FLEET_DIR/scripts/lint-hooks.sh" || {
   warn "Lint found issues. Review above and fix manually."
 }
 

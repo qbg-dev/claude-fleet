@@ -2,25 +2,25 @@
   "hooks": [
     {
       "name": "post-commit",
-      "source": "~/.claude-ops/scripts/worker-post-commit-hook.sh",
+      "source": "~/.claude-fleet/scripts/worker-post-commit-hook.sh",
       "project_override": ".claude/scripts/worker-post-commit-hook.sh",
       "target": "worktree"
     },
     {
       "name": "commit-msg",
-      "source": "~/.claude-ops/scripts/worker-commit-msg-hook.sh",
+      "source": "~/.claude-fleet/scripts/worker-commit-msg-hook.sh",
       "project_override": ".claude/scripts/worker-commit-msg-hook.sh",
       "target": "worktree"
     },
     {
       "name": "post-merge",
-      "source": "~/.claude-ops/scripts/worker-post-merge-hook.sh",
+      "source": "~/.claude-fleet/scripts/worker-post-merge-hook.sh",
       "project_override": ".claude/hooks/git/post-merge",
       "target": "main"
     },
     {
       "name": "post-rewrite",
-      "source": "~/.claude-ops/scripts/worker-post-rebase-hook.sh",
+      "source": "~/.claude-fleet/scripts/worker-post-rebase-hook.sh",
       "project_override": ".claude/hooks/git/post-rewrite",
       "target": "worktree"
     }

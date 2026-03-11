@@ -5,7 +5,7 @@
 # Repeat: <echo{N}> repeats content N times (max 10). <echo0> is a no-op.
 
 # Source path helpers (inline if fleet-jq.sh not available)
-HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-fleet/state}"
 _echo_session_dir() {
   local dir="$HARNESS_STATE_DIR/sessions/$1"
   mkdir -p "$dir" 2>/dev/null

@@ -9,8 +9,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-source "$HOME/.claude-ops/lib/fleet-jq.sh" 2>/dev/null || { echo '{}'; exit 0; }
-EVENT_BUS_ENABLED=false source "$HOME/.claude-ops/lib/event-bus.sh" 2>/dev/null || true
+source "$HOME/.claude-fleet/lib/fleet-jq.sh" 2>/dev/null || { echo '{}'; exit 0; }
+EVENT_BUS_ENABLED=false source "$HOME/.claude-fleet/lib/event-bus.sh" 2>/dev/null || true
 
 INPUT=$(cat)
 hook_parse_input "$INPUT"

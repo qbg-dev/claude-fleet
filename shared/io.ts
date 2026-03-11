@@ -14,7 +14,6 @@ import { acquireLock, releaseLock } from "./lock-utils";
 const HOME = process.env.HOME || process.env.USERPROFILE || "/tmp";
 const FLEET_ROOT =
   process.env.CLAUDE_FLEET_DIR ||
-  process.env.CLAUDE_OPS_DIR ||
   join(HOME, ".claude-fleet");
 
 /** Canonical lock path — shared by CLI and MCP server */

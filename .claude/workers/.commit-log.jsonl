@@ -146,3 +146,52 @@
 {"worker":"main","sha":"7cbf948","msg":"fix: watchdog paths use $CLAUDE_OPS_DIR, install.sh uses extensions/","branch":"main","ts":"2026-03-10T18:15:43Z"}
 {"worker":"main","sha":"3e8b3a7","msg":"docs: rewrite README as system hub with package links","branch":"main","ts":"2026-03-10T18:21:49Z"}
 {"worker":"main","sha":"9640938","msg":"fix: auto-start Fleet Mail during setup, fix boring-mail binary/env names","branch":"main","ts":"2026-03-10T18:24:52Z"}
+{"worker":"main","sha":"b9c46c3","msg":"chore: remove ~137 junk files + rewrite CI","branch":"main","ts":"2026-03-10T18:34:00Z"}
+{"worker":"main","sha":"c326d0c","msg":"fix(ci): use relative paths in CLI tests","branch":"main","ts":"2026-03-10T18:35:21Z"}
+{"worker":"main","sha":"52bad7a","msg":"fix(ci): add workspaces for MCP deps resolution","branch":"main","ts":"2026-03-10T18:37:31Z"}
+{"worker":"main","sha":"1a9a1fc","msg":"fix(ci): tolerate seed tests needing tmux-agents templates","branch":"main","ts":"2026-03-10T18:40:02Z"}
+{"worker":"main","sha":"21048ff","msg":"feat: zero-friction fleet setup (Phase 2)","branch":"main","ts":"2026-03-10T18:59:41Z"}
+{"worker":"main","sha":"a053a70","msg":"feat: add fleet nuke, doctor commands + setup installs hooks","branch":"main","ts":"2026-03-10T19:09:39Z"}
+{"worker":"main","sha":"9b8e5f9","msg":"fix: nuke hook cleanup + setup auto-detect repo path","branch":"main","ts":"2026-03-10T19:15:02Z"}
+{"worker":"main","sha":"a9be6bd","msg":"fix: restore dotfiles/shell/ — shell configs were symlinked here","branch":"main","ts":"2026-03-10T21:02:59Z"}
+{"worker":"main","sha":"6f2fa89","msg":"fix: add admin auth header to Fleet Mail account provisioning","branch":"main","ts":"2026-03-10T21:07:12Z"}
+{"worker":"main","sha":"7e6cf88","msg":"fix: MCP in worktrees + watchdog false-positive stuck detection","branch":"main","ts":"2026-03-10T21:34:00Z"}
+{"worker":"main","sha":"a62917c","msg":"chore: compress deep review seed templates 43% (933→535 lines)","branch":"main","ts":"2026-03-10T23:11:10Z"}
+{"worker":"main","sha":"f06f4c8","msg":"fix: auto-create per-project .mcp.json + remove unreliable CPU check","branch":"main","ts":"2026-03-10T23:22:36Z"}
+{"worker":"main","sha":"6c8d7f9","msg":"fix: merge worker-fleet into existing .mcp.json instead of skipping","branch":"main","ts":"2026-03-10T23:39:09Z"}
+{"worker":"main","sha":"fb337ff","msg":"fix: handle 409 conflict in Fleet Mail provisioning + auto-start local boring-mail","branch":"main","ts":"2026-03-10T23:49:29Z"}
+{"worker":"main","sha":"0ca8c64","msg":"feat: support @filename syntax for missions in fleet create/fork","branch":"main","ts":"2026-03-11T00:01:06Z"}
+{"worker":"main","sha":"8b3961d","msg":"feat: fork inherits parent mission by default, mission arg now optional","branch":"main","ts":"2026-03-11T00:01:57Z"}
+{"worker":"main","sha":"6742144","msg":"feat: fork combines parent mission with inline directive","branch":"main","ts":"2026-03-11T00:03:48Z"}
+{"worker":"main","sha":"88cf762","msg":"feat: fork mission instructs worker to synthesize and clarify if ambiguous","branch":"main","ts":"2026-03-11T00:05:14Z"}
+{"worker":"main","sha":"a3a2888","msg":"feat: forked workers rewrite mission.md after synthesizing","branch":"main","ts":"2026-03-11T00:09:03Z"}
+{"worker":"main","sha":"89a08d8","msg":"refactor: remove perpetual field, add deploy-prod deny, per-type hooks","branch":"main","ts":"2026-03-11T00:37:21Z"}
+{"worker":"main","sha":"f6ab5cb","msg":"feat: fix _comment crash in hook scripts, add fleet onboard command","branch":"main","ts":"2026-03-11T00:44:40Z"}
+{"worker":"main","sha":"3345490","msg":"docs: simplify README to 3-command onboarding, update changelog","branch":"main","ts":"2026-03-11T00:50:06Z"}
+{"worker":"main","sha":"5610b63","msg":"feat: single entry point — fleet onboard runs setup, hooks, watchdog, architect","branch":"main","ts":"2026-03-11T00:54:46Z"}
+{"worker":"main","sha":"a2529cb","msg":"fix: watchdog bare-return bug, createWindow index conflict, pre-compact v2 paths","branch":"main","ts":"2026-03-11T02:58:19Z"}
+{"worker":"main","sha":"7bf9184","msg":"fix: prevent seed injection into already-running worker panes","branch":"main","ts":"2026-03-11T03:01:53Z"}
+{"worker":"main","sha":"933f895","msg":"feat: TypeScript watchdog + enhanced fleet doctor","branch":"main","ts":"2026-03-11T03:38:48Z"}
+{"worker":"main","sha":"a2b1d2d","msg":"refactor: migrate bash scripts to TypeScript, remove dead code","branch":"main","ts":"2026-03-11T03:52:24Z"}
+{"worker":"main","sha":"fd6a679","msg":"chore: remove dead bash scripts (-1,397 lines)","branch":"main","ts":"2026-03-11T03:53:38Z"}
+{"worker":"main","sha":"bfbbd7e","msg":"refactor: remove watchdog.sh + init-project.sh, update doctor/setup to TS watchdog","branch":"main","ts":"2026-03-11T03:57:41Z"}
+{"worker":"main","sha":"acce251","msg":"chore: remove 5 more dead bash scripts (-1,419 lines)","branch":"main","ts":"2026-03-11T03:59:51Z"}
+{"worker":"main","sha":"076ef09","msg":"chore: rebuild MCP server bundle","branch":"main","ts":"2026-03-11T04:00:27Z"}
+{"worker":"main","sha":"a2b8d7c","msg":"fix: remove session-logger.sh hook references from settings.json and setup.ts","branch":"main","ts":"2026-03-11T04:02:34Z"}
+{"worker":"main","sha":"f87c3ad","msg":"feat: add fleet tui and fleet layout commands","branch":"main","ts":"2026-03-11T04:02:39Z"}
+{"worker":"main","sha":"5116a01","msg":"fix: remove unused chalk import from tui.ts","branch":"main","ts":"2026-03-11T04:03:39Z"}
+{"worker":"main","sha":"c99e8ac","msg":"feat: restore session-logger.sh for hook event logging","branch":"main","ts":"2026-03-11T04:07:43Z"}
+{"worker":"main","sha":"65bce7a","msg":"feat: add zsh tab-completion for fleet CLI","branch":"main","ts":"2026-03-11T04:18:49Z"}
+{"worker":"main","sha":"7de53fb","msg":"feat: port deep-review.sh to TypeScript/Bun CLI command","branch":"main","ts":"2026-03-11T04:19:08Z"}
+{"worker":"main","sha":"d33ef7f","msg":"fix(deep-review): remove trailing dot from session ID","branch":"main","ts":"2026-03-11T04:22:41Z"}
+{"worker":"main","sha":"99ec297","msg":"refactor: remove setup-agent, sync docs to 21-command CLI","branch":"main","ts":"2026-03-11T04:32:08Z"}
+{"worker":"main","sha":"6f2fa77","msg":"feat: replace deterministic doc check with AI verification gate","branch":"main","ts":"2026-03-11T04:37:37Z"}
+{"worker":"main","sha":"99a7f36","msg":"test - should pass with proof","branch":"main","ts":"2026-03-11T04:37:53Z"}
+{"worker":"main","sha":"ed3f97c","msg":"docs: update key files table with verification infrastructure","branch":"main","ts":"2026-03-11T04:39:00Z"}
+{"worker":"main","sha":"0ee0de5","msg":"refactor: consolidate doc-sync checklist into REVIEW.md","branch":"main","ts":"2026-03-11T04:42:48Z"}
+{"worker":"main","sha":"eb3ff48","msg":"feat: expand REVIEW.md with devops validation (items 17-22) + review.sh scanner","branch":"main","ts":"2026-03-11T05:00:51Z"}
+{"worker":"main","sha":"ec83de5","msg":"docs: add self-evolution section to REVIEW.md","branch":"main","ts":"2026-03-11T05:02:45Z"}
+{"worker":"main","sha":"a14de14","msg":"feat: hook scripts, CLI commands, and per-worker hook storage","branch":"main","ts":"2026-03-11T05:16:05Z"}
+{"worker":"main","sha":"4fb6a74","msg":"feat: extract review system into extensions/review/ plugin","branch":"main","ts":"2026-03-11T05:20:30Z"}
+{"worker":"main","sha":"6a4f977","msg":"test: add 27 tests for review extension","branch":"main","ts":"2026-03-11T05:29:13Z"}
+{"worker":"main","sha":"01b5e26","msg":"feat(hooks): self-evolving agent behaviors (Darwin-Gödel)","branch":"main","ts":"2026-03-11T05:48:53Z"}

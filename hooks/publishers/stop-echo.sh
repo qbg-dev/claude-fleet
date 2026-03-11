@@ -3,7 +3,7 @@
 # Reads JSON state, pops next chain item, injects as block reason
 
 # Source path helpers (inline if fleet-jq.sh not available)
-HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-fleet/state}"
 _echo_session_dir() {
   local dir="$HARNESS_STATE_DIR/sessions/$1"
   mkdir -p "$dir" 2>/dev/null
@@ -79,7 +79,7 @@ else
 fi
 
 # Enrich via snippet_injector.py
-INJECTOR="/Users/wz/.claude-ops/plugins/claude-context-orchestrator/scripts/snippets/snippet_injector.py"
+INJECTOR="/Users/wz/.claude-fleet/plugins/claude-context-orchestrator/scripts/snippets/snippet_injector.py"
 if [[ -f "$INJECTOR" ]]; then
   ENRICHMENT=$(printf '{"prompt": %s, "session_id": "%s"}' \
     "$(printf '%s' "$ITEM" | jq -Rs .)" "$SESSION_ID" \

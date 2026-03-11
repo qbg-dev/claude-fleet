@@ -35,7 +35,7 @@ if [ "$_NO_TRIAGE" -eq 0 ] && [ -n "$_PROJECT_ROOT" ] && [ -d "$_PROJECT_ROOT/.c
   # Auto-detect calling worker from WORKER_NAME env or registry pane_id lookup
   _FROM_WORKER="${WORKER_NAME:-}"
   if [ -z "$_FROM_WORKER" ] && [ -n "${TMUX_PANE:-}" ]; then
-    source "$HOME/.claude-ops/lib/resolve-registry.sh" 2>/dev/null || true
+    source "$HOME/.claude-fleet/lib/resolve-registry.sh" 2>/dev/null || true
     _REG=$(resolve_registry "$_PROJECT_ROOT" 2>/dev/null || echo "$_PROJECT_ROOT/.claude/workers/registry.json")
     if [ -f "$_REG" ]; then
       _FROM_WORKER=$(jq -r --arg pid "$TMUX_PANE" '
@@ -61,7 +61,7 @@ fi
 
 BUS_STREAM="$_PROJECT_ROOT/.claude/bus/stream.jsonl"
 if [ -f "$BUS_STREAM" ] || [ -d "$(dirname "$BUS_STREAM")" ]; then
-  EVENT_BUS_LIB="$HOME/.claude-ops/lib/event-bus.sh"
+  EVENT_BUS_LIB="$HOME/.claude-fleet/lib/event-bus.sh"
   if [ -f "$EVENT_BUS_LIB" ]; then
     # shellcheck source=/dev/null
     source "$EVENT_BUS_LIB" 2>/dev/null

@@ -4,8 +4,7 @@
 #
 # Usage:
 #   source "$(dirname "$0")/../lib/resolve-deps.sh"   # from scripts/
-#   source "$HOME/.claude-fleet/lib/resolve-deps.sh"   # absolute (new)
-#   source "$HOME/.claude-ops/lib/resolve-deps.sh"     # absolute (compat)
+#   source "$HOME/.claude-fleet/lib/resolve-deps.sh"   # absolute
 #
 # After sourcing:
 #   $BUN          — path to bun binary
@@ -15,10 +14,13 @@
 #
 # Also exports resolve_project_root() which finds project root without hardcoded fallbacks.
 
-# ─── Rename compat: CLAUDE_OPS_DIR ↔ CLAUDE_FLEET_DIR ───
-# Both env vars resolve to the same directory. Scripts can use either.
-export CLAUDE_FLEET_DIR="${CLAUDE_FLEET_DIR:-${CLAUDE_OPS_DIR:-$HOME/.claude-fleet}}"
-export CLAUDE_OPS_DIR="${CLAUDE_OPS_DIR:-$CLAUDE_FLEET_DIR}"
+# ─── Path resolution ───
+export CLAUDE_FLEET_DIR="${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
+
+# Backward compat — remove in next version
+if [ -d "$HOME/.claude-ops" ] && [ ! -d "$HOME/.claude-fleet" ]; then
+  export CLAUDE_FLEET_DIR="$HOME/.claude-ops"
+fi
 
 _resolve_bin() {
   local name="$1"

@@ -64,7 +64,7 @@ export function register(program: Command): void {
 }
 
 async function runDeepReview(opts: Record<string, any>): Promise<void> {
-  const claudeOps = process.env.CLAUDE_OPS_DIR || join(HOME, ".claude-ops");
+  const claudeOps = process.env.CLAUDE_FLEET_DIR || join(HOME, ".claude-fleet");
   const templateDir = join(claudeOps, "templates", "deep-review");
   const projectRoot = process.env.PROJECT_ROOT || resolveProjectRoot();
 

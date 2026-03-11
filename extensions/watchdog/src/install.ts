@@ -64,7 +64,7 @@ async function install(): Promise<void> {
   console.log("Installing watchdog launchd agent...");
 
   // Unload old plist if loaded
-  const legacyLabel = "com.claude-ops.harness-watchdog";
+  const legacyLabel = "com.claude-fleet.harness-watchdog";
   for (const label of [PLIST_LABEL, legacyLabel]) {
     Bun.spawnSync(["launchctl", "bootout", `gui/${process.getuid!()}/${label}`], { stderr: "pipe" });
   }

@@ -1,6 +1,6 @@
 /**
  * Tests for worker-fleet MCP server helpers.
- * Run: cd ~/.claude-ops/mcp/worker-fleet && bun test
+ * Run: cd ~/.claude-fleet/mcp/worker-fleet && bun test
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";

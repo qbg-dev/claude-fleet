@@ -11,7 +11,7 @@ import { z } from "zod";
 import { writeFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { execSync } from "child_process";
-import { PROJECT_ROOT, CLAUDE_OPS, WORKERS_DIR, FLEET_DIR, WORKER_NAME } from "../config";
+import { PROJECT_ROOT, CLAUDE_FLEET, WORKERS_DIR, FLEET_DIR, WORKER_NAME } from "../config";
 import { getWorkerEntry, withRegistryLocked, ensureWorkerInRegistry, canUpdateWorker, type RegistryWorkerEntry } from "../registry";
 import { isPaneAlive } from "../tmux";
 import { withLint } from "../diagnostics";
@@ -157,7 +157,7 @@ server.registerTool(
       try {
         const cacheDir = join(
           process.env.HOME || "/tmp",
-          ".claude-ops/state/harness-runtime/worker",
+          ".claude-fleet/state/harness-runtime/worker",
           targetName
         );
         if (!existsSync(cacheDir)) mkdirSync(cacheDir, { recursive: true });
@@ -170,7 +170,7 @@ server.registerTool(
           worker: targetName, key, value, channel: "worker-fleet-mcp", updated_by: WORKER_NAME,
         });
         execSync(
-          `source "${CLAUDE_OPS}/lib/event-bus.sh" && bus_publish "agent.state-changed" "$BUS_PAYLOAD"`,
+          `source "${CLAUDE_FLEET}/lib/event-bus.sh" && bus_publish "agent.state-changed" "$BUS_PAYLOAD"`,
           { cwd: PROJECT_ROOT, timeout: 5000, encoding: "utf-8", shell: "/bin/bash", env: { ...process.env, BUS_PAYLOAD: payload } }
         );
       } catch {}

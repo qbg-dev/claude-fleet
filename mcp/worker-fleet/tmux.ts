@@ -78,7 +78,7 @@ export function tmuxSendMessage(paneId: string, text: string): void {
     setTimeout(() => {
       try {
         const bufName = `force-${Date.now()}-${process.pid}`;
-        const tmpDir = join(HOME, ".claude-ops/tmp");
+        const tmpDir = join(HOME, ".claude-fleet/tmp");
         if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
         const tmpFile = join(tmpDir, `${bufName}.txt`);
         writeFileSync(tmpFile, text);
@@ -98,9 +98,9 @@ export function tmuxSendMessage(paneId: string, text: string): void {
 
   // Pane is idle — deliver immediately via paste-buffer
   const bufName = `msg-${paneId.replace("%", "")}-${Date.now()}`;
-  const tmpFile = join(HOME, `.claude-ops/tmp/${bufName}.txt`);
+  const tmpFile = join(HOME, `.claude-fleet/tmp/${bufName}.txt`);
   try {
-    const tmpDir = join(HOME, ".claude-ops/tmp");
+    const tmpDir = join(HOME, ".claude-fleet/tmp");
     if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
     writeFileSync(tmpFile, text);
     spawnSync("tmux", ["load-buffer", "-b", bufName, tmpFile], { timeout: 5000 });

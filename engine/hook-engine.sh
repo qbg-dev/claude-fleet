@@ -148,7 +148,7 @@ _run_hook_script() {
   # Permission scan: re-check denyList at execution time
   # Source fleet-jq.sh for scan_script_against_denylist
   local _FLEET_JQ
-  _FLEET_JQ="${TMUX_AGENTS_DIR:-${CLAUDE_OPS_DIR:-$HOME/.tmux-agents}}/lib/fleet-jq.sh"
+  _FLEET_JQ="${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}/lib/fleet-jq.sh"
   if [ -f "$_FLEET_JQ" ]; then
     source "$_FLEET_JQ" 2>/dev/null || true
     if type scan_script_against_denylist &>/dev/null; then

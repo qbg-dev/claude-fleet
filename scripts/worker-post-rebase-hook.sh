@@ -23,7 +23,7 @@ if [ -n "$CONFLICTS" ]; then
   echo "Resolve these before committing."
 
   # Emit bus event if event-bus is available
-  BUS_SCRIPT="$HOME/.claude-ops/lib/event-bus.sh"
+  BUS_SCRIPT="$HOME/.claude-fleet/lib/event-bus.sh"
   if [ -f "$BUS_SCRIPT" ]; then
     source "$BUS_SCRIPT"
     WORKER_NAME=$(git rev-parse --abbrev-ref HEAD 2>/dev/null | sed 's|^worker/||')

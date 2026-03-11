@@ -2,9 +2,9 @@
 # lint-hooks.sh — Verify all hooks from manifest.json are correctly installed.
 #
 # Usage:
-#   bash ~/.claude-ops/scripts/lint-hooks.sh          # Full lint
-#   bash ~/.claude-ops/scripts/lint-hooks.sh --fix     # Auto-fix by running setup-hooks.sh
-#   bash ~/.claude-ops/scripts/lint-hooks.sh --quiet    # Exit code only (0=ok, 1=issues)
+#   bash ~/.claude-fleet/scripts/lint-hooks.sh          # Full lint
+#   bash ~/.claude-fleet/scripts/lint-hooks.sh --fix     # Auto-fix by running setup-hooks.sh
+#   bash ~/.claude-fleet/scripts/lint-hooks.sh --quiet    # Exit code only (0=ok, 1=issues)
 #
 # Checks:
 #   1. All required hook scripts exist and are executable
@@ -13,8 +13,8 @@
 #   4. Hook order matches manifest (important for gates that depend on prior hooks)
 set -euo pipefail
 
-CLAUDE_OPS_DIR="${CLAUDE_OPS_DIR:-$HOME/.claude-ops}"
-MANIFEST="$CLAUDE_OPS_DIR/hooks/manifest.json"
+CLAUDE_FLEET_DIR="${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
+MANIFEST="$CLAUDE_FLEET_DIR/hooks/manifest.json"
 SETTINGS="$HOME/.claude/settings.json"
 
 QUIET=false
@@ -228,9 +228,9 @@ info ""
 # ── Check 7: Source chain (libraries referenced by hooks) ──
 info "Library Dependencies:"
 _lib_files=(
-  "$CLAUDE_OPS_DIR/lib/fleet-jq.sh"
-  "$CLAUDE_OPS_DIR/lib/event-bus.sh"
-  "$CLAUDE_OPS_DIR/lib/pane-resolve.sh"
+  "$CLAUDE_FLEET_DIR/lib/fleet-jq.sh"
+  "$CLAUDE_FLEET_DIR/lib/event-bus.sh"
+  "$CLAUDE_FLEET_DIR/lib/pane-resolve.sh"
 )
 for f in "${_lib_files[@]}"; do
   if [ -f "$f" ]; then
@@ -259,14 +259,14 @@ fi
 
 # ── Check 9: Stop-check integration ──
 info "Stop-Check Integration:"
-_sc_hook="$CLAUDE_OPS_DIR/hooks/gates/stop-worker-dispatch.sh"
+_sc_hook="$CLAUDE_FLEET_DIR/hooks/gates/stop-worker-dispatch.sh"
 if [ -f "$_sc_hook" ] && grep -q 'stop-checks' "$_sc_hook"; then
   ok "  stop-worker-dispatch.sh reads stop-check files"
 else
   warn "  stop-worker-dispatch.sh missing stop-check gate"
   (( _warnings++ ))
 fi
-_sc_mcp="$CLAUDE_OPS_DIR/mcp/worker-fleet/index.ts"
+_sc_mcp="$CLAUDE_FLEET_DIR/mcp/worker-fleet/index.ts"
 if [ -f "$_sc_mcp" ] && grep -q 'add_hook' "$_sc_mcp"; then
   ok "  worker-fleet MCP defines add_hook"
 else
@@ -292,10 +292,10 @@ else
   info ""
   if [ "$FIX" = true ]; then
     info "Running setup-hooks.sh to fix..."
-    bash "$CLAUDE_OPS_DIR/scripts/setup-hooks.sh"
+    bash "$CLAUDE_FLEET_DIR/scripts/setup-hooks.sh"
   else
     info "Run with --fix to auto-install, or:"
-    info "  bash ~/.claude-ops/scripts/setup-hooks.sh"
+    info "  bash ~/.claude-fleet/scripts/setup-hooks.sh"
   fi
 fi
 

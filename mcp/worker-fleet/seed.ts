@@ -5,7 +5,7 @@
 
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
-import { PROJECT_ROOT, CLAUDE_OPS, WORKERS_DIR, WORKER_NAME, FLEET_DIR, getWorktreeDir } from "./config";
+import { PROJECT_ROOT, CLAUDE_FLEET, WORKERS_DIR, WORKER_NAME, FLEET_DIR, getWorktreeDir } from "./config";
 import { readRegistry, getMissionAuthorityLabel, type RegistryConfig, type RegistryWorkerEntry } from "./registry";
 
 // ── Seed Context Template ────────────────────────────────────────────
@@ -13,7 +13,7 @@ import { readRegistry, getMissionAuthorityLabel, type RegistryConfig, type Regis
 /** Load shared seed context template, interpolate placeholders */
 export function loadSeedContext(branch: string, missionAuthority: string, workerName?: string): string {
   const name = workerName || WORKER_NAME;
-  const tmplPath = join(CLAUDE_OPS, "templates/seed-context.md");
+  const tmplPath = join(CLAUDE_FLEET, "templates/seed-context.md");
   try {
     return readFileSync(tmplPath, "utf-8")
       .replace(/\{\{WORKER_NAME\}\}/g, name)
@@ -49,8 +49,8 @@ export function generateSeedContent(handoff?: string, workerName?: string): stri
     }
     // Load proposal instructions if proposal_required is set
     if (entry?.custom?.proposal_required) {
-      const instrPath = join(CLAUDE_OPS, "templates/proposal-instructions.md");
-      const tmplPath = join(CLAUDE_OPS, "templates/proposal-template.html");
+      const instrPath = join(CLAUDE_FLEET, "templates/proposal-instructions.md");
+      const tmplPath = join(CLAUDE_FLEET, "templates/proposal-template.html");
       try {
         let instrContent = readFileSync(instrPath, "utf-8");
         instrContent = instrContent

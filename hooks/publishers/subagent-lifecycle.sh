@@ -16,7 +16,7 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 [ -z "$SESSION_ID" ] && exit 0
 
 # Source path helpers
-HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-fleet/state}"
 _SESSION_DIR="$HARNESS_STATE_DIR/sessions/$SESSION_ID"
 mkdir -p "$_SESSION_DIR" 2>/dev/null
 
@@ -29,8 +29,8 @@ else
 fi
 
 # Source bus + identity resolution
-source "$HOME/.claude-ops/lib/event-bus.sh" 2>/dev/null || true
-source "$HOME/.claude-ops/lib/pane-resolve.sh" 2>/dev/null || true
+source "$HOME/.claude-fleet/lib/event-bus.sh" 2>/dev/null || true
+source "$HOME/.claude-fleet/lib/pane-resolve.sh" 2>/dev/null || true
 BUS_AGENT="main"
 if type resolve_pane_and_harness &>/dev/null; then
   resolve_pane_and_harness "$SESSION_ID" 2>/dev/null || true

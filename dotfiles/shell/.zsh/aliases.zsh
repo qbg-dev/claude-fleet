@@ -27,7 +27,7 @@ alias pclaudedo='cdo "$(pbpaste)"'
 alias pclaudedh='cdh "$(pbpaste)"'
 alias pclaudeds='cds "$(pbpaste)"'
 
-alias claude-mux="python3 ~/.claude-ops/bin/claude-mux.py"
+alias claude-mux="python3 ~/.claude-fleet/bin/claude-mux.py"
 alias claude-no-noti='CLAUDE_DISABLE_NOTIFICATIONS=true claude'
 
 # ===== Codex =====

@@ -3,14 +3,14 @@
 # fleet-pane.sh — Shared pane discovery utilities
 # ══════════════════════════════════════════════════════════════════
 # Usage:
-#   source ~/.claude-ops/lib/fleet-pane.sh
+#   source ~/.claude-fleet/lib/fleet-pane.sh
 #
 # Requires:
 #   - tmux available
 #   - pane-registry.json (sole source of truth)
 # ══════════════════════════════════════════════════════════════════
 
-HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-ops/state}"
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$HOME/.claude-fleet/state}"
 PANE_REGISTRY="${PANE_REGISTRY:-$HARNESS_STATE_DIR/pane-registry.json}"
 
 # Find the worker pane for a harness.
@@ -28,7 +28,7 @@ find_worker_pane() {
   # PRIMARY: registry.json (flat workers — fleet-global location)
   local _flat_reg=""
   if [ -n "${_proj:-}" ]; then
-    source "$HOME/.claude-ops/lib/resolve-registry.sh" 2>/dev/null || true
+    source "$HOME/.claude-fleet/lib/resolve-registry.sh" 2>/dev/null || true
     _flat_reg=$(resolve_registry "$_proj" 2>/dev/null || echo "$_proj/.claude/workers/registry.json")
   fi
   if [ -n "${_flat_reg:-}" ] && [ -f "$_flat_reg" ]; then

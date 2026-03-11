@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # git-hooks-installer.sh — SessionStart interceptor that auto-installs git hooks from manifest.
 #
-# Reads ~/.claude-ops/templates/git-hooks-manifest.json and installs hooks into
+# Reads ~/.claude-fleet/templates/git-hooks-manifest.json and installs hooks into
 # the worktree or main repo's .git/hooks/ directory. Idempotent (skips if md5 matches).
 set -uo pipefail
 trap 'echo "{}"; exit 0' ERR
 exec 2>/dev/null  # suppress stderr
 
-source "$HOME/.claude-ops/lib/pane-resolve.sh"
+source "$HOME/.claude-fleet/lib/pane-resolve.sh"
 
 INPUT=$(cat)
 hook_parse_input "$INPUT"
@@ -37,7 +37,7 @@ if [ -f "$PROJECT_ROOT/.git" ]; then
   MAIN_REPO_ROOT=$(echo "$WORKTREE_GIT_DIR" | sed 's|/\.git/worktrees/.*||')
 fi
 
-MANIFEST="$HOME/.claude-ops/templates/git-hooks-manifest.json"
+MANIFEST="$HOME/.claude-fleet/templates/git-hooks-manifest.json"
 [ ! -f "$MANIFEST" ] && { echo '{}'; exit 0; }
 
 # Parse manifest and install each hook
