@@ -18,11 +18,12 @@ Orchestration for Claude Code agents. Workers run in tmux panes on git worktrees
 ## CLI
 
 ```
-fleet onboard                           # guided setup + fleet design
+fleet onboard                           # guided setup + fleet design (the entry point)
 fleet create <name> "<mission>"         # create + launch worker
 fleet start <name>                      # restart worker
 fleet stop <name> [--all]               # graceful stop
 fleet ls [--json]                       # list with liveness
+fleet status                            # fleet overview dashboard
 fleet config <name> [key] [value]       # get/set config
 fleet defaults [key] [value]            # global defaults
 fleet fork <parent> <child> "<mission>" # fork from existing
@@ -32,6 +33,9 @@ fleet mail <name>                       # check inbox
 fleet mail-server [connect|start]       # Fleet Mail
 fleet mcp [register|status]             # MCP server
 fleet run <name> "<command>"            # run in worktree
+fleet tui [--account <name>]            # Fleet Mail TUI client
+fleet layout <save|restore|list|delete> # tmux layout persistence
+fleet deep-review <scope>               # adversarial code review
 fleet doctor                            # verify installation
 fleet nuke <name>                       # destroy worker
 ```
@@ -130,8 +134,12 @@ Install: `bash extensions/watchdog/install.sh`
 | `extensions/watchdog/` | Watchdog daemon |
 | `templates/flat-worker/types/` | Worker archetypes |
 | `templates/seed-context.md` | Worker seed context |
+| `cli/commands/tui.ts` | Fleet Mail TUI launcher |
+| `cli/commands/layout.ts` | tmux layout persistence |
+| `cli/commands/deep-review.ts` | Adversarial code review launcher |
 | `scripts/setup-hooks.sh` | Hook installer |
 | `scripts/lint-hooks.sh` | Hook verifier |
+| `scripts/check-docs.sh` | Doc sync validation |
 
 ## Conventions
 

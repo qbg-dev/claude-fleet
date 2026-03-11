@@ -49,12 +49,13 @@ _fleet() {
     'mail-server:Fleet Mail server management'
     'fork:Fork from existing session'
     'mcp:Manage MCP server registration'
-    'setup-agent:Launch fleet configuration agent'
     'nuke:Remove all fleet artifacts'
     'doctor:Verify fleet health'
     'onboard:Setup + launch fleet architect'
     'tui:Launch Fleet Mail TUI client'
     'layout:Save/restore tmux window layouts'
+    'deep-review:Adversarial code review'
+    'dr:Adversarial code review'
   )
 
   _arguments -C \

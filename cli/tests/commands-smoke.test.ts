@@ -85,12 +85,6 @@ describe("write command --help", () => {
     expect(r.stdout).toContain("Usage:");
   });
 
-  test("fleet setup-agent --help → exit 0", () => {
-    const r = fleet("setup-agent", "--help");
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("Usage:");
-  });
-
   test("fleet start --help → exit 0", () => {
     const r = fleet("start", "--help");
     expect(r.exitCode).toBe(0);
@@ -117,6 +111,42 @@ describe("write command --help", () => {
 
   test("fleet mail --help → exit 0", () => {
     const r = fleet("mail", "--help");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("Usage:");
+  });
+
+  test("fleet nuke --help → exit 0", () => {
+    const r = fleet("nuke", "--help");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("Usage:");
+  });
+
+  test("fleet doctor --help → exit 0", () => {
+    const r = fleet("doctor", "--help");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("Usage:");
+  });
+
+  test("fleet onboard --help → exit 0", () => {
+    const r = fleet("onboard", "--help");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("Usage:");
+  });
+
+  test("fleet tui --help → exit 0", () => {
+    const r = fleet("tui", "--help");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("Usage:");
+  });
+
+  test("fleet layout --help → exit 0", () => {
+    const r = fleet("layout", "--help");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("Usage:");
+  });
+
+  test("fleet deep-review --help → exit 0", () => {
+    const r = fleet("deep-review", "--help");
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("Usage:");
   });
