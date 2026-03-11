@@ -214,7 +214,9 @@ async function runDeepReview(opts: Record<string, any>): Promise<void> {
   }
 
   // Create session directory
-  const sessionId = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15).replace(/(\d{8})(\d{6})/, "$1-$2");
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const sessionId = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
   const sessionDir = join(projectRoot, ".claude", "state", "deep-review", `session-${sessionId}`);
   mkdirSync(sessionDir, { recursive: true });
   mkdirSync(join(sessionDir, "comms"), { recursive: true });
