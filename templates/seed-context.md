@@ -9,7 +9,7 @@ Core tools for worker operation. Use `fleet_help()` or `mail_help()` for full re
 | `mail_send(to, subject, body)` | Message a worker, "user", "all", or mailing list. Supports `cc`, `in_reply_to`, `thread_id`, `labels`. |
 | `mail_inbox(label?)` | Read YOUR inbox. Default label=UNREAD. label="INBOX" for all, "TASK" for tasks. |
 | `mail_read(id)` | Read full message body by ID (auto-marks as read). Only works for YOUR messages — Fleet Mail enforces account isolation. |
-| `session_end(message?)` | Mark cycle boundary: save checkpoint + cycle report, stay alive. Restarts are done externally via `fleet recycle <name>`. |
+| `round_stop(message)` | End a work round: save checkpoint + handoff doc + cycle report. Stays alive, does not touch hooks. Restarts are external via `fleet recycle <name>`. |
 | `create_worker(name, mission, ...)` | Spawn a new worker with worktree, branch, registry entry. |
 | `save_checkpoint(summary, key_facts?)` | Snapshot working state. Auto-saved on compaction/recycle. |
 | `update_state(key, value)` | Persist state across recycles. |
@@ -170,8 +170,8 @@ add_hook(event="PreToolUse", description="ontology invariants",
 ```
 
 **Hook lifetimes:**
-- `"cycle"` (default for non-Stop hooks): archived automatically when you call `session_end()`
-- `"persistent"` (default for Stop hooks): survives session_end, re-evaluates each cycle
+- `"cycle"`: archived when the worker is recycled (fresh restart via `fleet recycle`)
+- `"persistent"` (default): survives across rounds and restarts
 
 **Safety valve:** `check`-based hooks auto-pass after `max_fires` blocks (default 5) to prevent infinite loops.
 
@@ -375,20 +375,20 @@ LOOP FOREVER:
   4. Update state + save findings to auto-memory
   5. Register stop checks for anything you changed: add_hook(event="Stop", description="verify X")
   6. Complete each check after verifying: complete_hook("dh-1")
-  7. When DONE with this cycle's work, call `session_end(message)` to log the cycle.
+  7. When DONE with this cycle's work, call `round_stop(message)` to log the cycle.
      Then keep working on the next task, or go idle if nothing is pending.
      The operator runs `fleet recycle <name>` if you need a fresh context.
 ```
 
 **NEVER set status="done".** Perpetual workers run until killed.
 
-### When to session_end vs. keep working
+### When to round_stop vs. keep working
 
 | Situation | Action |
 |-----------|--------|
-| Finished one task, have more work to do | `session_end()` to log, then start next task |
+| Finished one task, have more work to do | `round_stop()` to log, then start next task |
 | Inbox has a new message | **Keep working** — read and handle it |
-| No more work AND no pending mail | `session_end()` to log, then go idle |
+| No more work AND no pending mail | `round_stop()` to log, then go idle |
 
 **Restarts are external.** If you need fresh context (long conversation, config change, stuck), the operator runs `fleet recycle <name>` from the CLI. You never exit yourself.
 
