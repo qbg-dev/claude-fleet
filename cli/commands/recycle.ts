@@ -14,11 +14,11 @@ import { addGlobalOpts } from "../index";
  */
 export function register(parent: Command): void {
   const sub = parent
-    .command("recycle <name>")
+    .command("recycle [name]")
     .description("Restart a worker with fresh context (watchdog respawns immediately)")
     .option("-a, --all", "Recycle all workers");
   addGlobalOpts(sub)
-    .action(async (name: string, opts: { all?: boolean }, cmd: Command) => {
+    .action(async (name: string | undefined, opts: { all?: boolean }, cmd: Command) => {
       const project = cmd.optsWithGlobals().project as string || resolveProject();
 
       if (opts.all) {
@@ -35,6 +35,7 @@ export function register(parent: Command): void {
         return;
       }
 
+      if (!name) return fail("Provide a worker name or use --all");
       recycleOne(name, project);
     });
 }
