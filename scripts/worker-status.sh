@@ -23,9 +23,9 @@ fi
 
 # ── Table output ─────────────────────────────────────────────────
 cmd_table() {
-  printf "\n${BOLD}%-25s %-10s %-15s %-8s %-10s %-8s %s${RESET}\n" \
-    "WORKER" "PANE" "WINDOW" "STATE" "MODEL" "PERP" "CYCLES"
-  printf '%s\n' "$(printf '─%.0s' {1..90})"
+  printf "\n${BOLD}%-25s %-10s %-15s %-8s %-10s %-12s %s${RESET}\n" \
+    "WORKER" "PANE" "WINDOW" "STATE" "MODEL" "SLEEP" "CYCLES"
+  printf '%s\n' "$(printf '─%.0s' {1..95})"
 
   while IFS= read -r worker; do
     [ "$worker" = "_config" ] && continue
@@ -34,10 +34,10 @@ cmd_table() {
     local _fields
     _fields=$(jq -r --arg n "$worker" '.[$n] | [
       (.pane_id // "-"), (.window // "-"), (.model // "opus"),
-      (.perpetual // false | tostring), (.cycles_completed // 0 | tostring),
+      (.sleep_duration // "null" | tostring), (.cycles_completed // 0 | tostring),
       (.status // "unknown")
     ] | join("\t")' "$REGISTRY" 2>/dev/null || echo "")
-    IFS=$'\t' read -r pane_id window model perpetual cycles status <<< "$_fields"
+    IFS=$'\t' read -r pane_id window model sleep_dur cycles status <<< "$_fields"
 
     # Check pane alive
     local state="no-pane"
@@ -57,12 +57,14 @@ cmd_table() {
       no-pane) state_color="$DIM"    ;;
     esac
 
-    local perp_mark="no"
-    [ "$perpetual" = "true" ] && perp_mark="${CYAN}yes${RESET}"
+    local sleep_mark="one-shot"
+    if [ "$sleep_dur" != "null" ] && [ "$sleep_dur" -gt 0 ] 2>/dev/null; then
+      sleep_mark="${CYAN}${sleep_dur}s${RESET}"
+    fi
 
-    printf "%-25s ${DIM}%-10s${RESET} %-15s ${state_color}%-8s${RESET} %-10s %-8b %s\n" \
+    printf "%-25s ${DIM}%-10s${RESET} %-15s ${state_color}%-8s${RESET} %-10s %-12b %s\n" \
       "$worker" "${pane_id:-n/a}" "${window:-n/a}" "$state" \
-      "$model" "$perp_mark" "$cycles"
+      "$model" "$sleep_mark" "$cycles"
   done < <(jq -r 'keys[]' "$REGISTRY" 2>/dev/null || true)
 
   printf '%s\n' "$(printf '─%.0s' {1..90})"

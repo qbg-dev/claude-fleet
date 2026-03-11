@@ -59,7 +59,7 @@ export async function runCreate(
     if (existsSync(typeFile)) {
       try {
         const tmpl = JSON.parse(readFileSync(typeFile, "utf-8"));
-        if (tmpl.sleep_duration != null) sleepDuration = tmpl.sleep_duration;
+        if ("sleep_duration" in tmpl) sleepDuration = tmpl.sleep_duration;
       } catch { /* ignore */ }
     } else {
       warn(`Unknown type: ${opts.type} (using defaults)`);
@@ -81,6 +81,19 @@ export async function runCreate(
   mkdirSync(dir, { recursive: true });
 
   // 2. Write config.json
+  // Merge system hooks + per-type hooks from fleet.json
+  const allHooks = [...getSystemHooks()];
+  if (opts.type && fleetConfig?.hooks_by_type?.[opts.type]) {
+    const typeHooks = fleetConfig.hooks_by_type[opts.type];
+    for (let i = 0; i < typeHooks.length; i++) {
+      allHooks.push({
+        ...typeHooks[i],
+        id: `type-${i + 1}`,
+        owner: "creator" as const,
+      });
+    }
+  }
+
   const config = {
     model,
     reasoning_effort: effort,
@@ -90,7 +103,7 @@ export async function runCreate(
     worktree: worktreeDir,
     branch,
     mcp: {},
-    hooks: getSystemHooks(),
+    hooks: allHooks,
     meta: {
       created_at: new Date().toISOString(),
       created_by: "fleet-cli",

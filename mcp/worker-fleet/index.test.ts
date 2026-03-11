@@ -463,7 +463,7 @@ describe("generateSeedContent", () => {
     const seed = generateSeedContent();
     expect(seed).toContain("Respawn Configuration");
     expect(seed).toContain("sleep_duration");
-    expect(seed).toContain("perpetual");
+    expect(seed).toContain("Perpetual");
   });
 
   test("includes deploy protocol with slot-based deploy", () => {
@@ -1474,15 +1474,15 @@ describe("createWorkerFiles — type templates", () => {
     expect(result.perpetual).toBe(true); // still from template
   });
 
-  test("explicit perpetual overrides type template", () => {
+  test("explicit sleep_duration=null overrides type template", () => {
     const result = createWorkerFiles({
       name: "tpl-override-perp",
       mission: "# Override Test",
       type: "monitor",
-      perpetual: false,
+      sleep_duration: null,
     });
     expect(result.ok).toBe(true);
-    expect(result.perpetual).toBe(false); // explicit overrides true from template
+    expect(result.perpetual).toBe(false); // explicit null overrides monitor's 1800
   });
 
   test("no type = backwards compatible defaults", () => {
@@ -1620,7 +1620,7 @@ describe("createWorkerFiles — runtime (Claude vs Codex)", () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe("createWorkerFiles — verifier type", () => {
-  test("type=verifier sets perpetual=false, sleep_duration=0", () => {
+  test("type=verifier sets sleep_duration=null (one-shot)", () => {
     const result = createWorkerFiles({
       name: "tpl-verifier-test",
       mission: "# Verify deployment",
@@ -1628,16 +1628,14 @@ describe("createWorkerFiles — verifier type", () => {
     });
     expect(result.ok).toBe(true);
     expect(result.perpetual).toBe(false);
-    expect(result.state?.perpetual).toBe(false);
-    // sleep_duration not set when perpetual=false
+    expect(result.state?.sleep_duration).toBe(null);
   });
 
-  test("type=verifier perpetual override works", () => {
+  test("type=verifier sleep_duration override works", () => {
     const result = createWorkerFiles({
       name: "tpl-verifier-perp",
       mission: "# Continuous verifier",
       type: "verifier",
-      perpetual: true,
       sleep_duration: 600,
     });
     expect(result.ok).toBe(true);

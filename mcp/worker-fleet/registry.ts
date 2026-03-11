@@ -60,8 +60,9 @@ export interface RegistryWorkerEntry {
   disallowed_tools: string[];
 
   status: string;
+  /** @deprecated Use sleep_duration instead. Derived: sleep_duration !== null */
   perpetual: boolean;
-  sleep_duration: number;
+  sleep_duration: number | null;
   branch: string;
   worktree: string | null;
   window: string | null;
@@ -215,7 +216,7 @@ export function registryEntryToConfigState(
     model: entry.model || "opus",
     reasoning_effort: (entry.custom?.reasoning_effort as string) || "high",
     permission_mode: entry.permission_mode || "bypassPermissions",
-    sleep_duration: entry.perpetual ? (entry.sleep_duration ?? 900) : null,
+    sleep_duration: entry.sleep_duration ?? null,
     window: entry.window || null,
     worktree: entry.worktree || null,
     branch: entry.branch || `worker/${name}`,
@@ -369,8 +370,8 @@ export function workerDirsToRegistryEntry(name: string): RegistryWorkerEntry | n
     permission_mode: config.permission_mode || "bypassPermissions",
     disallowed_tools: [], // Replaced by hooks in config.json
     status: s.status || "idle",
-    perpetual: config.sleep_duration !== null && config.sleep_duration !== undefined,
-    sleep_duration: config.sleep_duration ?? 1800,
+    perpetual: config.sleep_duration !== null && config.sleep_duration !== undefined && config.sleep_duration > 0,
+    sleep_duration: config.sleep_duration ?? null,
     branch: config.branch || `worker/${name}`,
     worktree: config.worktree || null,
     window: config.window || null,
@@ -471,7 +472,7 @@ export function withRegistryLocked<T>(fn: (registry: ProjectRegistry) => T): T {
         // Update config fields from entry
         existingConfig.model = entry.model || existingConfig.model;
         existingConfig.permission_mode = entry.permission_mode || existingConfig.permission_mode;
-        existingConfig.sleep_duration = entry.perpetual ? (entry.sleep_duration ?? 900) : (entry.sleep_duration || null);
+        existingConfig.sleep_duration = entry.sleep_duration ?? null;
         existingConfig.window = entry.window || existingConfig.window;
         existingConfig.worktree = entry.worktree || existingConfig.worktree;
         existingConfig.branch = entry.branch || existingConfig.branch;
@@ -568,8 +569,8 @@ export function ensureWorkerInRegistry(registry: ProjectRegistry, name: string):
     permission_mode: "bypassPermissions",
     disallowed_tools: [],
     status: "idle",
-    perpetual: false,
-    sleep_duration: 1800,
+    perpetual: false,  // derived from sleep_duration
+    sleep_duration: null,
     branch: `worker/${name}`,
     worktree: worktreeDir,
     window: null,

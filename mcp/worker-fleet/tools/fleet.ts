@@ -29,8 +29,7 @@ interface CreateWorkerInput {
   runtime?: WorkerRuntime;
   model?: string;
   reasoning_effort?: ReasoningEffort;
-  perpetual?: boolean;
-  sleep_duration?: number;
+  sleep_duration?: number | null;
   disallowed_tools?: string[];
   window?: string;
   report_to?: string;
@@ -40,9 +39,9 @@ interface CreateWorkerInput {
 
 const TEMPLATE_TYPES_DIR = join(CLAUDE_OPS, "templates/flat-worker/types");
 
-function loadTypeTemplate(type: WorkerType): { model?: string; perpetual?: boolean; sleep_duration?: number; disallowedTools?: string[]; permission_mode?: string } {
+function loadTypeTemplate(type: WorkerType): { model?: string; sleep_duration?: number | null; disallowedTools?: string[]; permission_mode?: string } {
   const typeDir = join(TEMPLATE_TYPES_DIR, type);
-  const result: { model?: string; perpetual?: boolean; sleep_duration?: number; disallowedTools?: string[]; permission_mode?: string } = {};
+  const result: { model?: string; sleep_duration?: number | null; disallowedTools?: string[]; permission_mode?: string } = {};
   try {
     const perms = JSON.parse(readFileSync(join(typeDir, "permissions.json"), "utf-8"));
     if (perms.model) result.model = perms.model;
@@ -51,8 +50,8 @@ function loadTypeTemplate(type: WorkerType): { model?: string; perpetual?: boole
   } catch {}
   try {
     const defaults = JSON.parse(readFileSync(join(typeDir, "defaults.json"), "utf-8"));
-    if (typeof defaults.perpetual === "boolean") result.perpetual = defaults.perpetual;
-    if (typeof defaults.sleep_duration === "number") result.sleep_duration = defaults.sleep_duration;
+    // sleep_duration: null = one-shot, N > 0 = perpetual
+    if ("sleep_duration" in defaults) result.sleep_duration = defaults.sleep_duration;
   } catch {}
   return result;
 }
@@ -63,6 +62,7 @@ interface CreateWorkerResult {
   workerDir?: string;
   model?: string;
   runtime?: WorkerRuntime;
+  /** @deprecated Derived from sleep_duration */
   perpetual?: boolean;
   state?: Record<string, any>;
   permissions?: Record<string, any>;
@@ -70,7 +70,7 @@ interface CreateWorkerResult {
 
 /** Core logic for creating a worker's directory and files. Exported for testing. */
 export function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult {
-  const { name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools, window: windowGroup, report_to, permission_mode } = input;
+  const { name, mission, type, runtime, model, reasoning_effort, sleep_duration, disallowed_tools, window: windowGroup, report_to, permission_mode } = input;
   const resolvedRuntime: WorkerRuntime = runtime || "claude";
 
   // Validate
@@ -148,14 +148,13 @@ export function createWorkerFiles(input: CreateWorkerInput): CreateWorkerResult 
   };
 
   // State — override precedence: explicit param > type template > hardcoded default
-  const isPerpetual = perpetual ?? tpl.perpetual ?? false;
+  // sleep_duration: null = one-shot (never respawned), N > 0 = perpetual (respawn after N seconds)
+  const resolvedSleepDuration: number | null = sleep_duration !== undefined ? sleep_duration : (tpl.sleep_duration !== undefined ? tpl.sleep_duration : null);
+  const isPerpetual = resolvedSleepDuration !== null && resolvedSleepDuration > 0;
   const state: Record<string, any> = {
     status: "idle",
-    perpetual: isPerpetual,
+    sleep_duration: resolvedSleepDuration,
   };
-  if (isPerpetual) {
-    state.sleep_duration = sleep_duration ?? tpl.sleep_duration ?? 1800;
-  }
 
   return { ok: true, workerDir, model: selectedModel, runtime: resolvedRuntime, perpetual: isPerpetual, state, permissions };
 }
@@ -197,7 +196,7 @@ function moveWorkerPane(
 type McpResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
 async function handleFleetCreate(params: Record<string, any>): Promise<McpResult> {
-  const { name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, window_index: windowIndex, report_to, permission_mode, launch, proposal_required, fork_from_session, direct_report } = params;
+  const { name, mission, type, runtime, model, reasoning_effort, sleep_duration, disallowed_tools: disallowedToolsJson, window: windowGroup, window_index: windowIndex, report_to, permission_mode, launch, proposal_required, fork_from_session, direct_report } = params;
 
   if (!name) return { content: [{ type: "text" as const, text: `Error: 'name' is required for create` }], isError: true };
   if (!mission) return { content: [{ type: "text" as const, text: `Error: 'mission' is required for create` }], isError: true };
@@ -229,7 +228,7 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
     }
 
     // Create files
-    const result = createWorkerFiles({ name, mission, type, runtime, model, reasoning_effort, perpetual, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, proposal_required });
+    const result = createWorkerFiles({ name, mission, type, runtime, model, reasoning_effort, sleep_duration, disallowed_tools: disallowedTools, window: windowGroup, report_to, permission_mode, proposal_required });
     if (!result.ok) {
       return { content: [{ type: "text" as const, text: `Error: ${result.error}` }], isError: true };
     }
@@ -244,21 +243,31 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
       : (report_to || defaultReportTo);
 
     // Register in unified registry + write per-worker dir files
-    const { state, permissions, runtime: resolvedRuntime, model: selectedModel, perpetual: isPerpetual } = result as Required<CreateWorkerResult>;
+    const { state, permissions, runtime: resolvedRuntime, model: selectedModel } = result as Required<CreateWorkerResult>;
+    const isPerpetual = (state.sleep_duration ?? null) !== null && (state.sleep_duration ?? 0) > 0;
 
     // Write per-worker config.json directly
     const workerFleetDir = join(FLEET_DIR, name);
     mkdirSync(workerFleetDir, { recursive: true });
+    // Merge system hooks + per-type hooks from fleet.json
+    const allHooks = [...getDefaultSystemHooks()];
+    if (type) {
+      const fleetCfg = readFleetConfig();
+      const typeHooks = (fleetCfg as any)?.hooks_by_type?.[type] || [];
+      for (let i = 0; i < typeHooks.length; i++) {
+        allHooks.push({ ...typeHooks[i], id: `type-${i + 1}`, owner: "creator" });
+      }
+    }
     const workerConfig: WorkerConfig = {
       model: permissions.model || "opus",
       reasoning_effort: permissions.reasoning_effort || "high",
       permission_mode: permissions.permission_mode || "bypassPermissions",
-      sleep_duration: isPerpetual ? (state.sleep_duration ?? 1800) : null,
+      sleep_duration: state.sleep_duration ?? null,
       window: permissions.window || null,
       worktree: null, // Will be set after worktree creation below
       branch: `worker/${name}`,
       mcp: {},
-      hooks: [...getDefaultSystemHooks()],
+      hooks: allHooks,
       meta: {
         created_at: new Date().toISOString(),
         created_by: WORKER_NAME,
@@ -297,8 +306,8 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
       entry.permission_mode = permissions.permission_mode || "bypassPermissions";
       entry.disallowed_tools = permissions.disallowedTools || [];
       entry.status = state.status || "idle";
-      entry.perpetual = state.perpetual || false;
-      entry.sleep_duration = state.sleep_duration || 1800;
+      entry.perpetual = isPerpetual;  // derived from sleep_duration
+      entry.sleep_duration = state.sleep_duration ?? null;
       if (permissions.window) {
         entry.window = permissions.window;
       }
@@ -520,11 +529,11 @@ async function handleFleetTemplate(params: Record<string, any>): Promise<McpResu
   } catch { sections.push("## permissions.json\n_Not found_\n"); }
   try {
     const defaults = JSON.parse(readFileSync(join(typeDir, "defaults.json"), "utf-8"));
+    const sdLabel = defaults.sleep_duration === null ? "null (one-shot)" : `${defaults.sleep_duration}s`;
     sections.push("## Defaults (from defaults.json)\n" +
-      `- **perpetual**: ${defaults.perpetual}\n` +
-      `- **sleep_duration**: ${defaults.sleep_duration}s\n`);
+      `- **sleep_duration**: ${sdLabel}\n`);
   } catch { sections.push("## defaults.json\n_Not found_\n"); }
-  sections.push("## Usage\n`create_worker(name=\"...\", type=\"" + type + "\", mission=\"# Your mission here\\n...\")`\nThe `type` sets model/permissions/perpetual/sleep defaults. You always write your own mission. Explicit params override type defaults.");
+  sections.push("## Usage\n`create_worker(name=\"...\", type=\"" + type + "\", mission=\"# Your mission here\\n...\")`\nThe `type` sets model/permissions/sleep defaults. You always write your own mission. Explicit params override type defaults.");
   return { content: [{ type: "text" as const, text: sections.join("\n") }] };
 }
 
@@ -743,7 +752,7 @@ async function handleFleetStandby(params: Record<string, any>): Promise<McpResul
 }
 
 async function handleFleetRegister(params: Record<string, any>): Promise<McpResult> {
-  const { model, perpetual, sleep_duration, report_to } = params;
+  const { model, sleep_duration, report_to } = params;
 
   try {
     const ownPane = findOwnPane();
@@ -771,7 +780,7 @@ async function handleFleetRegister(params: Record<string, any>): Promise<McpResu
         model: model || "opus",
         reasoning_effort: "high",
         permission_mode: "bypassPermissions",
-        sleep_duration: perpetual ? (sleep_duration ?? 900) : null,
+        sleep_duration: sleep_duration ?? null,
         window: null,
         worktree: existsSync(worktreeDir) ? worktreeDir : null,
         branch: `worker/${WORKER_NAME}`,
@@ -786,8 +795,7 @@ async function handleFleetRegister(params: Record<string, any>): Promise<McpResu
       };
     } else {
       if (model) wConfig.model = model;
-      if (perpetual !== undefined) wConfig.sleep_duration = perpetual ? (sleep_duration ?? 900) : null;
-      if (sleep_duration !== undefined && perpetual !== false) wConfig.sleep_duration = sleep_duration;
+      if (sleep_duration !== undefined) wConfig.sleep_duration = sleep_duration;
     }
     writeWorkerConfig(WORKER_NAME, wConfig);
     writeLaunchScript(WORKER_NAME, wConfig);
@@ -825,8 +833,10 @@ async function handleFleetRegister(params: Record<string, any>): Promise<McpResu
       const entry = ensureWorkerInRegistry(reg, WORKER_NAME);
       entry.status = "active";
       entry.model = model || entry.model || "opus";
-      if (perpetual !== undefined) entry.perpetual = perpetual;
-      if (sleep_duration !== undefined) entry.sleep_duration = sleep_duration;
+      if (sleep_duration !== undefined) {
+        entry.sleep_duration = sleep_duration;
+        entry.perpetual = sleep_duration !== null && sleep_duration > 0;
+      }
       entry.report_to = report_to || entry.report_to || defaultReportTo;
       entry.custom = {
         ...(entry.custom || {}),
@@ -958,13 +968,13 @@ function handleFleetHelp(): McpResult {
         ``,
         `### create_worker — Create a new autonomous worker`,
         `Required: name (string), mission (string)`,
-        `Optional: type, runtime, model, reasoning_effort, perpetual, sleep_duration,`,
+        `Optional: type, runtime, model, reasoning_effort, sleep_duration,`,
         `  disallowed_tools (JSON string array), window, window_index, report_to,`,
         `  permission_mode, launch, tasks (JSON array), proposal_required,`,
         `  fork_from_session, direct_report`,
         ``,
         `### register_worker — Register yourself in the fleet registry`,
-        `Optional: model, perpetual, sleep_duration, report_to`,
+        `Optional: model, sleep_duration, report_to`,
         `Auto-detects tmux pane, session, runtime. Call when lint warns you're not in registry.`,
         ``,
         `### deregister_worker — Remove a worker from the registry`,
@@ -1010,8 +1020,7 @@ server.registerTool(
       runtime: z.enum(["claude", "codex"]).optional().describe("Execution engine (default: claude)"),
       model: z.string().optional().describe("LLM model override"),
       reasoning_effort: z.enum(["low", "medium", "high", "extra_high"]).optional().describe("Depth of reasoning (default: high)"),
-      perpetual: z.boolean().optional().describe("Run in infinite recycle loop"),
-      sleep_duration: z.number().optional().describe("Seconds between perpetual cycles (default: 1800)"),
+      sleep_duration: z.number().nullable().optional().describe("Seconds between cycles. null = one-shot (never respawned), N > 0 = perpetual (respawn after N seconds)"),
       disallowed_tools: z.string().optional().describe("JSON array of tool deny-list patterns"),
       window: z.string().optional().describe("Target tmux window name"),
       window_index: z.number().optional().describe("Explicit tmux window index for new windows"),
@@ -1033,8 +1042,7 @@ server.registerTool(
     description: "Register yourself in the fleet registry. Auto-detects tmux pane, session, runtime.",
     inputSchema: {
       model: z.string().optional().describe("LLM model override"),
-      perpetual: z.boolean().optional().describe("Run in infinite recycle loop"),
-      sleep_duration: z.number().optional().describe("Seconds between perpetual cycles (default: 1800)"),
+      sleep_duration: z.number().nullable().optional().describe("Seconds between cycles. null = one-shot, N > 0 = perpetual"),
       report_to: z.string().optional().describe("Who this worker reports to"),
     },
   },

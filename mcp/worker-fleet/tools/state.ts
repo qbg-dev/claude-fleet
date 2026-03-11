@@ -16,7 +16,7 @@ export function registerStateTools(server: McpServer): void {
 
 server.registerTool(
   "get_worker_state",
-  { description: "Read a worker's state from the central registry. Returns status, perpetual/sleep config, last commit info, issue counts, and any custom state keys. For a single worker, returns raw JSON. For name='all', returns a formatted fleet dashboard with a table of all workers showing runtime, status, pane health (alive/dead), and current in-progress task — plus a custom state section. The fleet view also auto-discovers workers from the filesystem and prunes dead panes.", inputSchema: {
+  { description: "Read a worker's state from the central registry. Returns status, sleep_duration config, last commit info, issue counts, and any custom state keys. For a single worker, returns raw JSON. For name='all', returns a formatted fleet dashboard with a table of all workers showing runtime, status, pane health (alive/dead), and current in-progress task — plus a custom state section. The fleet view also auto-discovers workers from the filesystem and prunes dead panes.", inputSchema: {
     name: z.string().optional().describe("Worker name to query. Omit for your own state. Use 'all' for a fleet-wide dashboard showing every registered worker, pane health, and active tasks"),
   } },
   async ({ name }) => {
@@ -95,7 +95,7 @@ server.registerTool(
       }
       const state: Record<string, any> = {
         status: entry.status,
-        perpetual: entry.perpetual,
+        perpetual: entry.sleep_duration !== null && entry.sleep_duration !== undefined && (entry.sleep_duration as number) > 0,  // derived from sleep_duration
         sleep_duration: entry.sleep_duration,
         ...entry.custom,
       };
@@ -113,14 +113,19 @@ server.registerTool(
 
 server.registerTool(
   "update_state",
-  { description: "Write a key-value pair to the worker registry that persists across recycles. Use for sleep_duration, custom metrics, feature flags, or any state that must survive restarts. Known keys (status, perpetual, sleep_duration, last_commit_sha/msg/at, issues_found/fixed, report_to) are stored at the top level; all other keys go into the custom state bag. Cross-worker updates require authority — you must be the target's report_to or the mission_authority.", inputSchema: {
-    key: z.string().describe("State key name. Known keys (status, perpetual, sleep_duration, report_to, model, permission_mode, disallowed_tools, branch, worktree, mission_file, pane_id, pane_target, tmux_session, window, session_id, session_file, bms_token, forked_from, last_commit_sha, last_commit_msg, last_commit_at, issues_found, issues_fixed) go top-level. Any other key goes into the custom state bag"),
+  { description: "Write a key-value pair to the worker registry that persists across recycles. Use for sleep_duration, custom metrics, feature flags, or any state that must survive restarts. Known keys (status, sleep_duration, last_commit_sha/msg/at, issues_found/fixed, report_to) are stored at the top level; all other keys go into the custom state bag. Cross-worker updates require authority — you must be the target's report_to or the mission_authority. Note: 'perpetual' is read-only (derived from sleep_duration) — set sleep_duration instead.", inputSchema: {
+    key: z.string().describe("State key name. Known keys (status, sleep_duration, report_to, model, permission_mode, disallowed_tools, branch, worktree, mission_file, pane_id, pane_target, tmux_session, window, session_id, session_file, bms_token, forked_from, last_commit_sha, last_commit_msg, last_commit_at, issues_found, issues_fixed) go top-level. 'perpetual' is read-only — use sleep_duration instead. Any other key goes into the custom state bag"),
     value: z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(z.string())]).describe("Value to store. Primitives, null, or string arrays (for disallowed_tools)"),
     worker: z.string().optional().describe("Target worker. Omit to update your own state. Cross-worker updates are authorized only if you are the target's report_to or the mission_authority"),
   } },
   async ({ key, value, worker }) => {
     try {
       const targetName = worker || WORKER_NAME;
+
+      // Block direct writes to 'perpetual' — it's derived from sleep_duration
+      if (key === "perpetual") {
+        return { content: [{ type: "text" as const, text: `Error: 'perpetual' is read-only (derived from sleep_duration). Set sleep_duration instead: null = one-shot, N > 0 = perpetual.` }], isError: true };
+      }
 
       // Write to project registry
       let stateJson: string = "";
@@ -132,7 +137,7 @@ server.registerTool(
 
         const entry = ensureWorkerInRegistry(registry, targetName);
         // Allowlist of top-level fields (all worker entry fields are now editable)
-        const STATE_KEYS = new Set(["status","perpetual","sleep_duration",
+        const STATE_KEYS = new Set(["status","sleep_duration",
           "last_commit_sha","last_commit_msg","last_commit_at","issues_found","issues_fixed","report_to",
           "model","permission_mode","disallowed_tools","branch","worktree","mission_file",
           "pane_id","pane_target","tmux_session","window","session_id","session_file","bms_token","forked_from"]);

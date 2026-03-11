@@ -588,7 +588,14 @@ check_worker() {
 
   local pane_id perpetual status sleep_dur window session worktree
   IFS=$'\t' read -r pane_id perpetual status sleep_dur window session worktree <<< "$_fields"
+  # sleep_duration is the sole source of truth: null/0 = one-shot, N > 0 = perpetual
   [ "$sleep_dur" = "null" ] && sleep_dur=0
+  # Derive perpetual from sleep_duration (ignore registry perpetual field)
+  if [ "$sleep_dur" -gt 0 ] 2>/dev/null; then
+    perpetual="true"
+  else
+    perpetual="false"
+  fi
   # Cap sleep_duration to MAX_CYCLE_SEC — Claude Code leaks memory in long sessions
   if [ "$sleep_dur" -gt "$MAX_CYCLE_SEC" ] 2>/dev/null; then
     sleep_dur="$MAX_CYCLE_SEC"

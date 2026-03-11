@@ -302,18 +302,18 @@ LOOP FOREVER:
 
 ## Respawn Configuration
 
-Set in `registry.json` (via `update_state()`). The watchdog reads these on every check:
+`sleep_duration` is the sole source of truth (set via `update_state()` or `update_worker_config()`):
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `perpetual` | bool | `true` = watchdog respawns after sleep; `false` = one-shot, never respawned |
-| `sleep_duration` | int | Seconds to wait before respawn (only when `perpetual: true`) |
+| `sleep_duration` | Behavior |
+|------------------|----------|
+| `null` | One-shot — never respawned by watchdog |
+| `N` (N > 0) | Perpetual — watchdog respawns after N seconds |
 
 Suggested cadences:
 - Urgent/monitoring workers: `1800` (30 min)
 - Active development workers: `3600`–`7200` (1–2h)
 - Optimization/review workers: `10800`–`14400` (3–4h)
-- One-shot workers: `"perpetual": false` (no `sleep_duration` needed)
+- One-shot workers: `sleep_duration: null`
 
 ## Git Safety
 

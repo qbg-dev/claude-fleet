@@ -133,10 +133,9 @@ _status=$(jq -r '.status // "running"' "$_wstate" 2>/dev/null || echo "running")
 # NOTE: Dynamic hooks gate (blocking Stop hooks) is handled by dynamic-hook-dispatcher.sh
 # which is registered as a separate hook for ALL events. No duplication here.
 
-# Perpetual workers: pass through (watchdog handles respawn cycle)
-_perpetual=$(jq -r '.perpetual // false' "$_wstate" 2>/dev/null || echo "false")
-if [ "$_perpetual" = "true" ]; then
-  _sleep_dur=$(jq -r '.sleep_duration // 3600' "$_wstate" 2>/dev/null || echo "3600")
+# Perpetual workers (sleep_duration > 0): pass through (watchdog handles respawn cycle)
+_sleep_dur=$(jq -r '.sleep_duration // "null"' "$_wstate" 2>/dev/null || echo "null")
+if [ "$_sleep_dur" != "null" ] && [ "$_sleep_dur" -gt 0 ] 2>/dev/null; then
   _log "flat-worker stop: $_wname (perpetual, sleep=${_sleep_dur}s)"
   hook_pass; exit 0
 fi

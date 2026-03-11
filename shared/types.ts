@@ -44,6 +44,8 @@ export interface FleetConfig {
   merge_authority: string;
   mission_authority: string | string[];
   window_groups?: Record<string, string[]>;
+  /** Per-type hooks — merged as creator-owned hooks when creating workers of that type */
+  hooks_by_type?: Record<string, Omit<SystemHook, 'id' | 'owner'>[]>;
 }
 
 export interface SystemHook {

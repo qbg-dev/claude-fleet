@@ -281,18 +281,18 @@ check_worker_states() {
   [ -z "$workers" ] && { _info "No workers in registry"; return; }
 
   while IFS= read -r wname; do
-    local perpetual sleep_dur status
-    perpetual=$(jq -r --arg n "$wname" '.[$n].perpetual // "unset"' "$registry" 2>/dev/null)
-    sleep_dur=$(jq -r --arg n "$wname" '.[$n].sleep_duration // "unset"' "$registry" 2>/dev/null)
+    local sleep_dur status
+    sleep_dur=$(jq -r --arg n "$wname" '.[$n].sleep_duration // "null"' "$registry" 2>/dev/null)
     status=$(jq -r --arg n "$wname" '.[$n].status // "unknown"' "$registry" 2>/dev/null)
 
-    # Perpetual:true workers need a sleep_duration
-    if [ "$perpetual" = "true" ] && [ "$sleep_dur" = "unset" ]; then
-      _warning "$wname: perpetual:true but no sleep_duration set (watchdog uses default)"
+    # Derive perpetual from sleep_duration
+    local mode="one-shot"
+    if [ "$sleep_dur" != "null" ] && [[ "$sleep_dur" =~ ^[0-9]+$ ]] && [ "$sleep_dur" -gt 0 ]; then
+      mode="perpetual (${sleep_dur}s)"
     fi
 
-    # Sleep duration should be sane (>60s, <24h)
-    if [[ "$sleep_dur" =~ ^[0-9]+$ ]]; then
+    # Sleep duration should be sane (>60s, <24h) when set
+    if [[ "$sleep_dur" =~ ^[0-9]+$ ]] && [ "$sleep_dur" -gt 0 ]; then
       if [ "$sleep_dur" -lt 60 ]; then
         _warning "$wname: sleep_duration=${sleep_dur}s is very short (<60s)"
       elif [ "$sleep_dur" -gt 86400 ]; then
@@ -300,7 +300,7 @@ check_worker_states() {
       fi
     fi
 
-    _ok "$wname: perpetual=$perpetual, sleep_duration=${sleep_dur}s, status=$status"
+    _ok "$wname: $mode, status=$status"
   done <<< "$workers"
 }
 

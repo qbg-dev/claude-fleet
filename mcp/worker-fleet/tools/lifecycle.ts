@@ -95,7 +95,7 @@ Blocked by pending dynamic hooks unless force=true.`, inputSchema: {
 
     // 1c. Idle detection for perpetual workers — sleep instead of full recycle when idle
     const entry0 = getWorkerEntry(WORKER_NAME);
-    const isPerpetual0 = entry0?.perpetual === true;
+    const isPerpetual0 = (entry0?.sleep_duration ?? null) !== null && (entry0?.sleep_duration ?? 0) > 0;
     if (isPerpetual0 && !hasUnreadMail && !resume) {
       const hasSubstantiveHandoff = message && message.trim().length > 20;
       if (!hasSubstantiveHandoff) {
@@ -308,7 +308,7 @@ rm -f "${reloadScript}" "$RESUME_CMD_FILE"
 
     // 6. Check if this is a perpetual worker that should defer to watchdog
     const entry = getWorkerEntry(WORKER_NAME);
-    const isPerpetual = entry?.perpetual === true;
+    const isPerpetual = entry?.sleep_duration !== null && entry?.sleep_duration !== undefined && entry.sleep_duration > 0;
     const registrySleepDur = entry?.sleep_duration ?? 1800;
     // sleep_seconds param overrides registry sleep_duration for this cycle
     // sleep_seconds=0 means "immediate restart, no sleep"
