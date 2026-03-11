@@ -143,3 +143,16 @@ All checks must be `pass` or `skip` (with justification). Proof is hash-tied to 
 ### Automated Review Script
 
 Run `bash scripts/review.sh` for a deterministic scan of items 17–22. This complements `check-docs.sh` (items 1–5). Both are first-pass — the pre-commit hook still requires AI-verified proof XML for anything the scripts can't catch.
+
+---
+
+## Evolving This Checklist
+
+This document is a living checklist. During any deep review, if Claude identifies a recurring failure mode, anti-pattern, or drift category not covered above, it should **propose a new Always Flag item** by appending to the relevant section (or creating a new subsection). Include:
+
+1. **Numbered item** with a bold name and 1–2 sentence description of what to flag
+2. **Severity override** row if the default `high` doesn't fit
+3. **Proof XML check** name if the item is deterministically verifiable
+4. **`scripts/review.sh` check** if it can be automated — add the implementation and bump the item range in the script header comment
+
+Proposals are committed alongside the review that surfaced them. No separate approval process — if a pattern caused a real bug or near-miss, it belongs here.
