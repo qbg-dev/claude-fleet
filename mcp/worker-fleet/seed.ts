@@ -5,7 +5,7 @@
 
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
-import { HOME, PROJECT_ROOT, CLAUDE_OPS, WORKERS_DIR, WORKER_NAME, FLEET_DIR, getWorktreeDir } from "./config";
+import { PROJECT_ROOT, CLAUDE_OPS, WORKERS_DIR, WORKER_NAME, FLEET_DIR, getWorktreeDir } from "./config";
 import { readRegistry, getMissionAuthorityLabel, type RegistryConfig, type RegistryWorkerEntry } from "./registry";
 
 // ── Seed Context Template ────────────────────────────────────────────
@@ -61,10 +61,6 @@ export function generateSeedContent(handoff?: string, workerName?: string): stri
       } catch {}
     }
   } catch {}
-
-  // Worker memory lives at project-level auto-memory subdirectory
-  const projectSlug = PROJECT_ROOT.replace(/\//g, "-");
-  const workerMemoryDir = join(HOME, ".claude", "projects", projectSlug, "memory", effectiveName);
 
   // ── Build handoff/checkpoint block FIRST (most important context for resuming) ──
   let handoffBlock = "";
@@ -131,9 +127,7 @@ Read these files NOW in this order:
 2. Call \`mail_inbox()\` — check for messages before anything else
 3. Check \`.claude/scripts/${effectiveName}/\` for existing scripts
 
-**Your memory**: \`${workerMemoryDir}/MEMORY.md\`
-Use Edit/Write to update it directly. Create topic files in that same directory for detailed notes.
-This path is under the project-level auto-memory — it persists across recycles and is shared with other workers.
+**Code > Memory**: Encode domain knowledge as hooks, scripts, and automation—not memory notes. Hooks fire automatically; memory requires you to remember to read it. If you do something twice, automate it.
 
 If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}${proposalBlock}
 

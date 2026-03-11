@@ -78,15 +78,15 @@ if [ "$EVENT" = "SubagentStop" ] && [ -n "$AGENT_ID" ]; then
 fi
 
 # ── Filter hooks matching this event ────────────────────────────
-# Subagents see: hooks scoped to their agent_id + unscoped hooks
-# Parent sees: unscoped hooks only
+# Skip archived hooks. Subagents see: hooks scoped to their agent_id + unscoped hooks.
+# Parent sees: unscoped hooks only.
 if [ "$IS_SUBAGENT" = "true" ]; then
   MATCHING=$(jq --arg ev "$EVENT" --arg aid "$AGENT_ID" \
-    '[.hooks[] | select(.event == $ev and .completed == false and (.agent_id == $aid or .agent_id == null or .agent_id == ""))]' \
+    '[.hooks[] | select(.event == $ev and .completed == false and (.status != "archived") and (.agent_id == $aid or .agent_id == null or .agent_id == ""))]' \
     "$_HOOKS_FILE" 2>/dev/null || echo "[]")
 else
   MATCHING=$(jq --arg ev "$EVENT" \
-    '[.hooks[] | select(.event == $ev and .completed == false and (.agent_id == null or .agent_id == ""))]' \
+    '[.hooks[] | select(.event == $ev and .completed == false and (.status != "archived") and (.agent_id == null or .agent_id == ""))]' \
     "$_HOOKS_FILE" 2>/dev/null || echo "[]")
 fi
 
@@ -211,6 +211,37 @@ for i in $(seq 0 $((COUNT - 1))); do
   DESC=$(echo "$HOOK" | jq -r '.description // "dynamic hook"' 2>/dev/null || echo "dynamic hook")
   CONTENT=$(echo "$HOOK" | jq -r '.content // .description // ""' 2>/dev/null || echo "")
   HAS_SCRIPT=$(echo "$HOOK" | jq -r '.script_path // empty' 2>/dev/null || echo "")
+
+  # ── Check command support (condition-checked verification loops) ──
+  CHECK_CMD=$(echo "$HOOK" | jq -r '.check // empty' 2>/dev/null || echo "")
+  if [ -n "$CHECK_CMD" ]; then
+    FIRE_COUNT=$(echo "$HOOK" | jq -r '.fire_count // 0' 2>/dev/null || echo "0")
+    MAX_FIRES=$(echo "$HOOK" | jq -r '.max_fires // 5' 2>/dev/null || echo "5")
+
+    # Safety valve — auto-pass after max_fires blocks
+    if [ "$FIRE_COUNT" -ge "$MAX_FIRES" ]; then
+      continue
+    fi
+
+    # Expand env vars in check command and run it
+    _CHECK_STDERR=$(mktemp)
+    if eval "$CHECK_CMD" 2>"$_CHECK_STDERR"; then
+      # Check passed — hook allows the event
+      rm -f "$_CHECK_STDERR"
+      continue
+    else
+      # Check failed — block
+      _CHECK_REASON=$(head -c 500 "$_CHECK_STDERR" 2>/dev/null || echo "Check failed")
+      rm -f "$_CHECK_STDERR"
+      NEW_FIRE_COUNT=$((FIRE_COUNT + 1))
+      # Increment fire_count in the hooks file
+      jq --arg hid "$HOOK_ID" --argjson fc "$NEW_FIRE_COUNT" \
+        '.hooks = [.hooks[] | if .id == $hid then .fire_count = $fc else . end]' \
+        "$_HOOKS_FILE" > "$_HOOKS_FILE.tmp" 2>/dev/null && mv "$_HOOKS_FILE.tmp" "$_HOOKS_FILE" 2>/dev/null || true
+      BLOCK_REASONS="${BLOCK_REASONS}  [${HOOK_ID}] ${DESC} (attempt ${NEW_FIRE_COUNT}/${MAX_FIRES}): ${_CHECK_REASON}\n"
+      continue
+    fi
+  fi
 
   # Run script if present
   if [ -n "$HAS_SCRIPT" ]; then

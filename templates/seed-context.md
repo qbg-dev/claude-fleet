@@ -141,16 +141,43 @@ save_checkpoint(summary="Starting SSO fix, auth flow mapped", key_facts=["HS512 
 
 Think of it as setting up your workbench before starting: lay out the tools, set the safety guards, then work.
 
-### Stop Gates (Verification Before Recycling)
+### Stop Hooks (Verification Loops)
 
 **You MUST always verify end-to-end.** 与朋友交而不信乎 — untested code shipped to others is a broken promise.
 
+Stop hooks re-evaluate every time you try to stop. Use `check` for automated verification:
+
 ```
-add_hook(event="Stop", description="verify TypeScript compiles")
-add_hook(event="Stop", description="test deploy to slot — check UI loads")
-add_hook(event="Stop", description="no console errors on slot URL")
+# Auto-checked: blocks until tests pass (no manual complete_hook needed)
+add_hook(event="Stop", description="run tests",
+  check="cd $PROJECT_ROOT && bun test --bail 2>&1 | tail -1 | grep -q 'pass'")
+
+# Auto-checked: blocks until TypeScript compiles
+add_hook(event="Stop", description="verify TypeScript compiles",
+  check="cd $PROJECT_ROOT && bun build src/server-web.ts --outdir /tmp/check --target bun 2>&1 | tail -1 | grep -q 'Build succeeded'")
+
+# Auto-checked: blocks until no uncommitted changes
+add_hook(event="Stop", description="commit your changes",
+  check="cd $PROJECT_ROOT && git diff --cached --quiet && git diff --quiet")
+
+# Manual gate: blocks until you explicitly complete it
+add_hook(event="Stop", description="verify UI in Chrome MCP")
+# Later: complete_hook("dh-1", result="PASS — verified")
+
+# Persistent guardrail: always active, survives recycles
+add_hook(event="PreToolUse", description="ontology invariants",
+  lifetime="persistent", content="All writes use applyAction()...")
 ```
-`recycle()` REFUSES until all blocking hooks are completed:
+
+A system Stop hook (`sys-recycle-gate`) always ensures `recycle()` is called before stopping. This preserves state across cycles.
+
+**Hook lifetimes:**
+- `"cycle"` (default for non-Stop hooks): archived automatically when you recycle
+- `"persistent"` (default for Stop hooks): survives recycles, re-evaluates each cycle
+
+**Safety valve:** `check`-based hooks auto-pass after `max_fires` blocks (default 5) to prevent infinite loops.
+
+`recycle()` REFUSES until all blocking hooks are completed or checks pass:
 ```
 complete_hook("dh-1", result="PASS — no TS errors")
 ```
@@ -228,10 +255,16 @@ add_hook(event="PostToolUse", description="auto-lint after edits",
 
 ### Cleanup
 
-Remove hooks you no longer need:
+Archive hooks you no longer need (preserved in hooks.json for history):
 ```
-remove_hook("dh-2")       # Remove a specific hook
-remove_hook(id="all")     # Remove all hooks (also removes script files)
+remove_hook("dh-2")       # Archive a specific hook
+remove_hook(id="all")     # Archive all hooks
+
+# View archived hooks (audit trail)
+list_hooks(include_archived=true)
+
+# See another worker's hooks (cross-worker discovery)
+list_hooks(worker="finance")
 ```
 
 ### Verification Methods

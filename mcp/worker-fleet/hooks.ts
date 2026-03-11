@@ -12,7 +12,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, copyFileSync } from "fs";
 import { join } from "path";
-import { HOME, WORKER_NAME, FLEET_DIR } from "./config";
+import { HOME, WORKER_NAME, FLEET_DIR, PROJECT_ROOT } from "./config";
 import type { DynamicHook } from "../../shared/types";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -128,20 +128,32 @@ export function removeScriptFile(hook: DynamicHook): void {
 
 // ── Persistence ──────────────────────────────────────────────────────
 
-/** Persist hooks to file for hook scripts to read */
+/** Persist hooks to file for hook scripts to read.
+ *  Writes ALL hooks (active + archived). Never deletes the file. */
 export function _persistHooks(): void {
   try {
-    const hooks = [...dynamicHooks.values()];
-    if (hooks.length === 0) {
-      try { rmSync(HOOKS_FILE); } catch {}
-      return;
-    }
+    const activeHooks = [...dynamicHooks.values()];
+
+    // Load existing archived hooks from file to preserve them
+    let archivedHooks: DynamicHook[] = [];
+    try {
+      if (existsSync(HOOKS_FILE)) {
+        const data = JSON.parse(readFileSync(HOOKS_FILE, "utf-8"));
+        if (Array.isArray(data.hooks)) {
+          archivedHooks = data.hooks.filter((h: DynamicHook) => h.status === "archived");
+        }
+      }
+    } catch {}
+
+    // Merge: active hooks from Map + archived hooks from file (dedup by id)
+    const activeIds = new Set(activeHooks.map(h => h.id));
+    const mergedArchived = archivedHooks.filter(h => !activeIds.has(h.id));
+    const allHooks = [...activeHooks, ...mergedArchived];
+
     if (isNewLayout()) {
-      // New layout: just the hooks array
-      writeFileSync(HOOKS_FILE, JSON.stringify({ hooks }, null, 2));
+      writeFileSync(HOOKS_FILE, JSON.stringify({ hooks: allHooks }, null, 2));
     } else {
-      // Legacy: include worker name
-      writeFileSync(HOOKS_FILE, JSON.stringify({ worker: WORKER_NAME, hooks }, null, 2));
+      writeFileSync(HOOKS_FILE, JSON.stringify({ worker: WORKER_NAME, hooks: allHooks }, null, 2));
     }
   } catch (e) {
     console.error(`[_persistHooks] Failed to write ${HOOKS_FILE}: ${e}`);
@@ -149,7 +161,7 @@ export function _persistHooks(): void {
 }
 
 // On startup, restore from file (survives MCP restart via recycle resume)
-// Try new layout first, then legacy
+// Only loads active hooks into the Map. Archived hooks stay in the file.
 function _restoreHooks(): void {
   const files = [HOOKS_FILE];
   // Also check legacy path if we're on new layout
@@ -172,6 +184,10 @@ function _restoreHooks(): void {
       if (data.worker && data.worker !== WORKER_NAME) continue;
 
       for (const h of hooks) {
+        // Only load active hooks into the Map (archived stay in file only)
+        if (h.status === "archived") continue;
+        // Backfill status for hooks without it
+        if (!h.status) h.status = "active";
         dynamicHooks.set(h.id, h);
         const num = parseInt(h.id.replace("dh-", ""), 10);
         if (!isNaN(num) && num > _hookCounter) _hookCounter = num;
@@ -190,14 +206,47 @@ function _restoreHooks(): void {
 
 _restoreHooks();
 
+/** Register the default sys-recycle-gate Stop hook if not already present */
+function _ensureRecycleGate(): void {
+  if (dynamicHooks.has("sys-recycle-gate")) return;
+  // Also check if it's archived in the file — don't re-register if explicitly archived
+  try {
+    if (existsSync(HOOKS_FILE)) {
+      const data = JSON.parse(readFileSync(HOOKS_FILE, "utf-8"));
+      if (Array.isArray(data.hooks) && data.hooks.some((h: DynamicHook) => h.id === "sys-recycle-gate")) return;
+    }
+  } catch {}
+
+  const gate: DynamicHook = {
+    id: "sys-recycle-gate",
+    event: "Stop",
+    description: "Call recycle() to save state before stopping",
+    status: "active",
+    lifetime: "persistent",
+    blocking: true,
+    completed: false,
+    check: `test -f /tmp/claude-fleet-recycle-${WORKER_NAME}`,
+    max_fires: 3,
+    fire_count: 0,
+    added_at: new Date().toISOString(),
+  };
+  dynamicHooks.set(gate.id, gate);
+  _persistHooks();
+}
+
+_ensureRecycleGate();
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /** Capture dynamic hooks snapshot for checkpoint */
-export function _captureHooksSnapshot(): Array<{ id: string; event: string; description: string; blocking: boolean; completed: boolean; script_path?: string }> {
+export function _captureHooksSnapshot(): Array<{ id: string; event: string; description: string; blocking: boolean; completed: boolean; script_path?: string; status?: string; lifetime?: string; check?: string }> {
   return [...dynamicHooks.values()].map(h => ({
     id: h.id, event: h.event, description: h.description,
     blocking: h.blocking, completed: h.completed,
     ...(h.script_path ? { script_path: h.script_path } : {}),
+    ...(h.status ? { status: h.status } : {}),
+    ...(h.lifetime ? { lifetime: h.lifetime } : {}),
+    ...(h.check ? { check: h.check } : {}),
   }));
 }
 
@@ -217,4 +266,60 @@ export function _pendingHooksSummary(event?: string): string {
 /** Get the hooks directory path (for external use) */
 export function getHooksDir(): string {
   return HOOKS_DIR;
+}
+
+/** Archive a hook — move from active Map to archived in file */
+export function _archiveHook(id: string, reason: string): DynamicHook | null {
+  const hook = dynamicHooks.get(id);
+  if (!hook) return null;
+  hook.status = "archived";
+  hook.archived_at = new Date().toISOString();
+  hook.archive_reason = reason;
+  dynamicHooks.delete(id);
+  _persistHooks();
+  return hook;
+}
+
+/** Resolve the main repo root from a worktree's .git file.
+ *  Worktrees have a `.git` file (not dir) pointing to the main repo's `.git/worktrees/`. */
+function resolveMainRepoRoot(): string {
+  const gitPath = join(PROJECT_ROOT, ".git");
+  try {
+    if (existsSync(gitPath)) {
+      const stat = Bun.file(gitPath);
+      // If .git is a file (worktree), resolve to main repo
+      if (stat.size < 1000) {
+        const content = readFileSync(gitPath, "utf-8").trim();
+        if (content.startsWith("gitdir:")) {
+          const gitdir = content.replace("gitdir:", "").trim();
+          // gitdir is like /path/to/main/.git/worktrees/worker-name
+          const mainGit = gitdir.replace(/\/\.git\/worktrees\/[^/]+$/, "");
+          if (existsSync(mainGit)) return mainGit;
+        }
+      }
+    }
+  } catch {}
+  return PROJECT_ROOT;
+}
+
+/** Read hooks for another worker (cross-worker discovery).
+ *  Resolves to the main repo's .claude/workers/{name}/hooks.json if in a worktree. */
+export function readOtherWorkerHooks(workerName: string, includeArchived = false): DynamicHook[] {
+  const mainRepo = resolveMainRepoRoot();
+  const candidates = [
+    join(FLEET_DIR, workerName, "hooks", "hooks.json"),
+    join(mainRepo, ".claude/workers", workerName, "hooks.json"),
+  ];
+
+  for (const file of candidates) {
+    try {
+      if (!existsSync(file)) continue;
+      const data = JSON.parse(readFileSync(file, "utf-8"));
+      if (!Array.isArray(data.hooks)) continue;
+      return includeArchived
+        ? data.hooks
+        : data.hooks.filter((h: DynamicHook) => h.status !== "archived");
+    } catch {}
+  }
+  return [];
 }

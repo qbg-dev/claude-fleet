@@ -9,7 +9,7 @@ import { join } from "path";
 import { CLAUDE_OPS, PROJECT_ROOT, WORKER_NAME, FLEET_DIR } from "../config";
 import {
   dynamicHooks, _incrementHookCounter, _persistHooks, _pendingHooksSummary,
-  writeScriptFile, removeScriptFile,
+  writeScriptFile, _archiveHook, readOtherWorkerHooks,
   type DynamicHook,
 } from "../hooks";
 
@@ -89,9 +89,12 @@ server.registerTool(
         command_pattern: z.string().optional().describe("Only fire when Bash command matches regex (e.g. 'git push.*')"),
       }).optional().describe("Condition for when this hook fires (PreToolUse only). Omit for unconditional"),
       agent_id: z.string().optional().describe("Scope to a specific subagent. Auto-completed on SubagentStop. Subagents: use the agent_id injected by pre-tool-context-injector"),
+      lifetime: z.enum(["cycle", "persistent"]).optional().describe("Hook lifetime. 'cycle' = archived on recycle. 'persistent' = survives recycles. Default: 'persistent' for Stop, 'cycle' for others"),
+      check: z.string().optional().describe("Bash command to verify condition. Exit 0 = pass (hook allows), non-zero = block. Re-evaluated each time the event fires — no manual complete_hook needed. Env: $WORKER_NAME, $PROJECT_ROOT"),
+      max_fires: z.number().optional().describe("Auto-pass after this many blocks (safety valve). Default: 5. Prevents infinite loops for check-based Stop hooks"),
     },
   },
-  async ({ event, description, blocking, content, script, condition, agent_id }) => {
+  async ({ event, description, blocking, content, script, condition, agent_id, lifetime, check, max_fires }) => {
     const id = `dh-${_incrementHookCounter()}`;
     // Stop defaults to blocking, most others default to inject
     const isBlocking = blocking ?? (event === "Stop");
@@ -125,26 +128,37 @@ server.registerTool(
       }
     }
 
+    // Resolve lifetime: Stop hooks default to persistent, others to cycle
+    const resolvedLifetime = lifetime ?? (event === "Stop" ? "persistent" : "cycle");
+
     const hook: DynamicHook = {
       id, event, description,
       blocking: isBlocking,
       completed: false,
+      status: "active",
+      lifetime: resolvedLifetime,
       added_at: new Date().toISOString(),
     };
     if (content) hook.content = content;
     if (condition) hook.condition = condition;
     if (agent_id) hook.agent_id = agent_id;
     if (scriptPath) hook.script_path = scriptPath;
+    if (check) hook.check = check;
+    if (max_fires !== undefined) hook.max_fires = max_fires;
+    if (check && hook.max_fires === undefined) hook.max_fires = 5;
+    if (check) hook.fire_count = 0;
     dynamicHooks.set(id, hook);
     _persistHooks();
     const agentNote = agent_id ? ` (scoped to subagent ${agent_id})` : "";
     const typeLabel = isBlocking ? "blocking" : "inject";
     const condNote = condition ? ` [condition: ${JSON.stringify(condition)}]` : "";
     const scriptNote = scriptPath ? ` [script: ${scriptPath}]` : "";
+    const checkNote = check ? ` [check: ${check.slice(0, 60)}${check.length > 60 ? "..." : ""}]` : "";
+    const lifetimeNote = ` [${resolvedLifetime}]`;
     return {
       content: [{
         type: "text" as const,
-        text: `Hook registered: [${id}] ${event}/${typeLabel} — ${description}${agentNote}${condNote}${scriptNote}\nActive hooks: ${_pendingHooksSummary()}.`,
+        text: `Hook registered: [${id}] ${event}/${typeLabel} — ${description}${agentNote}${condNote}${scriptNote}${checkNote}${lifetimeNote}\nActive hooks: ${_pendingHooksSummary()}.`,
       }],
     };
   }
@@ -201,32 +215,66 @@ server.registerTool(
 server.registerTool(
   "list_hooks",
   {
-    description: "List all active hooks (static infrastructure + dynamic runtime hooks). Shows what fires on each event, whether it blocks or injects, and its current status.",
+    description: "List hooks (static infrastructure + dynamic runtime hooks). Shows what fires on each event, whether it blocks or injects, and its current status. Supports cross-worker discovery.",
     inputSchema: {
       event: z.string().optional().describe("Filter to a specific event (e.g. 'Stop', 'PreToolUse'). Omit for all events"),
       include_static: z.boolean().optional().describe("Include static infrastructure hooks from manifest (default: true)"),
+      include_archived: z.boolean().optional().describe("Include archived hooks (default: false). Useful for auditing hook history"),
+      worker: z.string().optional().describe("Read another worker's hooks (cross-worker discovery). Omit for your own hooks"),
     },
   },
-  async ({ event, include_static }) => {
+  async ({ event, include_static, include_archived, worker }) => {
     const showStatic = include_static !== false;
-    const lines: string[] = ["# Active Hooks\n"];
+    const showArchived = include_archived === true;
+    const isOtherWorker = worker && worker !== WORKER_NAME;
+    const lines: string[] = [`# ${isOtherWorker ? `${worker}'s` : "Active"} Hooks\n`];
 
-    // ── Dynamic hooks (runtime-registered by this worker) ──
-    const dynamicList = [...dynamicHooks.values()]
+    // ── Dynamic hooks ──
+    let hookList: DynamicHook[];
+    if (isOtherWorker) {
+      hookList = readOtherWorkerHooks(worker, showArchived);
+    } else {
+      hookList = [...dynamicHooks.values()];
+      // Optionally include archived from file
+      if (showArchived) {
+        try {
+          const hooksDir = join(FLEET_DIR, WORKER_NAME, "hooks", "hooks.json");
+          if (existsSync(hooksDir)) {
+            const data = JSON.parse(readFileSync(hooksDir, "utf-8"));
+            if (Array.isArray(data.hooks)) {
+              const activeIds = new Set(hookList.map(h => h.id));
+              const archived = data.hooks.filter((h: DynamicHook) => h.status === "archived" && !activeIds.has(h.id));
+              hookList = [...hookList, ...archived];
+            }
+          }
+        } catch {}
+      }
+    }
+
+    const filteredList = hookList
       .filter(h => !event || h.event === event)
       .sort((a, b) => a.event.localeCompare(b.event) || a.id.localeCompare(b.id));
 
-    if (dynamicList.length > 0) {
-      lines.push(`## Dynamic Hooks (${dynamicList.length})\n`);
-      for (const h of dynamicList) {
+    if (filteredList.length > 0) {
+      lines.push(`## Dynamic Hooks (${filteredList.length})\n`);
+      for (const h of filteredList) {
         const type = h.blocking ? "GATE" : "INJECT";
-        const status = h.blocking
-          ? (h.completed ? `DONE${h.result ? ` (${h.result})` : ""}` : "PENDING")
-          : "active";
+        const isArchived = h.status === "archived";
+        let status: string;
+        if (isArchived) {
+          status = `ARCHIVED (${h.archive_reason || "unknown"})`;
+        } else if (h.blocking) {
+          status = h.completed ? `DONE${h.result ? ` (${h.result})` : ""}` : "PENDING";
+        } else {
+          status = "active";
+        }
         const cond = h.condition ? ` [${Object.entries(h.condition).map(([k,v]) => `${k}=${v}`).join(", ")}]` : "";
         const scope = h.agent_id ? ` (agent: ${h.agent_id})` : "";
         const scriptInfo = h.script_path ? ` [script: ${h.script_path}]` : "";
-        lines.push(`- **[${h.id}]** ${h.event}/${type} — ${h.description}${cond}${scope}${scriptInfo}`);
+        const checkInfo = h.check ? ` [check: ${h.check.slice(0, 50)}${h.check.length > 50 ? "..." : ""}]` : "";
+        const lifetimeInfo = h.lifetime ? ` [${h.lifetime}]` : "";
+        const fireInfo = h.fire_count !== undefined ? ` (fired: ${h.fire_count}/${h.max_fires || 5})` : "";
+        lines.push(`- **[${h.id}]** ${h.event}/${type} — ${h.description}${cond}${scope}${scriptInfo}${checkInfo}${lifetimeInfo}${fireInfo}`);
         lines.push(`  Status: ${status} | Added: ${h.added_at.slice(0, 16)}`);
         if (h.content && h.content !== h.description) {
           const preview = h.content.length > 100 ? h.content.slice(0, 97) + "..." : h.content;
@@ -237,8 +285,8 @@ server.registerTool(
       lines.push("## Dynamic Hooks\nNone registered. Use `add_hook()` to add verification gates, context injectors, or script triggers.\n");
     }
 
-    // ── Static hooks (infrastructure, from manifest) ──
-    if (showStatic) {
+    // ── Static hooks (infrastructure, from manifest) — only for own worker ──
+    if (showStatic && !isOtherWorker) {
       try {
         const manifestPath = join(CLAUDE_OPS, "hooks", "manifest.json");
         const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
@@ -247,7 +295,6 @@ server.registerTool(
         );
 
         if (staticHooks.length > 0) {
-          // Group by category
           const byCategory: Record<string, any[]> = {};
           for (const h of staticHooks) {
             const cat = h.category || "other";
@@ -269,10 +316,12 @@ server.registerTool(
     }
 
     // Summary
-    const blocking = [...dynamicHooks.values()].filter(h => h.blocking && !h.completed);
-    const inject = [...dynamicHooks.values()].filter(h => !h.blocking);
-    const scripts = [...dynamicHooks.values()].filter(h => h.script_path);
-    lines.push(`\n---\n**Summary:** ${dynamicHooks.size} dynamic (${blocking.length} blocking pending, ${inject.length} inject active, ${scripts.length} with scripts)`);
+    const activeHooks = hookList.filter(h => h.status !== "archived");
+    const blocking = activeHooks.filter(h => h.blocking && !h.completed);
+    const inject = activeHooks.filter(h => !h.blocking);
+    const withCheck = activeHooks.filter(h => h.check);
+    const archivedCount = hookList.filter(h => h.status === "archived").length;
+    lines.push(`\n---\n**Summary:** ${activeHooks.length} active (${blocking.length} blocking pending, ${inject.length} inject, ${withCheck.length} with check)${archivedCount > 0 ? ` | ${archivedCount} archived` : ""}`);
 
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   }
@@ -281,33 +330,27 @@ server.registerTool(
 server.registerTool(
   "remove_hook",
   {
-    description: "Remove a dynamic hook entirely. Use for inject hooks you no longer need, or to clean up completed gates. Also removes associated script files.",
+    description: "Archive a dynamic hook (preserved in hooks.json but no longer fires). Use for inject hooks you no longer need, or to clean up completed gates. Archived hooks are discoverable via list_hooks(include_archived=true).",
     inputSchema: {
-      id: z.string().describe("Hook ID to remove (e.g. 'dh-2'). Use 'all' to remove all hooks"),
+      id: z.string().describe("Hook ID to archive (e.g. 'dh-2'). Use 'all' to archive all hooks"),
     },
   },
   async ({ id }) => {
     if (id === "all") {
       const count = dynamicHooks.size;
-      // Clean up script files
-      for (const hook of dynamicHooks.values()) {
-        removeScriptFile(hook);
+      for (const [hookId] of dynamicHooks) {
+        _archiveHook(hookId, "removed");
       }
-      dynamicHooks.clear();
-      _persistHooks();
-      return { content: [{ type: "text" as const, text: `Removed all ${count} hook(s) and associated scripts.` }] };
+      return { content: [{ type: "text" as const, text: `Archived all ${count} hook(s). They remain in hooks.json for history.` }] };
     }
-    const hook = dynamicHooks.get(id);
-    if (!hook) {
-      return { content: [{ type: "text" as const, text: `No hook with ID '${id}'.` }], isError: true };
+    const archived = _archiveHook(id, "removed");
+    if (!archived) {
+      return { content: [{ type: "text" as const, text: `No active hook with ID '${id}'.` }], isError: true };
     }
-    removeScriptFile(hook);
-    dynamicHooks.delete(id);
-    _persistHooks();
     return {
       content: [{
         type: "text" as const,
-        text: `Removed: [${id}] ${hook.description}\nRemaining hooks: ${_pendingHooksSummary()}.`,
+        text: `Archived: [${id}] ${archived.description}\nRemaining active hooks: ${_pendingHooksSummary()}.`,
       }],
     };
   }

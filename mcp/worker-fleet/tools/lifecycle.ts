@@ -4,14 +4,14 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { writeFileSync, existsSync, readdirSync } from "fs";
+import { writeFileSync, existsSync, readdirSync, rmSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 import { HOME, PROJECT_ROOT, WORKERS_DIR, WORKER_NAME, getWorktreeDir } from "../config";
 import { getWorkerEntry, readRegistry, withRegistryLocked, type RegistryConfig, type RegistryWorkerEntry, getWorkerModel } from "../registry";
 import { findOwnPane, getSessionId } from "../tmux";
 import { getWorkerRuntime, type ReasoningEffort } from "../runtime";
-import { dynamicHooks, _captureHooksSnapshot } from "../hooks";
+import { dynamicHooks, _captureHooksSnapshot, _archiveHook, _persistHooks } from "../hooks";
 import { _captureGitState, _writeCheckpoint } from "../helpers";
 import { generateSeedContent } from "../seed";
 import { fleetMailRequest, resolveFleetMailRecipients, getFleetMailToken, FLEET_MAIL_URL } from "../mail-client";
@@ -114,20 +114,38 @@ Blocked by pending dynamic hooks unless force=true.`, inputSchema: {
         }
       } catch {}
 
-      // Clear completed dynamic hooks (they belong to the finished cycle)
+      // Archive cycle-scoped hooks, keep persistent ones
+      const archiveIds: string[] = [];
       for (const [id, hook] of dynamicHooks.entries()) {
-        if (hook.completed) dynamicHooks.delete(id);
+        if (hook.lifetime !== "persistent") {
+          archiveIds.push(id);
+        }
       }
+      for (const id of archiveIds) {
+        _archiveHook(id, "cycle-end");
+      }
+      // Also archive completed persistent hooks (they did their job)
+      for (const [id, hook] of dynamicHooks.entries()) {
+        if (hook.completed) {
+          _archiveHook(id, "completed");
+        }
+      }
+
+      // Clean up recycle sentinel for next cycle
+      try { rmSync(`/tmp/claude-fleet-recycle-${WORKER_NAME}`); } catch {}
 
       return {
         content: [{
           type: "text" as const,
           text: `Soft recycle complete — cycle logged, checkpoint saved. You are still alive.\n` +
             `${message ? `Handoff: "${message.slice(0, 100)}${message.length > 100 ? "..." : ""}"` : "No handoff message."}\n` +
-            `Completed hooks cleared. Keep working — check mail_inbox() for new tasks.`,
+            `Archived ${archiveIds.length} cycle-scoped hook(s). Persistent hooks survive. Keep working — check mail_inbox() for new tasks.`,
         }],
       };
     }
+
+    // 0-pre. Create recycle sentinel (so sys-recycle-gate check passes)
+    try { writeFileSync(`/tmp/claude-fleet-recycle-${WORKER_NAME}`, new Date().toISOString()); } catch {}
 
     // 0. Gate on blocking hooks (unified: stop checks + any blocking gates)
     const pendingChecks = [...dynamicHooks.values()].filter(h => h.blocking && !h.completed);
@@ -263,6 +281,15 @@ rm -f "${recycleScript0}"
     const transcriptPath = sessionId
       ? join(HOME, ".claude/projects", pathSlug, `${sessionId}.jsonl`)
       : null;
+
+    // 2b. Archive cycle-scoped hooks, keep persistent ones
+    for (const [id, hook] of dynamicHooks.entries()) {
+      if (hook.lifetime !== "persistent") {
+        _archiveHook(id, "cycle-end");
+      } else if (hook.completed) {
+        _archiveHook(id, "completed");
+      }
+    }
 
     // 3. Write checkpoint (replaces handoff.md)
     try {

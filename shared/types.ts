@@ -78,6 +78,22 @@ export interface DynamicHook {
   added_at: string;
   /** Relative path to script file in the worker's hooks/ dir (e.g. "dh-1-notify-validator.sh") */
   script_path?: string;
+  /** Hook status — "active" hooks fire, "archived" hooks are preserved but inert */
+  status?: "active" | "archived";
+  /** Lifetime — "cycle" hooks are archived on recycle, "persistent" survive recycles.
+   *  Default: "persistent" for Stop hooks, "cycle" for all others. */
+  lifetime?: "cycle" | "persistent";
+  /** Bash command to verify a condition. Exit 0 = pass, non-zero = block.
+   *  Re-evaluated each time the event fires (Stop hooks become verification loops). */
+  check?: string;
+  /** How many times this hook has blocked (for safety valve) */
+  fire_count?: number;
+  /** Auto-pass after this many blocks. Default: 5. Prevents infinite loops. */
+  max_fires?: number;
+  /** ISO timestamp when this hook was archived */
+  archived_at?: string;
+  /** Why this hook was archived (e.g. "cycle-end", "removed", "completed") */
+  archive_reason?: string;
 }
 
 /** The 12 immutable system hooks — safety guardrails for all workers */
