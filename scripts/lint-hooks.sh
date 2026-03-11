@@ -75,6 +75,8 @@ errors = 0
 warnings = 0
 
 for h in manifest['hooks']:
+    if 'event' not in h:
+        continue  # skip _comment entries
     path = h['path'].replace('~/', os.path.expanduser('~') + '/')
     # Skip project-specific (path contains {PROJECT_ROOT})
     if '{PROJECT_ROOT}' in path:
@@ -123,6 +125,8 @@ warnings = 0
 
 # Build lookup: command substring -> hook id
 for h in manifest['hooks']:
+    if 'event' not in h:
+        continue  # skip _comment entries
     if h.get('category') == 'project':
         continue
 

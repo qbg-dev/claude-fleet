@@ -50,6 +50,7 @@ import { register as registerRun } from "./commands/run";
 import { register as registerSetupAgent } from "./commands/setup-agent";
 import { register as registerNuke } from "./commands/nuke";
 import { register as registerDoctor } from "./commands/doctor";
+import { register as registerOnboard } from "./commands/onboard";
 
 registerSetup(program);
 registerCreate(program);
@@ -69,5 +70,6 @@ registerMcp(program);
 registerSetupAgent(program);
 registerNuke(program);
 registerDoctor(program);
+registerOnboard(program);
 
 program.parse();

@@ -73,6 +73,8 @@ core_only = $( [ "$CORE_ONLY" = true ] && echo "True" || echo "False" )
 
 hooks_by_event = {}
 for h in manifest['hooks']:
+    if 'event' not in h:
+        continue  # skip _comment entries
     if h.get('category') == 'project':
         continue
     if core_only and not h.get('required', False):
@@ -204,6 +206,8 @@ manifest = json.load(open('$MANIFEST'))
 core_only = $( [ "$CORE_ONLY" = true ] && echo "True" || echo "False" )
 missing = 0
 for h in manifest['hooks']:
+    if 'event' not in h:
+        continue  # skip _comment entries
     if h.get('category') == 'project':
         continue
     if core_only and not h.get('required', False):
