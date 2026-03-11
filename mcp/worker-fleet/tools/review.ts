@@ -1,5 +1,7 @@
 /**
  * Review tools — deep_review
+ *
+ * Delegates to `fleet deep-review` CLI command (TypeScript implementation).
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -114,70 +116,14 @@ server.registerTool(
     no_worktree?: boolean;
   }) => {
     try {
-      // Resolve deep-review package: DEEP_REVIEW_DIR env > ~/.deep-review > CLAUDE_OPS fallback
-      const deepReviewDir = process.env.DEEP_REVIEW_DIR
-        || (existsSync(join(HOME, ".deep-review", "scripts", "deep-review.sh")) ? join(HOME, ".deep-review") : null)
-        || process.env.CLAUDE_OPS_DIR
-        || join(HOME, ".claude-ops");
-      const scriptPath = join(deepReviewDir, "scripts", "deep-review.sh");
-      if (!existsSync(scriptPath)) {
-        throw new Error(`deep-review.sh not found at ${scriptPath}. Install deep-review to ~/.deep-review/ or set DEEP_REVIEW_DIR.`);
-      }
+      const args: string[] = ["deep-review"];
 
-      const args: string[] = [];
-
-      // Scope and content are additive
-      if (scope) {
-        args.push("--scope", scope);
-      }
+      if (scope) args.push("--scope", scope);
       if (content) {
         const contentPaths = Array.isArray(content) ? content.join(",") : content;
         args.push("--content", contentPaths);
-      }
-      // If neither provided, shell script defaults to HEAD
 
-      if (spec) {
-        args.push("--spec", spec);
-      }
-      if (passes) {
-        args.push("--passes", String(passes));
-      }
-      if (session_name) {
-        args.push("--session-name", session_name);
-      }
-      if (notify) {
-        args.push("--notify", notify);
-      }
-      if (focus?.length) {
-        args.push("--focus", focus.join(","));
-      }
-      if (no_judge) {
-        args.push("--no-judge");
-      }
-      if (no_context) {
-        args.push("--no-context");
-      }
-      if (force) {
-        args.push("--force");
-      }
-      if (verify) {
-        args.push("--verify");
-      }
-      if (verify_roles?.length) {
-        args.push("--verify-roles", verify_roles.join(","));
-      }
-      if (v1) {
-        args.push("--v1");
-      }
-      if (max_workers) {
-        args.push("--max-workers", String(max_workers));
-      }
-      if (no_worktree) {
-        args.push("--no-worktree");
-      }
-
-      // Validate content files exist before spawning (fast fail with clear message)
-      if (content) {
+        // Validate content files exist before spawning (fast fail)
         const paths = Array.isArray(content) ? content : content.split(",");
         for (const p of paths) {
           const resolved = p.trim().replace(/^~/, HOME);
@@ -187,30 +133,42 @@ server.registerTool(
           }
         }
       }
+      if (spec) args.push("--spec", spec);
+      if (passes) args.push("--passes", String(passes));
+      if (session_name) args.push("--session-name", session_name);
+      if (notify) args.push("--notify", notify);
+      if (focus?.length) args.push("--focus", focus.join(","));
+      if (no_judge) args.push("--no-judge");
+      if (no_context) args.push("--no-context");
+      if (force) args.push("--force");
+      if (verify) args.push("--verify");
+      if (verify_roles?.length) args.push("--verify-roles", verify_roles.join(","));
+      if (v1) args.push("--v1");
+      if (max_workers) args.push("--max-workers", String(max_workers));
+      if (no_worktree) args.push("--no-worktree");
 
-      const launchResult = spawnSync("bash", [scriptPath, ...args], {
+      const launchResult = spawnSync("fleet", args, {
         encoding: "utf-8",
         cwd: PROJECT_ROOT,
-        env: { ...process.env, PROJECT_ROOT, DEEP_REVIEW_DIR: deepReviewDir },
-        timeout: 120_000, // 2 min — context pre-pass (tsc + deps) can be slow
+        env: { ...process.env, PROJECT_ROOT },
+        timeout: 120_000,
       });
 
       if (launchResult.status !== 0 && launchResult.status !== null) {
         const stderr = launchResult.stderr?.slice(0, 1000) || "";
-        throw new Error(`deep-review.sh failed (exit ${launchResult.status}): ${stderr}`);
+        throw new Error(`fleet deep-review failed (exit ${launchResult.status}): ${stderr}`);
       }
       if (launchResult.status === null) {
-        // Killed by signal (timeout or OOM)
         const signal = launchResult.signal || "unknown";
         const stderr = launchResult.stderr?.slice(0, 500) || "";
-        throw new Error(`deep-review.sh killed by ${signal} (likely timeout — try --no-context to skip static analysis, or reduce scope). ${stderr}`);
+        throw new Error(`fleet deep-review killed by ${signal} (likely timeout — try --no-context to skip static analysis, or reduce scope). ${stderr}`);
       }
 
       const stdout = launchResult.stdout || "";
-      const tmuxSessionMatch = stdout.match(/Session:\s+(\S+)/);
-      const sessionDir = tmuxSessionMatch ? tmuxSessionMatch[1] : "unknown";
       const reviewSessionMatch = stdout.match(/tmux switch-client -t (\S+)/);
       const reviewSession = reviewSessionMatch ? reviewSessionMatch[1] : session_name || "dr-unknown";
+      const sessionDirMatch = stdout.match(/Dir:\s+(\S+)/);
+      const sessionDir = sessionDirMatch ? sessionDirMatch[1] : "unknown";
       const passesPerFocus = passes || 2;
       const hasContent = !!content;
       const hasScope = !!scope;
@@ -220,7 +178,7 @@ server.registerTool(
       const numWorkerWindows = Math.ceil(totalWorkers / 4);
 
       const windowLines: string[] = [];
-      windowLines.push(`  Window 0: coordinator (1 pane, ${process.env.DEEP_REVIEW_COORD_MODEL || "sonnet"})`);
+      windowLines.push(`  Window 0: coordinator (1 pane, ${process.env.DEEP_REVIEW_COORD_MODEL || "opus"})`);
       for (let w = 1; w <= numWorkerWindows; w++) {
         const first = (w - 1) * 4 + 1;
         const last = Math.min(w * 4, totalWorkers);
@@ -239,24 +197,19 @@ server.registerTool(
             ``,
             `Session dir: ${sessionDir}`,
             `Workers: ${totalWorkers} (${numFocus} focus × ${passesPerFocus} passes)`,
-            `Focus: ${focus?.length ? focus.join(", ") : "security, logic, error-handling, data-integrity, architecture, performance, ux-impact, completeness"}`,
-            `Completion: sentinel files at ${sessionDir}/pass-{1..${totalWorkers}}.done`,
+            `Focus: ${focus?.length ? focus.join(", ") : "auto-detected"}`,
             notify ? `Notify: ${notify} (on completion)` : `Notify: desktop only`,
             ``,
             `Attach: tmux switch-client -t ${reviewSession}`,
             `        tmux a -t ${reviewSession}`,
             ``,
-            `Pipeline: ${totalWorkers} workers -> bucket -> majority vote (>=2/${passesPerFocus} per focus group) -> validate -> dedup -> autofix -> report + notify`,
             v1 ? `Mode: v1 (static focus areas)` : `Mode: v2 (dynamic roles, worktree isolation, output validation)`,
             verify ? `Verify: enabled (4 specialized verifiers: chrome, curl, test, script)` : `Verify: disabled`,
             `Report: ${sessionDir}/report.md`,
-            verify ? `Verification: ${sessionDir}/verification-*-results.json` : "",
             ``,
             `RECOMMENDATION: Deep review takes 15-25 min. While it runs:`,
             `• Work on generic/simple issues from your task list`,
-            `• Launch targeted quick reviews on specific files`,
             `• Continue development — deep review catches gnarly bugs in the background`,
-            `You'll be notified when results are ready.`,
           ].join("\n"),
         }],
       };

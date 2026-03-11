@@ -53,6 +53,7 @@ import { register as registerDoctor } from "./commands/doctor";
 import { register as registerOnboard } from "./commands/onboard";
 import { register as registerTui } from "./commands/tui";
 import { register as registerLayout } from "./commands/layout";
+import { register as registerDeepReview } from "./commands/deep-review";
 
 registerSetup(program);
 registerCreate(program);
@@ -75,5 +76,6 @@ registerDoctor(program);
 registerOnboard(program);
 registerTui(program);
 registerLayout(program);
+registerDeepReview(program);
 
 program.parse();
