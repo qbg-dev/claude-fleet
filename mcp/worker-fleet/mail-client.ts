@@ -58,14 +58,19 @@ export function refreshFleetMailUnread(): void {
 
 // ── Token Management ─────────────────────────────────────────────────
 
+/** Cached token — avoids redundant filesystem reads during parallel sends */
+let _cachedToken: string | null = null;
+
 /** Get or auto-provision a Fleet Mail bearer token for the current worker.
  *  Tokens stored in per-worker dir ({name}/token) and registry.json (backward compat). */
 export async function getFleetMailToken(): Promise<string> {
+  if (_cachedToken) return _cachedToken;
+
   // Check per-worker token file first (new primary location)
   const tokenPath = join(FLEET_DIR, WORKER_NAME, "token");
   try {
     const token = readFileSync(tokenPath, "utf-8").trim();
-    if (token) return token;
+    if (token) { _cachedToken = token; return token; }
   } catch {}
 
   // Fallback: check registry
@@ -76,6 +81,7 @@ export async function getFleetMailToken(): Promise<string> {
       mkdirSync(join(FLEET_DIR, WORKER_NAME), { recursive: true });
       writeFileSync(tokenPath, entry.bms_token);
     } catch {}
+    _cachedToken = entry.bms_token;
     return entry.bms_token;
   }
 
@@ -130,6 +136,7 @@ export async function getFleetMailToken(): Promise<string> {
     console.error(`[getFleetMailToken] WARN: Failed to persist bms_token for ${WORKER_NAME} to registry.json: ${e}`);
   }
 
+  _cachedToken = token;
   return token;
 }
 
@@ -146,6 +153,7 @@ export async function fleetMailRequest(method: string, path: string, body?: any)
       ...(body ? { "Content-Type": "application/json" } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(15_000), // 15s timeout — prevent hanging
   };
 
   const resp = await fetch(url, opts);
@@ -211,6 +219,7 @@ export async function resolveFleetMailAccountId(name: string): Promise<string> {
     const token = await getFleetMailToken();
     const resp = await fetch(`${FLEET_MAIL_URL}/api/directory`, {
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
     });
     if (resp.ok) {
       const data = await resp.json() as any;

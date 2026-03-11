@@ -113,25 +113,36 @@ Escalate to operator when: (1) design/architecture decisions need human judgment
       return { content: [{ type: "text" as const, text: "No recipients resolved" }], isError: true };
     }
 
-    // Send via Fleet Mail (durable delivery)
+    // Resolve CC once (not per-recipient)
+    const ccIds = cc ? await resolveFleetMailRecipients(cc) : [];
+
+    // Send via Fleet Mail (durable delivery) — parallel fan-out
     const mailSuccesses: string[] = [];
     const mailFailures: string[] = [];
     const tmuxDelivered: string[] = [];
     let lastMsgId = "";
 
-    for (const name of recipientNames) {
-      try {
+    const sendResults = await Promise.allSettled(
+      recipientNames.map(async (name) => {
         const toIds = await resolveFleetMailRecipients([name]);
-        const ccIds = cc ? await resolveFleetMailRecipients(cc) : [];
         const result = await fleetMailRequest("POST", "/api/messages/send", {
           to: toIds, subject, body,
           cc: ccIds, thread_id: thread_id || null, in_reply_to: in_reply_to || null,
           reply_by: reply_by || null, labels: labels || [], attachments: [],
         });
-        lastMsgId = result?.id || "";
-        mailSuccesses.push(name);
-      } catch (e: any) {
-        mailFailures.push(`${name}: ${e.message?.slice(0, 80)}`);
+        return { name, id: result?.id || "" };
+      })
+    );
+
+    for (const r of sendResults) {
+      if (r.status === "fulfilled") {
+        mailSuccesses.push(r.value.name);
+        lastMsgId = r.value.id;
+      } else {
+        const reason = (r.reason as Error)?.message?.slice(0, 80) || "unknown";
+        // Extract worker name from the promise index
+        const idx = sendResults.indexOf(r);
+        mailFailures.push(`${recipientNames[idx]}: ${reason}`);
       }
     }
 
