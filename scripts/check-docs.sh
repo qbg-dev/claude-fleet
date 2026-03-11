@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# scripts/check-docs.sh — Verify fleet documentation stays in sync with CLI commands
-# Run manually: bash scripts/check-docs.sh
-# Also called by pre-commit hook when CLI/doc files change.
+# scripts/check-docs.sh — Quick deterministic doc sync scan.
+# Useful as a first-pass during verification, but NOT the gate.
+# The pre-commit hook requires AI-verified proof XML (see doc-sync-checklist.md).
 set -euo pipefail
 
 FLEET_DIR="$(cd "$(dirname "$0")/.." && pwd)"
