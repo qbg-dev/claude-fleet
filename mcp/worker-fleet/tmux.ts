@@ -4,13 +4,12 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
-import { execSync, spawnSync, spawn } from "child_process";
-import { randomUUID } from "crypto";
-import { HOME, WORKER_NAME, CLAUDE_OPS } from "./config";
+import { execSync, spawnSync } from "child_process";
+import { HOME, WORKER_NAME } from "./config";
 import {
   getWorkerEntry, readRegistry,
   type RegistryConfig, type RegistryWorkerEntry,
-  isMissionAuthority, getMissionAuthorityLabel, getReportTo,
+  getMissionAuthorityLabel, getReportTo,
 } from "./registry";
 
 // ── Pane Liveness ────────────────────────────────────────────────────
@@ -75,15 +74,25 @@ export function tmuxSendMessage(paneId: string, text: string): void {
   } catch {}
 
   if (!isPaneIdle(paneId)) {
-    // Pane is busy — schedule background retry in 15s
-    const tmpDir = join(HOME, ".claude-ops/tmp");
-    if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
-    const msgFile = join(tmpDir, `retry-${randomUUID()}.txt`);
-    writeFileSync(msgFile, text);
-    const deliverScript = join(CLAUDE_OPS, "mcp/worker-fleet/deliver-tmux-msg.sh");
-    spawn("bash", [deliverScript, paneId, msgFile], {
-      detached: true, stdio: "ignore",
-    }).unref();
+    // Pane is busy — force-deliver after 15s (MCP server is long-running, setTimeout is fine)
+    setTimeout(() => {
+      try {
+        const bufName = `force-${Date.now()}-${process.pid}`;
+        const tmpDir = join(HOME, ".claude-ops/tmp");
+        if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
+        const tmpFile = join(tmpDir, `${bufName}.txt`);
+        writeFileSync(tmpFile, text);
+        try {
+          spawnSync("tmux", ["load-buffer", "-b", bufName, tmpFile], { timeout: 5000 });
+          spawnSync("tmux", ["paste-buffer", "-b", bufName, "-t", paneId, "-d"], { timeout: 5000 });
+          (globalThis as any).Bun.sleepSync(500);
+          spawnSync("tmux", ["send-keys", "-t", paneId, "-H", "0d"], { timeout: 5000 });
+        } finally {
+          try { rmSync(tmpFile); } catch {}
+          try { spawnSync("tmux", ["delete-buffer", "-b", bufName], { timeout: 2000 }); } catch {}
+        }
+      } catch {} // best-effort — message is already in Fleet Mail inbox
+    }, 15_000);
     return;
   }
 

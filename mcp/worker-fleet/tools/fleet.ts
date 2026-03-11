@@ -404,8 +404,8 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
     }
 
     // ── Optional launch ──
-    // ALL launches go through launch-flat-worker.sh (reliable: waits for TUI, paste-buffer, retries).
-    // Fork uses fork-worker.sh (inherits conversation context).
+    // Non-fork launches use TypeScript launchInTmux() (reliable: waits for TUI, paste-buffer, retries).
+    // Fork uses fork-worker.sh (inherits conversation context — needs session data copy).
     // Never use spawnInPane + tmux send-keys — it's fragile and breaks on escaping.
     let launchInfo = "";
     if (launch) {
@@ -469,29 +469,24 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
           }
         }
       } else {
-        // Non-fork: always delegate to launch-flat-worker.sh (reliable path)
-        const launchScript = join(CLAUDE_OPS, "scripts/launch-flat-worker.sh");
-        if (!existsSync(launchScript)) {
-          launchInfo = `\n  Launch: FAILED — script not found: ${launchScript}`;
-        } else {
-          const launchArgs = [launchScript, name, "--project", PROJECT_ROOT];
-          const winGroup = windowGroup || permissions.window;
-          if (winGroup) launchArgs.push("--window", winGroup);
-          if (windowIndex != null) launchArgs.push("--window-index", String(windowIndex));
-          const launchResult = spawnSync("bash", launchArgs, {
-            encoding: "utf-8", timeout: 120_000,
-            env: { ...process.env, PROJECT_ROOT, WORKER_RUNTIME: resolvedRuntime || "claude" },
-          });
-          if (launchResult.status === 0) {
-            const paneMatch = launchResult.stdout.match(/pane\s+(%\d+)/);
-            launchInfo = `\n  Launched: pane ${paneMatch ? paneMatch[1] : "unknown"}`;
-          } else {
-            launchInfo = `\n  Launch: FAILED (exit ${launchResult.status}) — ${(launchResult.stderr || "").slice(0, 200)}`;
-          }
+        // Non-fork: use TypeScript launchInTmux (handles Claude + Codex, seed injection, state update)
+        try {
+          const { launchInTmux } = await import("../../../cli/lib/launch");
+          const projectName = resolveProjectName();
+          const fleetConfig = readFleetConfig();
+          const sess = fleetConfig?.tmux_session || "w";
+          const winGroup = windowGroup || permissions.window || name;
+          const launchedPaneId = await launchInTmux(
+            name, projectName, sess, winGroup, windowIndex ?? undefined,
+            { runtime: (resolvedRuntime as "claude" | "codex") || "claude" },
+          );
+          launchInfo = `\n  Launched: pane ${launchedPaneId}`;
+        } catch (e: any) {
+          launchInfo = `\n  Launch: FAILED — ${e.message}`;
         }
       }
     } else {
-      launchInfo = `\n  Launch: manual — bash launch-flat-worker.sh ${name}`;
+      launchInfo = `\n  Launch: manual — fleet start ${name}`;
     }
 
     // Return summary
@@ -751,7 +746,7 @@ async function handleFleetStandby(params: Record<string, any>): Promise<McpResul
         ``,
         standbyPendingWarning || null,
         ``,
-        `To resume: call standby_worker(name="${targetName}") again, or: bash ~/.claude-ops/scripts/launch-flat-worker.sh ${targetName}`,
+        `To resume: call standby_worker(name="${targetName}") again, or: fleet start ${targetName}`,
       ].filter(Boolean).join("\n"),
     }],
   };

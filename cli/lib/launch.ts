@@ -1,8 +1,9 @@
 /**
- * Shared launch logic: create/find tmux pane, start claude, inject seed.
- * Used by both `create` and `start` commands.
+ * Shared launch logic: create/find tmux pane, start agent, inject seed.
+ * Used by CLI (`fleet create`/`fleet start`) and MCP (`create_worker`).
+ * Supports Claude and Codex runtimes.
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   FLEET_DATA, FLEET_DIR, workerDir,
@@ -17,12 +18,23 @@ import {
 } from "./tmux";
 import { info, ok, warn, fail } from "./fmt";
 
+export interface LaunchOptions {
+  /** Runtime: "claude" (default) or "codex" */
+  runtime?: "claude" | "codex";
+  /** Override workerName env for seed generation */
+  workerName?: string;
+}
+
 /**
  * Launch a worker in a tmux pane. Handles:
  * - Session/window/pane creation
- * - claude command construction
+ * - Claude/Codex command construction
+ * - Git hook installation in worktree
+ * - .mcp.json symlink to project root
  * - TUI wait + seed injection
- * - state.json update
+ * - state.json + legacy registry update
+ *
+ * Returns the tmux pane ID.
  */
 export async function launchInTmux(
   name: string,
@@ -30,7 +42,8 @@ export async function launchInTmux(
   session: string,
   window: string,
   windowIndex?: number,
-): Promise<void> {
+  options?: LaunchOptions,
+): Promise<string> {
   const dir = workerDir(project, name);
   const config = getConfig(project, name);
   if (!config) fail(`No config.json for '${name}'`);
@@ -39,9 +52,27 @@ export async function launchInTmux(
   if (!worktree) fail(`No worktree configured for ${name}`);
   if (!existsSync(worktree)) fail(`Worktree not found: ${worktree}`);
 
-  info(`Launching in tmux (session: ${session}, window: ${window})`);
+  const runtime = options?.runtime || "claude";
+  info(`Launching in tmux (session: ${session}, window: ${window}, runtime: ${runtime})`);
 
-  // Create or find pane
+  // ── Symlink .mcp.json to project root ──
+  const projectRoot = resolveProjectRootFromWorktree(worktree);
+  if (projectRoot && projectRoot !== worktree) {
+    const mcpSrc = join(projectRoot, ".mcp.json");
+    const mcpDst = join(worktree, ".mcp.json");
+    if (existsSync(mcpSrc)) {
+      try {
+        const { unlinkSync, symlinkSync } = require("node:fs");
+        try { unlinkSync(mcpDst); } catch {}
+        symlinkSync(mcpSrc, mcpDst);
+      } catch {}
+    }
+  }
+
+  // ── Install git hooks in worktree ──
+  installWorktreeGitHooks(worktree, projectRoot);
+
+  // ── Create or find tmux pane ──
   let paneId: string;
   let createdSession = false;
 
@@ -56,34 +87,45 @@ export async function launchInTmux(
 
   setPaneTitle(paneId, name);
 
-  // If we just created the session, the pane starts with a shell prompt
-  // but we still need to cd (createSession sets cwd, but if the shell
-  // has a custom cd hook it might not be reliable)
   if (createdSession) {
     sendKeys(paneId, `cd "${worktree}"`);
     sendEnter(paneId);
   }
 
-  // Build claude command (quote all values for shell safety)
+  // ── Build agent command ──
   const { model, reasoning_effort: effort, permission_mode: perm } = config!;
-  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${name}" claude --model "${model}" --effort "${effort}"`;
-  if (perm === "bypassPermissions") {
-    cmd += " --dangerously-skip-permissions";
+  let cmd: string;
+
+  if (runtime === "codex") {
+    cmd = `WORKER_NAME="${name}" WORKER_RUNTIME=codex codex -m "${model}"`;
+    if (perm === "bypassPermissions") {
+      cmd += " --dangerously-bypass-approvals-and-sandbox";
+    } else {
+      cmd += " -s workspace-write -a on-request";
+    }
+    cmd += ` -c model_reasoning_effort=${effort}`;
+    cmd += " --no-alt-screen";
+    cmd += ` --add-dir "${dir}"`;
   } else {
-    cmd += ` --permission-mode "${perm}"`;
+    cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${name}" claude --model "${model}" --effort "${effort}"`;
+    if (perm === "bypassPermissions") {
+      cmd += " --dangerously-skip-permissions";
+    } else {
+      cmd += ` --permission-mode "${perm}"`;
+    }
+    cmd += ` --add-dir "${dir}"`;
   }
-  cmd += ` --add-dir "${dir}"`;
 
   sendKeys(paneId, cmd);
   sendEnter(paneId);
 
-  // Wait for TUI
-  info("Waiting for Claude TUI...");
+  // ── Wait for TUI ──
+  info("Waiting for TUI...");
   const ready = await waitForPrompt(paneId);
   if (!ready) warn("TUI timeout after 60s, proceeding anyway");
   await Bun.sleep(2000); // settle
 
-  // Generate + inject seed
+  // ── Generate + inject seed ──
   let seedContent: string;
   try {
     const result = Bun.spawnSync(
@@ -107,13 +149,10 @@ export async function launchInTmux(
   if (!pasted) {
     warn("Failed to load seed buffer — worker launched without seed");
   } else {
-    // Scale settle time by seed size: 2s base + 1s per 4KB
     const settleMs = Math.min(8000, 2000 + Math.floor(seedContent.length / 4096) * 1000);
     await Bun.sleep(settleMs);
     sendEnter(paneId);
 
-    // Verify seed wasn't garbled: check pane output for shell errors
-    // that indicate seed text leaked into zsh instead of Claude's TUI
     await Bun.sleep(3000);
     const output = capturePane(paneId, 10);
     if (/command not found|bad pattern|zsh:|bash:/.test(output) && !/❯.*command not found/.test(output)) {
@@ -122,12 +161,10 @@ export async function launchInTmux(
     if (/❯/.test(output)) sendEnter(paneId);
   }
 
-  // Update state.json
+  // ── Update state.json ──
   const paneTarget = getPaneTarget(paneId);
-  // Strip milliseconds from ISO string so watchdog's macOS `date -j -f` can parse it
   const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
-  // Preserve past_sessions
   const oldState = getState(project, name);
   const oldSessionId = oldState?.session_id || "";
   let pastSessions = oldState?.past_sessions || [];
@@ -149,10 +186,55 @@ export async function launchInTmux(
     custom: oldState?.custom || {},
   });
 
-  // Update legacy registry
   updateRegistry(name, project, paneId, paneTarget, session);
 
   ok(`Worker '${name}' launched in pane ${paneId} (session: ${session}, window: ${window})`);
+  return paneId;
+}
+
+// ── Git Hook Installation ──
+
+/** Install commit-msg and post-commit hooks in a worktree's git dir */
+function installWorktreeGitHooks(worktree: string, projectRoot: string | null): void {
+  try {
+    const result = Bun.spawnSync(
+      ["git", "-C", worktree, "rev-parse", "--absolute-git-dir"],
+      { stderr: "pipe" },
+    );
+    const gitDir = result.exitCode === 0 ? result.stdout.toString().trim() : null;
+    if (!gitDir) return;
+
+    const hooksDir = join(gitDir, "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+
+    const hookNames = ["commit-msg", "post-commit"];
+    for (const hookName of hookNames) {
+      // Try project-local, then fleet-level
+      let src = projectRoot ? join(projectRoot, `.claude/scripts/worker-${hookName}-hook.sh`) : "";
+      if (!src || !existsSync(src)) {
+        src = join(FLEET_DIR, `scripts/worker-${hookName}-hook.sh`);
+      }
+      if (existsSync(src)) {
+        const dst = join(hooksDir, hookName);
+        if (!existsSync(dst)) {
+          copyFileSync(src, dst);
+          Bun.spawnSync(["chmod", "+x", dst]);
+        }
+      }
+    }
+  } catch {} // non-fatal
+}
+
+/** Resolve project root from worktree path (strip -w-<name> suffix) */
+function resolveProjectRootFromWorktree(worktree: string): string | null {
+  // Worktrees are at PROJECT_ROOT/../PROJECT_NAME-w-WORKER
+  const match = worktree.match(/^(.+?)(?:-w-[^/]+)?$/);
+  if (match && existsSync(match[1])) return match[1];
+  // Fallback: git toplevel
+  try {
+    const result = Bun.spawnSync(["git", "-C", worktree, "rev-parse", "--show-toplevel"], { stderr: "pipe" });
+    return result.exitCode === 0 ? result.stdout.toString().trim() : null;
+  } catch { return null; }
 }
 
 /** Backward-compat write to registry.json */

@@ -490,8 +490,8 @@ describe("generateSeedContent", () => {
   test("includes available scripts section", () => {
     const seed = generateSeedContent();
     expect(seed).toContain("Available Scripts");
-    expect(seed).toContain("request-merge.sh");
-    expect(seed).toContain("worker-status.sh");
+    expect(seed).toContain("deploy-to-slot.sh");
+    expect(seed).toContain("pre-validate.sh");
   });
 
   test("includes stop gates documentation", () => {

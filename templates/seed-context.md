@@ -1,29 +1,37 @@
 ## MCP Tools (`mcp__worker-fleet__*`)
 
-20 tools. One action per tool for clear schemas and reliable tool selection.
+Core tools for worker operation. Use `fleet_help()` or `mail_help()` for full reference.
+
+### Fundamentals
 
 | Tool | What it does |
 |------|-------------|
-| `mail_send(to, subject, body)` | Message a worker, "report", "direct_reports", "all", or "user". `cc`, `in_reply_to`, `thread_id`, `labels` supported. |
-| `mail_inbox(label?)` | Read your inbox. Default label=UNREAD. Use label="INBOX" for all. Use label="TASK" for task threads. |
-| `mail_read(id)` | Read full message body by ID (auto-marks as read). |
-| `mail_help()` | Fleet Mail CLI docs — search, threads, labels, mailing lists, curl examples. |
-| `get_worker_state(name?)` | Read worker state; `name="all"` for fleet overview |
-| `update_state(key, value)` | Persist state across recycles (saved in registry, included in next seed) |
-| `add_hook(event, description, ...)` | Register a dynamic hook: gate (blocking) or inject (context). See Dynamic Hooks section |
-| `complete_hook(id, result?)` | Mark a blocking hook as done (`id="all"` to clear all) |
-| `remove_hook(id)` | Remove any hook entirely (`id="all"` to clear all) |
-| `list_hooks(event?)` | Show all active hooks (dynamic + static). Each shows type ([GATE]/[INJECT]/[LOG]), status, and description |
-| `recycle(message?)` | Restart fresh; `resume=true` for hot-restart; `sleep_seconds=N` overrides timer; `cancel=true` aborts sleep. **Blocked if stop checks pending** (shows pending list). |
-| `create_worker(name, mission, ...)` | Create a new worker: worktree, branch, registry entry, optional launch. |
-| `register_worker(model?, ...)` | Register yourself in the fleet registry. Auto-detects tmux pane. |
-| `deregister_worker(name?, reason?)` | Remove a worker from registry. Requires HANDOFF.md. |
-| `move_worker(window, name?)` | Move a worker's tmux pane to a different window. |
-| `standby_worker(name?, reason?)` | Toggle worker between active and standby. |
-| `fleet_template(type)` | Preview worker archetype defaults. |
-| `fleet_help()` | Show fleet management documentation. |
-| `save_checkpoint(summary, key_facts?)` | Save working state (git, hooks, facts). Auto-saved on compaction/recycle. |
-| `deep_review(scope, spec?)` | Spawn adversarial reviewer for complex changes |
+| `mail_send(to, subject, body)` | Message a worker, "user", "all", or mailing list. Supports `cc`, `in_reply_to`, `thread_id`, `labels`. |
+| `mail_inbox(label?)` | Read YOUR inbox. Default label=UNREAD. label="INBOX" for all, "TASK" for tasks. |
+| `mail_read(id)` | Read full message body by ID (auto-marks as read). Only works for YOUR messages — Fleet Mail enforces account isolation. |
+| `recycle(message?)` | End cycle. `soft=true`: log + stay alive. Default: cold restart. `sleep_seconds=N`: override timer. **Blocked if stop checks pending.** |
+| `create_worker(name, mission, ...)` | Spawn a new worker with worktree, branch, registry entry. |
+| `save_checkpoint(summary, key_facts?)` | Snapshot working state. Auto-saved on compaction/recycle. |
+| `update_state(key, value)` | Persist state across recycles. |
+| `get_worker_state(name?)` | Read worker state; `name="all"` for fleet overview. |
+
+### Hooks (self-governance)
+
+| Tool | What it does |
+|------|-------------|
+| `add_hook(event, description, ...)` | Register a dynamic hook: gate (blocking) or inject (context). |
+| `complete_hook(id, result?)` | Mark a blocking hook as done (`id="all"` to clear all). |
+| `remove_hook(id)` | Remove a hook (`id="all"` to clear all). |
+| `list_hooks(event?)` | Show all active hooks. |
+
+### Discovery
+
+| Tool | What it does |
+|------|-------------|
+| `fleet_help()` | Full fleet management docs — worker lifecycle, config, advanced operations. |
+| `mail_help()` | Fleet Mail reference — search, threads, labels, mailing lists, curl examples. |
+
+Additional tools (`register_worker`, `deregister_worker`, `move_worker`, `standby_worker`, `fleet_template`, `deep_review`) are available — run `fleet_help()` for details.
 
 Every tool response includes lint warnings if issues are detected — fix them immediately.
 
@@ -391,9 +399,9 @@ Check `.claude/scripts/` before writing inline bash. **Scripts are your most rel
 ```
 .claude/scripts/worker/deploy-to-slot.sh   # Deploy to your isolated test slot
 .claude/scripts/worker/pre-validate.sh     # TypeScript + build check before merge
-.claude/scripts/request-merge.sh           # Send merge request to merger
-.claude/scripts/worker-status.sh           # Fleet health overview
 ```
+
+Use `mail_send(to="merger", ...)` for merge requests. Use `fleet ls` for fleet status.
 
 **Worker-specific** (check `.claude/scripts/{{WORKER_NAME}}/` — create scripts here for tasks you do repeatedly):
 
