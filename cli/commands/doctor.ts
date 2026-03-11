@@ -9,7 +9,7 @@ const HOME = process.env.HOME || "/tmp";
 
 interface CheckResult {
   name: string;
-  status: "pass" | "fail" | "skip";
+  status: "pass" | "fail" | "warn" | "skip";
   message: string;
   fix?: string;
   optional?: boolean;
@@ -515,14 +515,47 @@ function checkWatchdog(): CheckResult {
   };
 }
 
+// ─── Display ──────────────────────────────────────────────────────────────
+
+function formatCheckResult(r: CheckResult): void {
+  let icon: string;
+  let line: string;
+
+  switch (r.status) {
+    case "pass":
+      icon = chalk.green("\u2713");
+      line = `${icon} ${chalk.bold(r.name)}: ${r.message}`;
+      break;
+    case "fail":
+      icon = chalk.red("\u2717");
+      line = `${icon} ${chalk.bold(r.name)}: ${chalk.red(r.message)}`;
+      break;
+    case "warn":
+      icon = chalk.yellow("\u26A0");
+      line = `${icon} ${chalk.bold(r.name)}: ${chalk.yellow(r.message)}`;
+      break;
+    case "skip":
+      icon = chalk.yellow("\u25CB");
+      line = `${icon} ${chalk.bold(r.name)}: ${chalk.yellow(r.message)}`;
+      break;
+  }
+
+  console.log(line!);
+  if (r.fix && r.status !== "pass") {
+    console.log(`  ${chalk.dim("\u2192")} ${r.fix}`);
+  }
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────
 
 async function runDoctor(globalOpts: Record<string, unknown>): Promise<void> {
   const json = globalOpts.json as boolean;
+  const fix = globalOpts.fix as boolean;
+  const project = (globalOpts.project as string) || null;
 
   const results: CheckResult[] = [];
 
-  // Core checks (order matters for readability)
+  // ── Section 1: Infrastructure ──
   results.push(checkPrerequisites());
   results.push(checkSymlinks());
   results.push(checkDataDirectory());
@@ -530,13 +563,42 @@ async function runDoctor(globalOpts: Record<string, unknown>): Promise<void> {
   results.push(checkMcpServer());
   results.push(checkHooks());
   results.push(await checkFleetMail());
-
-  // Optional checks
   results.push(checkDeepReview());
   results.push(checkWatchdog());
 
+  // ── Section 2: Fleet Health ──
+  // Resolve project name
+  let projectName = project;
+  if (!projectName) {
+    try {
+      const r = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { stderr: "pipe" });
+      if (r.exitCode === 0) {
+        const root = r.stdout.toString().trim();
+        projectName = root.split("/").pop()!.replace(/-w-.*$/, "");
+      }
+    } catch {}
+  }
+  if (!projectName) {
+    projectName = process.cwd().split("/").pop()!.replace(/-w-.*$/, "");
+  }
+
+  const { runHealthChecks } = await import("../lib/health");
+  const { results: healthResults, fixes } = runHealthChecks(projectName);
+
+  // Convert health results to CheckResult format
+  const allHealthResults: CheckResult[] = healthResults.map(hr => ({
+    name: hr.name,
+    status: hr.status,
+    message: hr.message,
+    fix: hr.fix,
+  }));
+
   if (json) {
-    console.log(JSON.stringify(results, null, 2));
+    console.log(JSON.stringify({
+      infrastructure: results,
+      fleet_health: allHealthResults,
+      fixes_available: fixes.length,
+    }, null, 2));
     return;
   }
 
@@ -545,49 +607,54 @@ async function runDoctor(globalOpts: Record<string, unknown>): Promise<void> {
   console.log("============");
   console.log("");
 
-  for (const r of results) {
-    let icon: string;
-    let line: string;
+  // Infrastructure section
+  console.log(chalk.bold.underline("Infrastructure"));
+  console.log("");
+  for (const r of results) formatCheckResult(r);
 
-    switch (r.status) {
-      case "pass":
-        icon = chalk.green("\u2713");
-        line = `${icon} ${chalk.bold(r.name)}: ${r.message}`;
-        break;
-      case "fail":
-        icon = chalk.red("\u2717");
-        line = `${icon} ${chalk.bold(r.name)}: ${chalk.red(r.message)}`;
-        break;
-      case "skip":
-        icon = chalk.yellow("\u25CB");
-        line = `${icon} ${chalk.bold(r.name)}: ${chalk.yellow(r.message)}`;
-        break;
-    }
+  // Fleet Health section
+  console.log("");
+  console.log(chalk.bold.underline(`Fleet Health (${projectName})`));
+  console.log("");
+  for (const r of allHealthResults) formatCheckResult(r);
 
-    console.log(line!);
-    if (r.fix && r.status !== "pass") {
-      console.log(`  ${chalk.dim("\u2192")} ${r.fix}`);
+  // Apply fixes
+  if (fix && fixes.length > 0) {
+    console.log("");
+    console.log(chalk.bold.underline("Auto-fixes"));
+    for (const f of fixes) {
+      try {
+        f.fn();
+        console.log(`  ${chalk.green("\u2713")} ${f.action}`);
+      } catch (err: any) {
+        console.log(`  ${chalk.red("\u2717")} ${f.action}: ${err.message}`);
+      }
     }
+  } else if (fixes.length > 0 && !fix) {
+    console.log("");
+    console.log(chalk.dim(`${fixes.length} auto-fixable issue(s) found. Run with --fix to apply.`));
   }
 
   // Summary
-  const coreResults = results.filter(r => !r.optional);
+  const allResults = [...results, ...allHealthResults];
+  const coreResults = allResults.filter(r => !r.optional);
   const corePassed = coreResults.filter(r => r.status === "pass").length;
   const coreTotal = coreResults.length;
-  const anyFailed = results.some(r => r.status === "fail");
+  const anyFailed = allResults.some(r => r.status === "fail");
 
   console.log("");
   if (anyFailed) {
-    console.log(chalk.red(`Status: unhealthy (${corePassed}/${coreTotal} core checks passed)`));
+    console.log(chalk.red(`Status: unhealthy (${corePassed}/${coreTotal} checks passed)`));
   } else {
-    console.log(chalk.green(`Status: healthy (${corePassed}/${coreTotal} core checks passed)`));
+    console.log(chalk.green(`Status: healthy (${corePassed}/${coreTotal} checks passed)`));
   }
 }
 
 export function register(parent: Command): void {
   const sub = parent
     .command("doctor")
-    .description("Verify health of the fleet ecosystem");
+    .description("Verify health of the fleet ecosystem")
+    .option("--fix", "Auto-fix issues that can be repaired automatically");
   addGlobalOpts(sub)
     .action(async (_opts: Record<string, unknown>, cmd: Command) => {
       await runDoctor(cmd.optsWithGlobals());

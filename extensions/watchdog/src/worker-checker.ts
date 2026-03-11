@@ -1,0 +1,297 @@
+/**
+ * Core state machine: checkWorker() → WorkerAction.
+ * Pure function — all side effects go through WatchdogEffects.
+ * Every code path returns an explicit WorkerAction (no implicit returns).
+ */
+
+import type { WorkerAction, WorkerSnapshot, WatchdogConfig, WatchdogEffects } from "./types";
+import { checkScrollbackStuck } from "./stuck-detector";
+import { isCrashLooped, incrementCrashCount } from "./crash-tracker";
+
+/** Claude TUI indicators — used for bare-shell detection */
+const TUI_INDICATORS = /bypass permissions|thinking|Osmosing|Booping|Garnishing|Reading|Searching|Editing|Writing|Running|Worked for|esc to interrupt|❯\s*$/m;
+
+/**
+ * Parse an ISO 8601 timestamp to epoch seconds.
+ * Handles TypeScript-style "2026-03-11T01:48:02.242Z" (with millis).
+ * Returns 0 on parse failure.
+ */
+export function parseIsoEpoch(iso: string | null | undefined): number {
+  if (!iso) return 0;
+  const ms = new Date(iso).getTime();
+  return isNaN(ms) ? 0 : Math.floor(ms / 1000);
+}
+
+/**
+ * Check a single worker and return what action to take.
+ * Pure logic — caller handles side effects based on the returned action.
+ */
+export function checkWorker(
+  snap: WorkerSnapshot,
+  config: WatchdogConfig,
+  effects: WatchdogEffects,
+): WorkerAction {
+  const now = effects.nowEpoch();
+
+  // ── Skip conditions ──
+
+  // Standby — intentionally dormant
+  if (snap.status === "standby") {
+    return { type: "skip", reason: "standby" };
+  }
+
+  // Invalid pane_id — sanitize (valid IDs start with %)
+  if (snap.paneId && !snap.paneId.startsWith("%")) {
+    return { type: "skip", reason: `invalid pane_id '${snap.paneId}' — needs sanitizing` };
+  }
+
+  // Crash-looped — don't retry
+  if (isCrashLooped(snap.name)) {
+    return { type: "crash-loop", count: -1 };
+  }
+
+  // ── Sleeping workers ──
+  if (snap.status === "sleeping") {
+    return handleSleeping(snap, config, effects, now);
+  }
+
+  // Race condition: active status but sleep_until is in the future
+  if (snap.perpetual && snap.sleepUntil) {
+    const wakeEpoch = parseIsoEpoch(snap.sleepUntil);
+    if (wakeEpoch > 0 && now < wakeEpoch) {
+      // Check early wake (unread mail) — must be async, so return skip and let caller handle
+      return { type: "skip", reason: "active-with-future-sleep_until — needs async mail check" };
+    }
+  }
+
+  // ── No pane registered ──
+  if (!snap.paneId) {
+    return handleNoPane(snap, config, effects, now);
+  }
+
+  // ── Pane alive? ──
+  const paneAlive = effects.isPaneAlive(snap.paneId);
+
+  if (paneAlive) {
+    return handlePaneAlive(snap, config, effects, now);
+  }
+
+  // ── Pane dead ──
+  return handlePaneDead(snap, config, effects, now);
+}
+
+// ── Sleeping handler ──
+
+function handleSleeping(
+  snap: WorkerSnapshot,
+  _config: WatchdogConfig,
+  _effects: WatchdogEffects,
+  now: number,
+): WorkerAction {
+  if (snap.sleepUntil) {
+    const wakeEpoch = parseIsoEpoch(snap.sleepUntil);
+    if (wakeEpoch > 0 && now < wakeEpoch) {
+      // Still within sleep window — caller should check for early wake (mail)
+      return { type: "skip", reason: "sleeping — timer not expired" };
+    }
+    // Timer expired — wake up
+    return { type: "fleet-start", reason: `sleep_until (${snap.sleepUntil}) expired`, stagger: true };
+  }
+
+  // No sleep_until: calculate from sleep_duration
+  if (snap.sleepDuration && snap.sleepDuration > 0) {
+    // No timer set — needs to be calculated, skip for now
+    return { type: "skip", reason: "sleeping — no sleep_until, needs calculation" };
+  }
+
+  // No sleep_duration either — just wake up
+  return { type: "fleet-start", reason: "sleeping with no timer or duration", stagger: true };
+}
+
+// ── No-pane handler ──
+
+function handleNoPane(
+  snap: WorkerSnapshot,
+  _config: WatchdogConfig,
+  _effects: WatchdogEffects,
+  now: number,
+): WorkerAction {
+  // Non-perpetual with no pane — skip (finished naturally)
+  if (!snap.perpetual) {
+    return { type: "skip", reason: "non-perpetual with no pane" };
+  }
+
+  // Grace: recently created (< 180s)
+  const createdEpoch = parseIsoEpoch(snap.createdAt);
+  if (createdEpoch > 0 && (now - createdEpoch) < 180) {
+    return { type: "skip", reason: "recently created — grace period" };
+  }
+
+  // Grace: recently relaunched (< 120s)
+  const relaunchEpoch = parseIsoEpoch(snap.lastRelaunchAt);
+  if (relaunchEpoch > 0 && (now - relaunchEpoch) < 120) {
+    return { type: "skip", reason: "recently relaunched — cooldown" };
+  }
+
+  // Grace: fleet launch actively running
+  const fleetRunning = Bun.spawnSync(["pgrep", "-f", "fleet.*start"], { stderr: "pipe" });
+  if (fleetRunning.exitCode === 0) {
+    return { type: "skip", reason: "fleet start in progress" };
+  }
+
+  return { type: "fleet-start", reason: "perpetual worker has no pane_id", stagger: true };
+}
+
+// ── Pane alive handler ──
+
+function handlePaneAlive(
+  snap: WorkerSnapshot,
+  config: WatchdogConfig,
+  effects: WatchdogEffects,
+  now: number,
+): WorkerAction {
+  // Relaunch cooldown: if last relaunch < 120s, skip entirely
+  const relaunchEpoch = parseIsoEpoch(snap.lastRelaunchAt);
+  if (relaunchEpoch > 0 && (now - relaunchEpoch) < 120) {
+    return { type: "ok" };
+  }
+
+  // Memory-leak recycle: session alive > maxCycleSec
+  if (snap.perpetual && relaunchEpoch > 0 && (now - relaunchEpoch) > config.maxCycleSec) {
+    return { type: "resume", reason: `memory-leak-recycle (${now - relaunchEpoch}s)`, stagger: true };
+  }
+
+  // Check liveness heartbeat
+  const liveness = effects.readLiveness(snap.name);
+
+  if (liveness !== null) {
+    // Guard: non-numeric
+    if (isNaN(liveness) || liveness <= 0) {
+      effects.writeLiveness(snap.name, now);
+      return { type: "ok" };
+    }
+
+    const sinceActive = now - liveness;
+
+    // Non-perpetual idle 3+ hours: kill to reclaim memory
+    if (!snap.perpetual && sinceActive >= 10800) {
+      return { type: "move-inactive", reason: `non-perpetual idle ${sinceActive}s` };
+    }
+
+    // ── Sleep-complete detection (perpetual with sleep_duration) ──
+    // Check this before liveness threshold gate — sleep_duration may be < livenessThreshold
+    if (snap.perpetual && snap.sleepDuration && snap.sleepDuration > 0) {
+      if (sinceActive >= snap.sleepDuration) {
+        // Verify TUI is still running — if bare shell, the agent crashed
+        const paneContent = effects.capturePane(snap.paneId!, 30);
+        if (!TUI_INDICATORS.test(paneContent)) {
+          return { type: "bare-shell-restart", reason: "Claude not running in pane", stagger: true };
+        }
+        return { type: "resume", reason: `sleep-complete (${sinceActive}s of ${snap.sleepDuration}s)`, stagger: true };
+      }
+    }
+
+    // Liveness threshold — if recently active, skip further checks
+    let livenessThreshold = 300;
+    if (snap.perpetual) {
+      livenessThreshold = 1200;
+      const sleepDur = snap.sleepDuration || 0;
+      if (sleepDur > livenessThreshold) {
+        livenessThreshold = sleepDur;
+      }
+    }
+
+    if (sinceActive < livenessThreshold) {
+      effects.clearStuckCandidate(snap.name);
+      return { type: "ok" };
+    }
+  } else {
+    // No liveness file — seed it
+    effects.writeLiveness(snap.name, now);
+    return { type: "ok" };
+  }
+
+  // ── Bare-shell detection ──
+  const paneContent = effects.capturePane(snap.paneId!, 30);
+  if (!TUI_INDICATORS.test(paneContent)) {
+    if (snap.perpetual) {
+      return { type: "bare-shell-restart", reason: "Claude not running in pane", stagger: true };
+    }
+    return { type: "move-inactive", reason: "bare-shell — no Claude TUI" };
+  }
+
+  // ── Stuck detection (scrollback diff) ──
+  const idleSec = checkScrollbackStuck(snap.paneId!, snap.name, now, effects);
+
+  // Effective threshold: for perpetual, use max(sleep_duration, 1200, configured)
+  let effectiveThreshold = config.stuckThresholdSec;
+  if (snap.perpetual) {
+    const minPerp = 1200;
+    const sleepDur = snap.sleepDuration || 0;
+    effectiveThreshold = Math.max(effectiveThreshold, minPerp, sleepDur);
+  }
+
+  if (idleSec > effectiveThreshold) {
+    if (snap.perpetual) {
+      return { type: "resume", reason: `stuck ${idleSec}s`, stagger: true };
+    }
+    return { type: "skip", reason: `stuck ${idleSec}s but non-perpetual` };
+  }
+
+  return { type: "ok" };
+}
+
+// ── Pane dead handler ──
+
+function handlePaneDead(
+  snap: WorkerSnapshot,
+  config: WatchdogConfig,
+  _effects: WatchdogEffects,
+  now: number,
+): WorkerAction {
+  // Non-perpetual: mark inactive
+  if (!snap.perpetual) {
+    return { type: "move-inactive", reason: `dead pane (${snap.paneId})` };
+  }
+
+  // Crash-loop guard
+  const crashCount = incrementCrashCount(snap.name, now);
+  if (crashCount >= config.maxCrashesPerHr) {
+    return { type: "crash-loop", count: crashCount };
+  }
+
+  // Relaunch strategy depends on whether window/session still exist
+  return { type: "relaunch", reason: `dead pane (${snap.paneId})`, stagger: true };
+}
+
+/**
+ * Async version of checkWorker that handles mail-based early wake.
+ * Wraps checkWorker and resolves "needs async mail check" paths.
+ */
+export async function checkWorkerAsync(
+  snap: WorkerSnapshot,
+  config: WatchdogConfig,
+  effects: WatchdogEffects,
+): Promise<WorkerAction> {
+  const action = checkWorker(snap, config, effects);
+
+  // Handle sleeping workers that need mail check for early wake
+  if (action.type === "skip" && action.reason === "sleeping — timer not expired") {
+    const hasUnread = await effects.workerHasUnreadMail(snap.name);
+    if (hasUnread) {
+      return { type: "fleet-start", reason: "early-wake — unread Fleet Mail", stagger: true };
+    }
+    return action;
+  }
+
+  // Handle active-with-future-sleep_until race
+  if (action.type === "skip" && action.reason.startsWith("active-with-future-sleep_until")) {
+    const hasUnread = await effects.workerHasUnreadMail(snap.name);
+    if (hasUnread) {
+      return { type: "fleet-start", reason: "early-wake — unread Fleet Mail (active race)", stagger: true };
+    }
+    return { type: "skip", reason: "sleeping (active status but sleep_until in future)" };
+  }
+
+  return action;
+}

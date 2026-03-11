@@ -42,6 +42,23 @@ export function getPaneTarget(paneId: string): string {
   return "";
 }
 
+/** Get all pane info in a single tmux call — replaces separate listPaneIds + getPaneTarget calls */
+export function listPaneInfo(): Map<string, { session: string; window: string; index: number }> {
+  const { ok, stdout } = run([
+    "list-panes", "-a", "-F", "#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_index}",
+  ]);
+  if (!ok) return new Map();
+  const result = new Map<string, { session: string; window: string; index: number }>();
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const [paneId, session, window, indexStr] = line.split("\t");
+    if (paneId) {
+      result.set(paneId, { session, window, index: parseInt(indexStr, 10) || 0 });
+    }
+  }
+  return result;
+}
+
 /** Check if a window exists in a session */
 export function windowExists(session: string, window: string): boolean {
   const { ok, stdout } = run(["list-windows", "-t", session, "-F", "#{window_name}"]);

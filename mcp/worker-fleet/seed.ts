@@ -11,11 +11,12 @@ import { readRegistry, getMissionAuthorityLabel, type RegistryConfig, type Regis
 // ── Seed Context Template ────────────────────────────────────────────
 
 /** Load shared seed context template, interpolate placeholders */
-export function loadSeedContext(branch: string, missionAuthority: string): string {
+export function loadSeedContext(branch: string, missionAuthority: string, workerName?: string): string {
+  const name = workerName || WORKER_NAME;
   const tmplPath = join(CLAUDE_OPS, "templates/seed-context.md");
   try {
     return readFileSync(tmplPath, "utf-8")
-      .replace(/\{\{WORKER_NAME\}\}/g, WORKER_NAME)
+      .replace(/\{\{WORKER_NAME\}\}/g, name)
       .replace(/\{\{BRANCH\}\}/g, branch)
       .replace(/\{\{MISSION_AUTHORITY\}\}/g, missionAuthority);
   } catch {
@@ -26,12 +27,14 @@ export function loadSeedContext(branch: string, missionAuthority: string): strin
 
 // ── Seed Content Generation ──────────────────────────────────────────
 
-/** Generate the seed prompt content for a worker (same template as launch-flat-worker.sh) */
-export function generateSeedContent(handoff?: string): string {
-  const workerDir = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME);
-  const fleetWorkerDir = join(FLEET_DIR, WORKER_NAME);
+/** Generate the seed prompt content for a worker (same template as launch-flat-worker.sh).
+ *  Optional workerName parameter allows generating seeds for any worker (used by watchdog). */
+export function generateSeedContent(handoff?: string, workerName?: string): string {
+  const effectiveName = workerName || WORKER_NAME;
+  const workerDir = join(PROJECT_ROOT, ".claude/workers", effectiveName);
+  const fleetWorkerDir = join(FLEET_DIR, effectiveName);
   const worktreeDir = getWorktreeDir();
-  const branch = `worker/${WORKER_NAME}`;
+  const branch = `worker/${effectiveName}`;
   const _seedConfig = readRegistry()._config as RegistryConfig | undefined;
   const _missionAuth = getMissionAuthorityLabel(_seedConfig);
 
@@ -40,7 +43,7 @@ export function generateSeedContent(handoff?: string): string {
   let proposalBlock = "";
   try {
     const reg = readRegistry();
-    const entry = reg[WORKER_NAME] as RegistryWorkerEntry | undefined;
+    const entry = reg[effectiveName] as RegistryWorkerEntry | undefined;
     if (entry?.custom && Object.keys(entry.custom).length > 0) {
       stateBlock = `\n\n## Persisted State\n\`\`\`json\n${JSON.stringify(entry.custom, null, 2)}\n\`\`\`\nThese values were saved by your previous instance via \`update_state()\`. Use them to resume context.`;
     }
@@ -51,7 +54,7 @@ export function generateSeedContent(handoff?: string): string {
       try {
         let instrContent = readFileSync(instrPath, "utf-8");
         instrContent = instrContent
-          .replace(/\{\{WORKER_NAME\}\}/g, WORKER_NAME)
+          .replace(/\{\{WORKER_NAME\}\}/g, effectiveName)
           .replace(/\{\{MISSION_AUTHORITY\}\}/g, _missionAuth)
           .replace(/\{\{TEMPLATE_PATH\}\}/g, tmplPath);
         proposalBlock = "\n\n" + instrContent;
@@ -61,7 +64,7 @@ export function generateSeedContent(handoff?: string): string {
 
   // Worker memory lives at project-level auto-memory subdirectory
   const projectSlug = PROJECT_ROOT.replace(/\//g, "-");
-  const workerMemoryDir = join(HOME, ".claude", "projects", projectSlug, "memory", WORKER_NAME);
+  const workerMemoryDir = join(HOME, ".claude", "projects", projectSlug, "memory", effectiveName);
 
   // ── Build handoff/checkpoint block FIRST (most important context for resuming) ──
   let handoffBlock = "";
@@ -69,7 +72,7 @@ export function generateSeedContent(handoff?: string): string {
     handoffBlock = `\n## HANDOFF FROM PREVIOUS CYCLE — READ FIRST\n\n${handoff}`;
   } else {
     // Read checkpoint from previous cycle (replaces handoff.md)
-    const checkpointLatest = join(WORKERS_DIR, WORKER_NAME, "checkpoints", "latest.json");
+    const checkpointLatest = join(WORKERS_DIR, effectiveName, "checkpoints", "latest.json");
     if (existsSync(checkpointLatest)) {
       try {
         const cpRaw = readFileSync(checkpointLatest, "utf-8").trim();
@@ -94,7 +97,7 @@ export function generateSeedContent(handoff?: string): string {
         handoffBlock = cpBlock;
       } catch {
         // Fall back to legacy handoff.md
-        const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
+        const handoffPath = join(WORKERS_DIR, effectiveName, "handoff.md");
         if (existsSync(handoffPath)) {
           try {
             const handoffContent = readFileSync(handoffPath, "utf-8").trim();
@@ -106,7 +109,7 @@ export function generateSeedContent(handoff?: string): string {
       }
     } else {
       // Legacy fallback: read handoff.md if no checkpoint exists
-      const handoffPath = join(WORKERS_DIR, WORKER_NAME, "handoff.md");
+      const handoffPath = join(WORKERS_DIR, effectiveName, "handoff.md");
       if (existsSync(handoffPath)) {
         try {
           const handoffContent = readFileSync(handoffPath, "utf-8").trim();
@@ -119,14 +122,14 @@ export function generateSeedContent(handoff?: string): string {
   }
 
   // ── Assemble seed: identity → handoff (FIRST) → instructions → context ──
-  let seed = `You are worker **${WORKER_NAME}**.
+  let seed = `You are worker **${effectiveName}**.
 Worktree: ${worktreeDir} (branch: ${branch})
 Worker config: ${workerDir}/
 ${handoffBlock}
 Read these files NOW in this order:
 1. ${existsSync(join(workerDir, "mission.md")) ? workerDir : fleetWorkerDir}/mission.md — your mission and goals (you own this file — update it as your mission evolves)
 2. Call \`mail_inbox()\` — check for messages before anything else
-3. Check \`.claude/scripts/${WORKER_NAME}/\` for existing scripts
+3. Check \`.claude/scripts/${effectiveName}/\` for existing scripts
 
 **Your memory**: \`${workerMemoryDir}/MEMORY.md\`
 Use Edit/Write to update it directly. Create topic files in that same directory for detailed notes.
