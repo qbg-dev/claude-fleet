@@ -1370,4 +1370,53 @@ hq_send() {
     bash -c "source '$HOME/.claude-ops/lib/event-bus.sh' && bus_publish 'cell-message' '$payload'" 2>/dev/null || true
 }
 
+# ═══════════════════════════════════════════════════════════════
+# HOOK SCRIPT PERMISSION SCANNING
+# ═══════════════════════════════════════════════════════════════
+# Shared function used by both tool-policy-gate.sh and hook-engine.sh
+# to scan script content against a worker's denyList.
+#
+# Usage:
+#   scan_script_against_denylist <script_file> <permissions_json_path>
+#   Returns 0 if allowed, 1 if blocked (reason on stdout)
+scan_script_against_denylist() {
+  local script_file="$1" perms="$2"
+  [ ! -f "$script_file" ] && return 0
+  [ ! -f "$perms" ] && return 0
+
+  local script_content
+  script_content=$(<"$script_file")
+
+  # Normalize: strip shebangs, comments, empty lines, join into one line
+  local normalized
+  normalized=$(echo "$script_content" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' | tr '\n' ' ; ')
+
+  # Read Bash(*) patterns from denyList
+  local patterns
+  patterns=$(jq -r '.denyList // [] | .[] | select(startswith("Bash("))' "$perms" 2>/dev/null || true)
+  [ -z "$patterns" ] && return 0
+
+  while IFS= read -r pattern; do
+    [ -z "$pattern" ] && continue
+    # Extract glob: "Bash(git push*)" → "git push*"
+    local glob="${pattern#Bash(}"
+    glob="${glob%)}"
+
+    # Convert glob to regex: escape special chars, * → .*, ? → .
+    local regex
+    regex=$(echo "$glob" | sed 's/[.[\^$+{}|\\]/\\&/g; s/\*/.*/g; s/?/./g')
+
+    if echo "$script_content" | grep -qE "$regex" 2>/dev/null; then
+      echo "Script blocked by policy: matches Bash($glob) in denyList"
+      return 1
+    fi
+    if echo "$normalized" | grep -qE "$regex" 2>/dev/null; then
+      echo "Script blocked by policy: matches Bash($glob) in denyList"
+      return 1
+    fi
+  done <<< "$patterns"
+
+  return 0
+}
+
 

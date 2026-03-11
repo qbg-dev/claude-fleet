@@ -60,6 +60,26 @@ export interface SystemHook {
   message: string;
 }
 
+export interface DynamicHook {
+  id: string;
+  event: string;
+  description: string;
+  content?: string;
+  blocking: boolean;
+  condition?: {
+    tool?: string;
+    file_glob?: string;
+    command_pattern?: string;
+  };
+  completed: boolean;
+  completed_at?: string;
+  result?: string;
+  agent_id?: string;
+  added_at: string;
+  /** Relative path to script file in the worker's hooks/ dir (e.g. "dh-1-notify-validator.sh") */
+  script_path?: string;
+}
+
 /** The 12 immutable system hooks — safety guardrails for all workers */
 export const SYSTEM_HOOKS: SystemHook[] = [
   { id: "sys-1", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "rm\\s+-rf\\s+[/~.]" }, action: "block", message: "Catastrophic rm -rf blocked" },

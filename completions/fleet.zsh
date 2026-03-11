@@ -56,6 +56,7 @@ _fleet() {
     'layout:Save/restore tmux window layouts'
     'deep-review:Adversarial code review'
     'dr:Adversarial code review'
+    'hook:Manage dynamic hooks'
   )
 
   _arguments -C \
@@ -134,6 +135,18 @@ _fleet() {
           ;;
         doctor)
           _arguments '--fix[Auto-fix issues]'
+          ;;
+        hook)
+          # Subcommands: add, rm, ls, complete
+          _arguments \
+            '1:subcommand:(add rm ls complete)' \
+            '--event[Hook event]:event:(Stop PreToolUse PostToolUse PreCompact SubagentStop SessionStart UserPromptSubmit)' \
+            '--desc[Description]:description:' \
+            '--blocking[Block until completed]' \
+            '--script[Shell script to execute]:script:' \
+            '--content[Content to inject]:content:' \
+            '--condition[Condition JSON]:condition:' \
+            '--result[Outcome text]:result:'
           ;;
         ls|list)
           _arguments '--json[JSON output]'

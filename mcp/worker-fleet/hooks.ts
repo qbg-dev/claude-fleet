@@ -1,14 +1,24 @@
 /**
- * Dynamic hooks — unified gate + inject system.
- * Agents register hooks at runtime. Each hook can block (gate) or inject context.
- * Hook scripts read the persisted file and apply matching hooks per event.
+ * Dynamic hooks — unified gate + inject system with script support.
+ * Agents register hooks at runtime. Each hook can block (gate), inject context,
+ * or run a script file on event fire.
+ *
+ * Storage: ~/.claude/fleet/{project}/{worker}/hooks/
+ *   - hooks.json — hook metadata array
+ *   - dh-N-description-slug.sh — script files (one per hook with script_path)
+ *
+ * Hook scripts read the persisted hooks.json and apply matching hooks per event.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, copyFileSync } from "fs";
 import { join } from "path";
-import { HOME, WORKER_NAME } from "./config";
+import { HOME, WORKER_NAME, FLEET_DIR } from "./config";
+import type { DynamicHook } from "../../shared/types";
 
 // ── Types ────────────────────────────────────────────────────────────
+
+// Re-export from shared types
+export type { DynamicHook } from "../../shared/types";
 
 // All 18 Claude Code hook events
 export type HookEvent =
@@ -20,33 +30,101 @@ export type HookEvent =
   | "ConfigChange" | "PreCompact"
   | "WorktreeCreate" | "WorktreeRemove";
 
-export interface DynamicHook {
-  id: string;
-  event: HookEvent;
-  description: string;
-  content?: string;              // inject: context text. gate: block reason (falls back to description)
-  blocking: boolean;             // true = blocks until completed. false = injects and passes.
-  condition?: {
-    tool?: string;               // Tool name match (PreToolUse/PostToolUse/PermissionRequest)
-    file_glob?: string;          // File path glob
-    command_pattern?: string;    // Bash command regex
-  };
-  completed: boolean;
-  completed_at?: string;
-  result?: string;
-  agent_id?: string;             // Subagent scoping + auto-complete on SubagentStop
-  added_at: string;
-}
-
 // ── State ────────────────────────────────────────────────────────────
 
 export const dynamicHooks: Map<string, DynamicHook> = new Map();
 export let _hookCounter = 0;
 export function _incrementHookCounter(): number { return ++_hookCounter; }
 
-const HOOKS_DIR = process.env.CLAUDE_HOOKS_DIR || join(HOME, ".claude/ops/hooks/dynamic");
+// ── Hook Directory Resolution ────────────────────────────────────────
+
+/** Resolve hook storage dir for a worker: ~/.claude/fleet/{project}/{worker}/hooks/ */
+function resolveHooksDir(): string {
+  // New path: fleet dir per-worker hooks/ subdirectory
+  const fleetHooksDir = join(FLEET_DIR, WORKER_NAME, "hooks");
+  if (existsSync(join(FLEET_DIR, WORKER_NAME))) {
+    return fleetHooksDir;
+  }
+
+  // Legacy fallback: ~/.claude/ops/hooks/dynamic/
+  const legacyDir = process.env.CLAUDE_HOOKS_DIR || join(HOME, ".claude/ops/hooks/dynamic");
+  return legacyDir;
+}
+
+const HOOKS_DIR = resolveHooksDir();
 try { mkdirSync(HOOKS_DIR, { recursive: true }); } catch {}
-const HOOKS_FILE = join(HOOKS_DIR, `${WORKER_NAME}.json`);
+
+/** Get hooks.json path (new layout) or {worker}.json path (legacy) */
+function getHooksFile(): string {
+  // New layout: hooks/hooks.json
+  if (HOOKS_DIR.endsWith("/hooks")) {
+    return join(HOOKS_DIR, "hooks.json");
+  }
+  // Legacy: {worker}.json
+  return join(HOOKS_DIR, `${WORKER_NAME}.json`);
+}
+
+const HOOKS_FILE = getHooksFile();
+
+/** Check if using new per-worker-dir layout */
+function isNewLayout(): boolean {
+  return HOOKS_DIR.endsWith("/hooks");
+}
+
+// ── Script Management ────────────────────────────────────────────────
+
+/** Slugify a description for use in script filenames */
+export function slugify(desc: string): string {
+  return desc
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 50);
+}
+
+/** Generate script filename from hook id + description */
+export function scriptFileName(id: string, description: string): string {
+  const slug = slugify(description);
+  return slug ? `${id}-${slug}.sh` : `${id}.sh`;
+}
+
+/**
+ * Write a script file for a hook.
+ * @param id - Hook ID (e.g. "dh-1")
+ * @param description - Hook description (used for filename)
+ * @param script - Script content (inline) or @filepath (copy from file)
+ * @returns Relative filename of the written script
+ */
+export function writeScriptFile(id: string, description: string, script: string): string {
+  const filename = scriptFileName(id, description);
+  const destPath = join(HOOKS_DIR, filename);
+
+  if (script.startsWith("@")) {
+    // Copy from file
+    const srcPath = script.slice(1);
+    if (!existsSync(srcPath)) {
+      throw new Error(`Script source file not found: ${srcPath}`);
+    }
+    copyFileSync(srcPath, destPath);
+  } else {
+    // Write inline script
+    const content = script.startsWith("#!/") ? script : `#!/usr/bin/env bash\nset -uo pipefail\n${script}\n`;
+    writeFileSync(destPath, content);
+  }
+
+  // Make executable
+  try { Bun.spawnSync(["chmod", "+x", destPath]); } catch {}
+  return filename;
+}
+
+/** Remove a script file for a hook */
+export function removeScriptFile(hook: DynamicHook): void {
+  if (!hook.script_path) return;
+  const scriptPath = join(HOOKS_DIR, hook.script_path);
+  try { rmSync(scriptPath); } catch {}
+}
 
 // ── Persistence ──────────────────────────────────────────────────────
 
@@ -58,33 +136,68 @@ export function _persistHooks(): void {
       try { rmSync(HOOKS_FILE); } catch {}
       return;
     }
-    writeFileSync(HOOKS_FILE, JSON.stringify({ worker: WORKER_NAME, hooks }, null, 2));
+    if (isNewLayout()) {
+      // New layout: just the hooks array
+      writeFileSync(HOOKS_FILE, JSON.stringify({ hooks }, null, 2));
+    } else {
+      // Legacy: include worker name
+      writeFileSync(HOOKS_FILE, JSON.stringify({ worker: WORKER_NAME, hooks }, null, 2));
+    }
   } catch (e) {
     console.error(`[_persistHooks] Failed to write ${HOOKS_FILE}: ${e}`);
   }
 }
 
 // On startup, restore from file (survives MCP restart via recycle resume)
-try {
-  if (existsSync(HOOKS_FILE)) {
-    const data = JSON.parse(readFileSync(HOOKS_FILE, "utf-8"));
-    if (data.worker === WORKER_NAME && Array.isArray(data.hooks)) {
-      for (const h of data.hooks) {
+// Try new layout first, then legacy
+function _restoreHooks(): void {
+  const files = [HOOKS_FILE];
+  // Also check legacy path if we're on new layout
+  if (isNewLayout()) {
+    const legacyDir = process.env.CLAUDE_HOOKS_DIR || join(HOME, ".claude/ops/hooks/dynamic");
+    const legacyFile = join(legacyDir, `${WORKER_NAME}.json`);
+    if (existsSync(legacyFile) && !existsSync(HOOKS_FILE)) {
+      files.push(legacyFile);
+    }
+  }
+
+  for (const file of files) {
+    try {
+      if (!existsSync(file)) continue;
+      const data = JSON.parse(readFileSync(file, "utf-8"));
+      const hooks = data.hooks;
+      if (!Array.isArray(hooks)) continue;
+
+      // Legacy files have worker field — validate
+      if (data.worker && data.worker !== WORKER_NAME) continue;
+
+      for (const h of hooks) {
         dynamicHooks.set(h.id, h);
         const num = parseInt(h.id.replace("dh-", ""), 10);
         if (!isNaN(num) && num > _hookCounter) _hookCounter = num;
       }
-    }
+
+      // If restored from legacy, migrate to new location
+      if (file !== HOOKS_FILE && dynamicHooks.size > 0) {
+        _persistHooks();
+        // Remove legacy file after successful migration
+        try { rmSync(file); } catch {}
+      }
+      break;
+    } catch {}
   }
-} catch {}
+}
+
+_restoreHooks();
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /** Capture dynamic hooks snapshot for checkpoint */
-export function _captureHooksSnapshot(): Array<{ id: string; event: string; description: string; blocking: boolean; completed: boolean }> {
+export function _captureHooksSnapshot(): Array<{ id: string; event: string; description: string; blocking: boolean; completed: boolean; script_path?: string }> {
   return [...dynamicHooks.values()].map(h => ({
     id: h.id, event: h.event, description: h.description,
     blocking: h.blocking, completed: h.completed,
+    ...(h.script_path ? { script_path: h.script_path } : {}),
   }));
 }
 
@@ -93,8 +206,15 @@ export function _pendingHooksSummary(event?: string): string {
   const hooks = [...dynamicHooks.values()];
   const pending = hooks.filter(h => h.blocking && !h.completed && (!event || h.event === event));
   const injects = hooks.filter(h => !h.blocking && (!event || h.event === event));
+  const scripts = hooks.filter(h => h.script_path && (!event || h.event === event));
   const parts: string[] = [];
   if (pending.length > 0) parts.push(`${pending.length} blocking`);
   if (injects.length > 0) parts.push(`${injects.length} inject`);
+  if (scripts.length > 0) parts.push(`${scripts.length} with scripts`);
   return parts.join(", ") || "none";
+}
+
+/** Get the hooks directory path (for external use) */
+export function getHooksDir(): string {
+  return HOOKS_DIR;
 }

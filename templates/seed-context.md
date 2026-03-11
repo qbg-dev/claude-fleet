@@ -19,10 +19,19 @@ Core tools for worker operation. Use `fleet_help()` or `mail_help()` for full re
 
 | Tool | What it does |
 |------|-------------|
-| `add_hook(event, description, ...)` | Register a dynamic hook: gate (blocking) or inject (context). |
+| `add_hook(event, description, ...)` | Register a dynamic hook: gate (blocking), inject (context), or script trigger. Accepts `script` param for shell execution. |
 | `complete_hook(id, result?)` | Mark a blocking hook as done (`id="all"` to clear all). |
-| `remove_hook(id)` | Remove a hook (`id="all"` to clear all). |
-| `list_hooks(event?)` | Show all active hooks. |
+| `remove_hook(id)` | Remove a hook and its script file (`id="all"` to clear all). |
+| `list_hooks(event?)` | Show all active hooks (including script info). |
+
+**CLI equivalent** (same storage, same logic — for workers without MCP):
+```bash
+fleet hook add --event Stop --desc "verify build" --blocking
+fleet hook add --event Stop --desc "notify validator" --script "fleet mail send validator 'done'"
+fleet hook ls [--event Stop]
+fleet hook complete dh-1 --result "PASS"
+fleet hook rm dh-2          # or 'all'
+```
 
 ### Discovery
 
@@ -178,12 +187,51 @@ add_hook(event="PreToolUse", blocking=true,
 # Tool call is blocked until you complete_hook the gate
 ```
 
+### Script Hooks (Event → Shell Execution)
+
+Hooks can trigger shell scripts when they fire. Scripts are stored as files in your hook directory, scanned against your denyList at registration AND execution time.
+
+```
+# Pattern C: Ping-Pong Communication — notify another worker on Stop
+add_hook(event="Stop", description="notify validator of completion",
+  script="fleet mail send validator 'REVIEW_READY' 'Branch: worker/executor, commits: abc123'")
+
+# Pattern D: SubagentStop auto-notify
+add_hook(event="SubagentStop", description="notify on subagent exit",
+  script="fleet mail send self 'SUBAGENT_DONE' 'Subagent finished'")
+
+# Pattern E: PreCompact checkpoint — save state before context compaction
+add_hook(event="PreCompact", description="checkpoint before compaction",
+  script="fleet mail send self 'CHECKPOINT' \"$(cat ~/.claude/fleet/$PROJECT_NAME/$WORKER_NAME/state.json)\"")
+
+# Pattern F: Blocking script gate — run tests before stop
+# Exit 0 = allow (stop proceeds), exit 2 = block (stop prevented, stderr shown)
+add_hook(event="Stop", description="run tests before stopping", blocking=true,
+  script="cd $PROJECT_ROOT && bun test 2>&1 | tail -5")
+
+# Pattern G: Post-edit auto-lint
+add_hook(event="PostToolUse", description="auto-lint after edits",
+  condition={tool: "Edit", file_glob: "src/**"},
+  script="cd $PROJECT_ROOT && bunx oxlint src/ --quiet 2>&1 | head -20")
+```
+
+**Script exit codes** (Claude Code convention):
+- **Exit 0** = allow (pass through)
+- **Exit 2** = block (stderr message shown to Claude as reason)
+- **Exit 1** = error (logged internally, hook treated as non-blocking failure)
+
+**Script input**: Inline command string or `@/path/to/file.sh` (file is copied into hook dir).
+
+**Permission inheritance**: Scripts are scanned against your `permissions.json` denyList — a worker blocked from `git push` can't register a hook script containing `git push`. Scanned at BOTH registration and execution time.
+
+**Environment variables** available in scripts: `$WORKER_NAME`, `$HOOK_EVENT`, `$HOOK_ID`, `$PROJECT_ROOT`.
+
 ### Cleanup
 
 Remove hooks you no longer need:
 ```
 remove_hook("dh-2")       # Remove a specific hook
-remove_hook(id="all")     # Remove all hooks
+remove_hook(id="all")     # Remove all hooks (also removes script files)
 ```
 
 ### Verification Methods

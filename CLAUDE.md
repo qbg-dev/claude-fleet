@@ -36,6 +36,7 @@ fleet run <name> "<command>"            # run in worktree
 fleet tui [--account <name>]            # Fleet Mail TUI client
 fleet layout <save|restore|list|delete> # tmux layout persistence
 fleet deep-review <scope>               # adversarial code review
+fleet hook <add|rm|ls|complete>         # manage dynamic hooks
 fleet doctor                            # verify installation
 fleet nuke <name>                       # destroy worker
 ```

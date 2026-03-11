@@ -13,6 +13,8 @@
     "Bash(git stash drop*)",
     "Bash(git stash clear*)",
     "Bash(git rebase -i*)",
-    "Bash(git branch -D*)"
+    "Bash(git branch -D*)",
+    "Write(~/.claude/fleet/**/hooks/**)",
+    "Edit(~/.claude/fleet/**/hooks/**)"
   ]
 }
