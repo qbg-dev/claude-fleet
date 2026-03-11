@@ -100,6 +100,11 @@ export function setPaneTitle(paneId: string, title: string): void {
   run(["select-pane", "-T", title, "-t", paneId]);
 }
 
+/** Kill a pane */
+export function killPane(paneId: string): void {
+  run(["kill-pane", "-t", paneId]);
+}
+
 /** Send keys to a pane */
 export function sendKeys(paneId: string, text: string): void {
   run(["send-keys", "-t", paneId, text]);

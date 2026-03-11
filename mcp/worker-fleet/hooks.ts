@@ -212,38 +212,8 @@ function _restoreHooks(): void {
 
 _restoreHooks();
 
-/** Register the default sys-recycle-gate Stop hook if not already present */
-function _ensureRecycleGate(): void {
-  // Clean up stale sentinel from previous hard recycle (prevents auto-pass)
-  try { rmSync(`/tmp/claude-fleet-recycle-${WORKER_NAME}`); } catch {}
-
-  if (dynamicHooks.has("sys-recycle-gate")) return;
-  // Also check if it's archived in the file — don't re-register if explicitly archived
-  try {
-    if (existsSync(HOOKS_FILE)) {
-      const data = JSON.parse(readFileSync(HOOKS_FILE, "utf-8"));
-      if (Array.isArray(data.hooks) && data.hooks.some((h: DynamicHook) => h.id === "sys-recycle-gate" && h.status !== "archived")) return;
-    }
-  } catch {}
-
-  const gate: DynamicHook = {
-    id: "sys-recycle-gate",
-    event: "Stop",
-    description: "Call recycle() to save state before stopping",
-    status: "active",
-    lifetime: "persistent",
-    blocking: true,
-    completed: false,
-    check: `test -f /tmp/claude-fleet-recycle-${WORKER_NAME}`,
-    max_fires: 3,
-    fire_count: 0,
-    added_at: new Date().toISOString(),
-  };
-  dynamicHooks.set(gate.id, gate);
-  _persistHooks();
-}
-
-_ensureRecycleGate();
+// sys-recycle-gate removed — workers no longer self-exit.
+// Restarts are handled externally via `fleet recycle <name>` CLI.
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

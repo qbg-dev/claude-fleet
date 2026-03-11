@@ -54,6 +54,7 @@ import { register as registerTui } from "./commands/tui";
 import { register as registerLayout } from "./commands/layout";
 import { register as registerDeepReview } from "./commands/deep-review";
 import { register as registerHook } from "./commands/hook";
+import { register as registerRecycle } from "./commands/recycle";
 
 registerSetup(program);
 registerCreate(program);
@@ -77,5 +78,6 @@ registerTui(program);
 registerLayout(program);
 registerDeepReview(program);
 registerHook(program);
+registerRecycle(program);
 
 program.parse();

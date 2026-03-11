@@ -9,7 +9,7 @@ Core tools for worker operation. Use `fleet_help()` or `mail_help()` for full re
 | `mail_send(to, subject, body)` | Message a worker, "user", "all", or mailing list. Supports `cc`, `in_reply_to`, `thread_id`, `labels`. |
 | `mail_inbox(label?)` | Read YOUR inbox. Default label=UNREAD. label="INBOX" for all, "TASK" for tasks. |
 | `mail_read(id)` | Read full message body by ID (auto-marks as read). Only works for YOUR messages — Fleet Mail enforces account isolation. |
-| `recycle(message?)` | End cycle. Default: soft recycle (log + stay alive). `soft=false`: cold restart. `sleep_seconds=N`: override timer. **Blocked if stop checks pending.** |
+| `session_end(message?)` | Mark cycle boundary: save checkpoint + cycle report, stay alive. Restarts are done externally via `fleet recycle <name>`. |
 | `create_worker(name, mission, ...)` | Spawn a new worker with worktree, branch, registry entry. |
 | `save_checkpoint(summary, key_facts?)` | Snapshot working state. Auto-saved on compaction/recycle. |
 | `update_state(key, value)` | Persist state across recycles. |
@@ -169,18 +169,11 @@ add_hook(event="PreToolUse", description="ontology invariants",
   lifetime="persistent", content="All writes use applyAction()...")
 ```
 
-A system Stop hook (`sys-recycle-gate`) always ensures `recycle()` is called before stopping. This preserves state across cycles.
-
 **Hook lifetimes:**
-- `"cycle"` (default for non-Stop hooks): archived automatically when you recycle
-- `"persistent"` (default for Stop hooks): survives recycles, re-evaluates each cycle
+- `"cycle"` (default for non-Stop hooks): archived automatically when you call `session_end()`
+- `"persistent"` (default for Stop hooks): survives session_end, re-evaluates each cycle
 
 **Safety valve:** `check`-based hooks auto-pass after `max_fires` blocks (default 5) to prevent infinite loops.
-
-`recycle()` REFUSES until all blocking hooks are completed or checks pass:
-```
-complete_hook("dh-1", result="PASS — no TS errors")
-```
 
 ### Inject Hooks (Context Guidance)
 
@@ -382,27 +375,24 @@ LOOP FOREVER:
   4. Update state + save findings to auto-memory
   5. Register stop checks for anything you changed: add_hook(event="Stop", description="verify X")
   6. Complete each check after verifying: complete_hook("dh-1")
-  7. When DONE with this cycle's work, keep working on the next task or wait for mail.
-     Only recycle() if you genuinely need a fresh context (config reload, too much context).
-     The watchdog handles respawning — you don't need to recycle to "wait" for it.
+  7. When DONE with this cycle's work, call `session_end(message)` to log the cycle.
+     Then keep working on the next task, or go idle if nothing is pending.
+     The operator runs `fleet recycle <name>` if you need a fresh context.
 ```
 
 **NEVER set status="done".** Perpetual workers run until killed.
 
-### When to recycle vs. keep working
+### When to session_end vs. keep working
 
 | Situation | Action |
 |-----------|--------|
-| Finished one task, have more work to do | **Keep working** — start the next task |
+| Finished one task, have more work to do | `session_end()` to log, then start next task |
 | Inbox has a new message | **Keep working** — read and handle it |
-| Context is getting very long (compacted 2+ times) | **Recycle** — fresh context is cheaper |
-| Need to reload config/mission changes | **Recycle** — picks up new settings |
-| No more work AND no pending mail | **Recycle** — hand off to watchdog timer |
-| Stuck or erroring repeatedly | **Recycle** — fresh start may help |
+| No more work AND no pending mail | `session_end()` to log, then go idle |
 
-> **NEVER `sleep N` to wait between cycles.** If you must wait, call `recycle()` and let the watchdog respawn you. Running `sleep 900` inside your session blocks the pane and wastes resources.
+**Restarts are external.** If you need fresh context (long conversation, config change, stuck), the operator runs `fleet recycle <name>` from the CLI. You never exit yourself.
 
-> **NEVER recycle just to "wait for the watchdog."** The watchdog will naturally respawn you when your timer expires. If you have work to do, keep doing it. Recycle is for context management, not scheduling.
+> **NEVER `sleep N` to wait between cycles.** If you're idle, just stay idle — the operator or watchdog handles restarts.
 
 ## Respawn Configuration
 
