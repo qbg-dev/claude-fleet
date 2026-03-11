@@ -345,9 +345,32 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
         writeWorkerConfig(name, latestConfig);
         writeLaunchScript(name, latestConfig);
       }
+      // Ensure .mcp.json includes claude-hooks for this worker
+      const baseMcp = join(PROJECT_ROOT, ".mcp.json");
+      try {
+        const claudeHooksDir = process.env.CLAUDE_HOOKS_DIR || join(HOME, ".claude-hooks");
+        const claudeHooksMcp = join(claudeHooksDir, "mcp/index.ts");
+        if (existsSync(claudeHooksMcp)) {
+          let mcpCfg: Record<string, any> = { mcpServers: {} };
+          if (existsSync(baseMcp)) {
+            try { mcpCfg = JSON.parse(readFileSync(baseMcp, "utf-8")); } catch {}
+          }
+          if (!mcpCfg.mcpServers) mcpCfg.mcpServers = {};
+          const bunPath = process.execPath || join(HOME, ".bun/bin/bun");
+          mcpCfg.mcpServers["claude-hooks"] = {
+            command: bunPath,
+            args: ["run", claudeHooksMcp],
+            env: {
+              HOOKS_DIR: join(FLEET_DIR, name, "hooks"),
+              HOOKS_IDENTITY: name,
+              HOOKS_PERMISSIONS: join(PROJECT_ROOT, ".claude/workers", name, "permissions.json"),
+            },
+          };
+          writeFileSync(baseMcp, JSON.stringify(mcpCfg, null, 2) + "\n");
+        }
+      } catch {}
       // Symlink .mcp.json to project root (single source of truth for MCP config)
       const wtMcp = join(worktreeDir, ".mcp.json");
-      const baseMcp = join(PROJECT_ROOT, ".mcp.json");
       if (existsSync(baseMcp)) {
         try { unlinkSync(wtMcp); } catch {}
         try { symlinkSync(baseMcp, wtMcp); } catch {}

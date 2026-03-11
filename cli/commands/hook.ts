@@ -129,7 +129,7 @@ async function hookAdd(opts: {
 }, globalOpts: Record<string, unknown>): Promise<void> {
   const projectRoot = resolveProjectRoot();
   const project = (globalOpts.project as string) || resolveProject(projectRoot);
-  const workerName = resolveWorkerName();
+  const workerName = (globalOpts.worker as string) || resolveWorkerName();
   const hooksFile = getHooksFile(project, workerName);
   const hooksDir = getHooksDir(project, workerName);
   mkdirSync(hooksDir, { recursive: true });
@@ -203,7 +203,7 @@ async function hookAdd(opts: {
 async function hookRm(id: string, globalOpts: Record<string, unknown>): Promise<void> {
   const projectRoot = resolveProjectRoot();
   const project = (globalOpts.project as string) || resolveProject(projectRoot);
-  const workerName = resolveWorkerName();
+  const workerName = (globalOpts.worker as string) || resolveWorkerName();
   const hooksFile = getHooksFile(project, workerName);
   const hooksDir = getHooksDir(project, workerName);
 
@@ -236,7 +236,7 @@ async function hookRm(id: string, globalOpts: Record<string, unknown>): Promise<
 async function hookLs(opts: { event?: string }, globalOpts: Record<string, unknown>): Promise<void> {
   const projectRoot = resolveProjectRoot();
   const project = (globalOpts.project as string) || resolveProject(projectRoot);
-  const workerName = resolveWorkerName();
+  const workerName = (globalOpts.worker as string) || resolveWorkerName();
   const hooksFile = getHooksFile(project, workerName);
 
   const { hooks } = readHooks(hooksFile);
@@ -271,7 +271,7 @@ async function hookLs(opts: { event?: string }, globalOpts: Record<string, unkno
 async function hookComplete(id: string, opts: { result?: string }, globalOpts: Record<string, unknown>): Promise<void> {
   const projectRoot = resolveProjectRoot();
   const project = (globalOpts.project as string) || resolveProject(projectRoot);
-  const workerName = resolveWorkerName();
+  const workerName = (globalOpts.worker as string) || resolveWorkerName();
   const hooksFile = getHooksFile(project, workerName);
 
   const { hooks } = readHooks(hooksFile);
@@ -312,7 +312,8 @@ async function hookComplete(id: string, opts: { result?: string }, globalOpts: R
 export function register(parent: Command): void {
   const hook = parent
     .command("hook")
-    .description("Manage dynamic hooks (add/rm/ls/complete)");
+    .description("Manage dynamic hooks (add/rm/ls/complete)")
+    .option("--worker <name>", "Operate on another worker's hooks (default: auto-detect from branch/worktree)");
 
   // fleet hook add
   const add = hook

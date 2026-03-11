@@ -168,14 +168,39 @@ export async function runCreate(
 
   // Only write if worker-fleet is missing or stale (different command/args)
   const existing = mcpConfig.mcpServers["worker-fleet"];
-  const needsUpdate = !existing
+  let needsUpdate = !existing
     || existing.command !== fleetEntry.command
     || JSON.stringify(existing.args) !== JSON.stringify(fleetEntry.args);
 
   if (needsUpdate) {
     mcpConfig.mcpServers["worker-fleet"] = fleetEntry;
+  }
+
+  // Add claude-hooks MCP for standalone hook management per worker
+  const claudeHooksDir = process.env.CLAUDE_HOOKS_DIR || join(process.env.HOME || "", ".claude-hooks");
+  const claudeHooksMcp = join(claudeHooksDir, "mcp/index.ts");
+  if (existsSync(claudeHooksMcp)) {
+    const hooksDir = join(FLEET_DATA, project, name, "hooks");
+    const permsPath = join(projectRoot, ".claude/workers", name, "permissions.json");
+    const existingHooks = mcpConfig.mcpServers["claude-hooks"];
+    const hooksEntry = {
+      command: bunPath,
+      args: ["run", claudeHooksMcp],
+      env: {
+        HOOKS_DIR: hooksDir,
+        HOOKS_IDENTITY: name,
+        HOOKS_PERMISSIONS: permsPath,
+      },
+    };
+    if (!existingHooks || JSON.stringify(existingHooks) !== JSON.stringify(hooksEntry)) {
+      mcpConfig.mcpServers["claude-hooks"] = hooksEntry;
+      needsUpdate = true;
+    }
+  }
+
+  if (needsUpdate) {
     writeFileSync(mcpSrc, JSON.stringify(mcpConfig, null, 2) + "\n");
-    info(existing ? "Updated worker-fleet in .mcp.json" : "Added worker-fleet to .mcp.json");
+    info(existing ? "Updated MCP servers in .mcp.json" : "Added MCP servers to .mcp.json");
   }
 
   if (projectRoot !== worktreeDir) {

@@ -1,17 +1,18 @@
 /**
- * Hook tools — add_hook, complete_hook, remove_hook, list_hooks
+ * Hook tools — add_hook, complete_hook, remove_hook, list_hooks, manage_worker_hooks
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { CLAUDE_FLEET, PROJECT_ROOT, WORKER_NAME, FLEET_DIR } from "../config";
+import { CLAUDE_FLEET, HOME, PROJECT_ROOT, WORKER_NAME, FLEET_DIR } from "../config";
 import {
   dynamicHooks, _incrementHookCounter, _persistHooks, _pendingHooksSummary,
   writeScriptFile, _archiveHook, readOtherWorkerHooks,
   type DynamicHook,
 } from "../hooks";
+import { readRegistry, canUpdateWorker } from "../registry";
 
 // ── Permission Scanning ──────────────────────────────────────────────
 
@@ -353,6 +354,191 @@ server.registerTool(
         text: `Archived: [${id}] ${archived.description}\nRemaining active hooks: ${_pendingHooksSummary()}.`,
       }],
     };
+  }
+);
+
+// ── Cross-worker hook management ─────────────────────────────────────
+
+server.registerTool(
+  "manage_worker_hooks",
+  {
+    description: "Manage hooks on another worker. Add verification gates, remove hooks, complete hooks, or list hooks for a target worker. Requires authority over the target (mission_authority or direct report). For managing your own hooks, use add_hook/remove_hook/complete_hook/list_hooks instead.",
+    inputSchema: {
+      action: z.enum(["add", "remove", "complete", "list"]).describe("Action to perform on target worker's hooks"),
+      target: z.string().describe("Target worker name"),
+      // For add:
+      event: z.string().optional().describe("Hook event (Stop, PreToolUse, etc.) — required for 'add'"),
+      hook_description: z.string().optional().describe("Human-readable purpose — required for 'add'"),
+      blocking: z.boolean().optional().describe("If true, blocks event until completed. Default: true for Stop, false otherwise"),
+      content: z.string().optional().describe("Context text (inject) or block reason (gate)"),
+      script: z.string().optional().describe("Shell script to run. Scanned against target's permissions"),
+      check: z.string().optional().describe("Bash command for auto-verification. Exit 0 = pass"),
+      lifetime: z.enum(["cycle", "persistent"]).optional().describe("Hook lifetime. Default: persistent for Stop, cycle for others"),
+      max_fires: z.number().optional().describe("Auto-pass after N blocks (safety valve). Default: 5 for check hooks"),
+      // For remove/complete:
+      id: z.string().optional().describe("Hook ID (e.g. 'dh-1') — required for 'remove'/'complete'. Use 'all' to batch"),
+      result: z.string().optional().describe("Brief outcome for 'complete' (e.g. 'PASS')"),
+      // For list:
+      include_archived: z.boolean().optional().describe("Include archived hooks (default: false)"),
+    },
+  },
+  async (params) => {
+    const { action, target } = params;
+
+    // Authorization check
+    const registry = readRegistry();
+    if (!canUpdateWorker(WORKER_NAME, target, registry)) {
+      return {
+        content: [{ type: "text" as const, text: `Unauthorized: ${WORKER_NAME} cannot manage hooks on ${target}. Requires mission_authority or direct-report relationship.` }],
+        isError: true,
+      };
+    }
+
+    // Resolve target's hooks file
+    const targetHooksDir = join(FLEET_DIR, target, "hooks");
+    const targetHooksFile = join(targetHooksDir, "hooks.json");
+
+    // Read target's hooks
+    function readTargetHooks(): { hooks: DynamicHook[]; counter: number } {
+      if (!existsSync(targetHooksFile)) return { hooks: [], counter: 0 };
+      try {
+        const data = JSON.parse(readFileSync(targetHooksFile, "utf-8"));
+        const hooks: DynamicHook[] = data.hooks || [];
+        let counter = 0;
+        for (const h of hooks) {
+          const num = parseInt(h.id.replace("dh-", ""), 10);
+          if (!isNaN(num) && num > counter) counter = num;
+        }
+        return { hooks, counter };
+      } catch { return { hooks: [], counter: 0 }; }
+    }
+
+    function writeTargetHooks(hooks: DynamicHook[]): void {
+      mkdirSync(targetHooksDir, { recursive: true });
+      writeFileSync(targetHooksFile, JSON.stringify({ hooks }, null, 2));
+    }
+
+    // ── LIST ──
+    if (action === "list") {
+      const { hooks } = readTargetHooks();
+      const filtered = params.include_archived
+        ? hooks
+        : hooks.filter(h => h.status !== "archived");
+      if (filtered.length === 0) {
+        return { content: [{ type: "text" as const, text: `No hooks on ${target}.` }] };
+      }
+      const lines = filtered.map(h => {
+        const type = h.blocking ? "GATE" : "INJECT";
+        const status = h.status === "archived" ? "ARCHIVED" : (h.blocking ? (h.completed ? "DONE" : "PENDING") : "active");
+        const by = h.registered_by ? ` (by ${h.registered_by})` : "";
+        return `[${h.id}] ${h.event}/${type} — ${h.description} [${status}]${by}`;
+      });
+      return { content: [{ type: "text" as const, text: `# ${target}'s hooks (${filtered.length})\n${lines.join("\n")}` }] };
+    }
+
+    // ── ADD ──
+    if (action === "add") {
+      if (!params.event || !params.hook_description) {
+        return { content: [{ type: "text" as const, text: "Error: 'event' and 'hook_description' are required for add" }], isError: true };
+      }
+      const { hooks, counter } = readTargetHooks();
+      const id = `dh-${counter + 1}`;
+      const isBlocking = params.blocking ?? (params.event === "Stop");
+
+      // Scan script against target's permissions if provided
+      if (params.script) {
+        const targetPermsPath = join(PROJECT_ROOT, ".claude/workers", target, "permissions.json");
+        if (existsSync(targetPermsPath)) {
+          const scriptContent = params.script.startsWith("@")
+            ? (existsSync(params.script.slice(1)) ? readFileSync(params.script.slice(1), "utf-8") : params.script)
+            : params.script;
+          // Reuse scanScriptAgainstDenyList logic with target's permissions
+          try {
+            const perms = JSON.parse(readFileSync(targetPermsPath, "utf-8"));
+            const denyList: string[] = perms.denyList || [];
+            for (const pattern of denyList) {
+              const m = pattern.match(/^(\w+)\((.+)\)$/);
+              if (!m || m[1] !== "Bash") continue;
+              const regex = m[2].replace(/[.[\]^$+{}|\\]/g, "\\$&").replace(/\*\*/g, ".*").replace(/\*/g, ".*").replace(/\?/g, ".");
+              try {
+                if (new RegExp(regex).test(scriptContent)) {
+                  return { content: [{ type: "text" as const, text: `Hook rejected: script blocked by target's policy (matches Bash(${m[2]}))` }], isError: true };
+                }
+              } catch {}
+            }
+          } catch {}
+        }
+      }
+
+      const resolvedLifetime = params.lifetime ?? (params.event === "Stop" ? "persistent" : "cycle");
+      const hook: DynamicHook = {
+        id,
+        event: params.event,
+        description: params.hook_description,
+        blocking: isBlocking,
+        completed: false,
+        status: "active",
+        lifetime: resolvedLifetime,
+        registered_by: WORKER_NAME,
+        ownership: "creator",
+        added_at: new Date().toISOString(),
+      };
+      if (params.content) hook.content = params.content;
+      if (params.check) { hook.check = params.check; hook.max_fires = params.max_fires ?? 5; hook.fire_count = 0; }
+      if (params.max_fires !== undefined) hook.max_fires = params.max_fires;
+
+      hooks.push(hook);
+      writeTargetHooks(hooks);
+      return { content: [{ type: "text" as const, text: `Hook [${id}] added to ${target}: ${params.event}/${isBlocking ? "GATE" : "INJECT"} — ${params.hook_description} [${resolvedLifetime}, owner: ${WORKER_NAME}]` }] };
+    }
+
+    // ── REMOVE ──
+    if (action === "remove") {
+      if (!params.id) return { content: [{ type: "text" as const, text: "Error: 'id' required for remove" }], isError: true };
+      const { hooks } = readTargetHooks();
+      if (params.id === "all") {
+        const count = hooks.length;
+        for (const h of hooks) h.status = "archived";
+        writeTargetHooks(hooks);
+        return { content: [{ type: "text" as const, text: `Archived all ${count} hook(s) on ${target}.` }] };
+      }
+      const hook = hooks.find(h => h.id === params.id);
+      if (!hook) return { content: [{ type: "text" as const, text: `No hook '${params.id}' on ${target}.` }], isError: true };
+      hook.status = "archived";
+      hook.archived_at = new Date().toISOString();
+      hook.archive_reason = `removed by ${WORKER_NAME}`;
+      writeTargetHooks(hooks);
+      return { content: [{ type: "text" as const, text: `Archived [${params.id}] on ${target}: ${hook.description}` }] };
+    }
+
+    // ── COMPLETE ──
+    if (action === "complete") {
+      if (!params.id) return { content: [{ type: "text" as const, text: "Error: 'id' required for complete" }], isError: true };
+      const { hooks } = readTargetHooks();
+      const now = new Date().toISOString();
+      if (params.id === "all") {
+        let count = 0;
+        for (const h of hooks) {
+          if (h.blocking && !h.completed && h.status !== "archived") {
+            h.completed = true;
+            h.completed_at = now;
+            if (params.result) h.result = params.result;
+            count++;
+          }
+        }
+        writeTargetHooks(hooks);
+        return { content: [{ type: "text" as const, text: `Completed ${count} blocking hook(s) on ${target}.` }] };
+      }
+      const hook = hooks.find(h => h.id === params.id);
+      if (!hook) return { content: [{ type: "text" as const, text: `No hook '${params.id}' on ${target}.` }], isError: true };
+      hook.completed = true;
+      hook.completed_at = now;
+      if (params.result) hook.result = params.result;
+      writeTargetHooks(hooks);
+      return { content: [{ type: "text" as const, text: `Completed [${params.id}] on ${target}: ${hook.description}${params.result ? ` (${params.result})` : ""}` }] };
+    }
+
+    return { content: [{ type: "text" as const, text: `Unknown action: ${action}` }], isError: true };
   }
 );
 

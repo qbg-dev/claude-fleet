@@ -94,6 +94,10 @@ export interface DynamicHook {
   archived_at?: string;
   /** Why this hook was archived (e.g. "cycle-end", "removed", "completed") */
   archive_reason?: string;
+  /** Who registered this hook (worker name). Set by manage_worker_hooks for cross-worker hooks. */
+  registered_by?: string;
+  /** Hook ownership tier — "system" (irremovable), "creator" (worker can't remove), "self" (worker manages). */
+  ownership?: "system" | "creator" | "self";
 }
 
 /** The 12 immutable system hooks — safety guardrails for all workers */
