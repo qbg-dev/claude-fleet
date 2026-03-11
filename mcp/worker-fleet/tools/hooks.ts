@@ -234,6 +234,9 @@ server.registerTool(
     const lines: string[] = [`# ${isOtherWorker ? `${worker}'s` : "Active"} Hooks\n`];
 
     // ── Dynamic hooks ──
+    if (worker && !/^[a-z0-9][a-z0-9-]*$/.test(worker)) {
+      return { content: [{ type: "text" as const, text: `Invalid worker name: ${worker}.` }], isError: true };
+    }
     let hookList: DynamicHook[];
     if (isOtherWorker) {
       hookList = readOtherWorkerHooks(worker, showArchived);
@@ -387,6 +390,11 @@ server.registerTool(
   },
   async (params) => {
     const { action, target } = params;
+
+    // Validate worker name (path traversal prevention)
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(target)) {
+      return { content: [{ type: "text" as const, text: `Invalid worker name: ${target}. Must be lowercase alphanumeric with hyphens.` }], isError: true };
+    }
 
     // Authorization check
     const registry = readRegistry();
