@@ -201,8 +201,26 @@ export function register(parent: Command): void {
           args: ["run", mcpScript],
           env: mcpEnv,
         };
+
+        // Register claude-hooks MCP server (standalone hook management)
+        const claudeHooksDir = process.env.CLAUDE_HOOKS_DIR || join(HOME, ".claude-hooks");
+        const claudeHooksMcp = join(claudeHooksDir, "mcp/index.ts");
+        if (existsSync(claudeHooksMcp)) {
+          settings.mcpServers["claude-hooks"] = {
+            command: bunPath,
+            args: ["run", claudeHooksMcp],
+            env: {
+              HOOKS_DIR: join(HOME, ".claude/hooks"),
+              HOOKS_IDENTITY: "operator",
+            },
+          };
+          ok("claude-hooks MCP registered in settings.json");
+        } else {
+          info("claude-hooks not found — skipping (optional, install at ~/.claude-hooks)");
+        }
+
         writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + "\n");
-        ok("MCP server registered in settings.json");
+        ok("MCP servers registered in settings.json");
 
         // Verify MCP server can start (catch missing deps / syntax errors)
         info("Verifying MCP server...");
@@ -251,9 +269,9 @@ export function register(parent: Command): void {
         const isFleetHook = (entry: HookEntry) =>
           entry.hooks?.some((h: any) =>
             h.command?.includes("/.claude-fleet/") ||
-            h.command?.includes("/.claude-fleet/") ||
             h.command?.includes("/.claude-hooks/") ||
-            h.command?.includes("/.tmux-agents/"));
+            h.command?.includes("/.tmux-agents/") ||
+            (h.command?.includes("bun run") && h.command?.includes("/engine/")));
 
         const existingHooks: Record<string, HookEntry[]> = settings.hooks || {};
         const preservedHooks: Record<string, HookEntry[]> = {};
@@ -266,7 +284,9 @@ export function register(parent: Command): void {
         const h = (script: string, timeout?: number) => ({
           hooks: [{ type: "command" as const, command: `bash ${fleetBase}/${script}`, ...(timeout ? { timeout } : {}) }],
         });
-        const engine = h("engine/hook-engine.sh");
+        const engine = {
+          hooks: [{ type: "command" as const, command: `bun run ${fleetBase}/engine/hook-engine.ts` }],
+        };
         const logger = h("engine/session-logger.sh");
 
         const fleetHooks: Record<string, HookEntry[]> = {
@@ -315,7 +335,7 @@ export function register(parent: Command): void {
         for (const entries of Object.values(fleetHooks)) {
           for (const entry of entries) {
             hookCount++;
-            const script = entry.hooks[0].command.replace(/^bash\s+/, "");
+            const script = entry.hooks[0].command.replace(/^(bash|bun run)\s+/, "");
             if (!existsSync(script)) missingCount++;
           }
         }
