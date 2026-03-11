@@ -140,8 +140,8 @@ Install: `bash extensions/watchdog/install.sh`
 | `scripts/setup-hooks.sh` | Hook installer |
 | `scripts/lint-hooks.sh` | Hook verifier |
 | `scripts/check-docs.sh` | Quick deterministic doc sync scan |
-| `scripts/doc-sync-checklist.md` | AI verification checklist (pre-commit gate) |
 | `scripts/verification-hash.sh` | Compute proof path from staged diff hash |
+| `REVIEW.md` | Deep review rules + pre-commit doc sync checklist |
 
 ## Conventions
 
