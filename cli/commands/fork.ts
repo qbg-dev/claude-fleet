@@ -62,6 +62,7 @@ export function register(parent: Command): void {
               `- Synthesize the original mission and new directive into a single coherent understanding of what you need to do.`,
               `- If the directive is clear and unambiguous, proceed immediately.`,
               `- If it's unclear, conflicts with the original mission, or could be interpreted multiple ways, ask the user to clarify before starting work.`,
+              `- Once you've synthesized your mission, rewrite this file (mission.md) with your finalized mission so it's clean and self-contained for future reference.`,
             ].join("\n")
           : mission;
       } else {
