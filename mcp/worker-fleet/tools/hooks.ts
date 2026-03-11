@@ -130,6 +130,14 @@ server.registerTool(
       }
     }
 
+    // Scan check command against denyList
+    if (check) {
+      const blocked = scanScriptAgainstDenyList(check);
+      if (blocked) {
+        return { content: [{ type: "text" as const, text: `Hook rejected: check command blocked — ${blocked}` }], isError: true };
+      }
+    }
+
     // Resolve lifetime: Stop hooks default to persistent, others to cycle
     const resolvedLifetime = lifetime ?? (event === "Stop" ? "persistent" : "cycle");
 
@@ -474,6 +482,27 @@ server.registerTool(
               try {
                 if (new RegExp(regex).test(scriptContent)) {
                   return { content: [{ type: "text" as const, text: `Hook rejected: script blocked by target's policy (matches Bash(${m[2]}))` }], isError: true };
+                }
+              } catch {}
+            }
+          } catch {}
+        }
+      }
+
+      // Scan check command against target's denyList
+      if (params.check) {
+        const targetPermsPath = join(PROJECT_ROOT, ".claude/workers", target, "permissions.json");
+        if (existsSync(targetPermsPath)) {
+          try {
+            const perms = JSON.parse(readFileSync(targetPermsPath, "utf-8"));
+            const denyList: string[] = perms.denyList || [];
+            for (const pattern of denyList) {
+              const m = pattern.match(/^(\w+)\((.+)\)$/);
+              if (!m || m[1] !== "Bash") continue;
+              const regex = m[2].replace(/[.[\]^$+{}|\\]/g, "\\$&").replace(/\*\*/g, "GLOB_STAR_STAR").replace(/\*/g, ".*").replace(/GLOB_STAR_STAR/g, ".*").replace(/\?/g, ".");
+              try {
+                if (new RegExp(regex).test(params.check)) {
+                  return { content: [{ type: "text" as const, text: `Hook rejected: check command blocked by target's policy (matches Bash(${m[2]}))` }], isError: true };
                 }
               } catch {}
             }
