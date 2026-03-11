@@ -6,6 +6,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **REVIEW.md expanded** — 6 new Always Flag items (17–22): version string drift, changelog freshness, secrets scan, import boundaries, MCP tool count drift, idempotency regression
+- **`scripts/review.sh`** — deterministic scanner for items 17–22 (complements `check-docs.sh` for items 1–5)
+- 3 new pre-commit proof XML checks: `version-consistency`, `secrets-scan`, `import-boundaries`
+
+---
+
+## [2.0.0] — 2026-03-10
+
+### Added
+- **`fleet onboard`** — interactive fleet architect agent that guides 9-phase project onboarding (discovery → fleet design → missions → safety hooks → REVIEW.md → extensions → Fleet Mail → verification → power user guide)
+- **Full hook activation** — `setup-hooks.sh` now installs 40+ hooks across all 18 Claude Code events (was 16 hooks across 4 events). New events: SessionStart, SessionEnd, InstructionsLoaded, PostToolUse, PostToolUseFailure, PermissionRequest, SubagentStart, SubagentStop, Notification, TeammateIdle, TaskCompleted, ConfigChange, WorktreeCreate, WorktreeRemove
+- **Watchdog launchd daemon** — `extensions/watchdog/install.sh` creates a macOS launchd service with KeepAlive + RunAtLoad for automatic crash recovery, stuck detection (>10min idle via liveness heartbeat), and sleep/wake cycle management
+- `docs/getting-started.md` — install, scaffold, launch, verify
+- `docs/architecture.md` — 5-component deep dive, data flow, file ownership map
+- `docs/event-bus.md` — full bus API, side-effects, schema reference
+- `docs/hooks.md` — hook pipeline, context injection, policy enforcement, custom authoring
+- `CHANGELOG.md` — this file
+- **REVIEW.md** — deep review rules with 16 Always Flag items, 7 Never Flag items, severity overrides, pre-commit verification
+
+### Fixed
+- **`setup-hooks.sh`** — `_comment` entries in `manifest.json` (e.g. `{"_comment": "..."}`) no longer crash the Python parser with `KeyError: 'event'`
+- **`lint-hooks.sh`** — same `_comment` fix in both file-check and registration-check Python blocks
+
+---
+
 ## [1.0.0] — 2026-03-10
 
 ### Added
@@ -32,24 +60,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Direct dependency on `registry.json`** for config (kept as backward-compat runtime state)
 - **Manual `.mcp.json` wiring** — MCP server now registered globally via `fleet mcp register`
 - **`init-project.sh` requirement** — `fleet create` handles all project bootstrapping
-
----
-
-## [Unreleased]
-
-### Added
-- **`fleet onboard`** — interactive fleet architect agent that guides 9-phase project onboarding (discovery → fleet design → missions → safety hooks → REVIEW.md → extensions → Fleet Mail → verification → power user guide)
-- **Full hook activation** — `setup-hooks.sh` now installs 40+ hooks across all 18 Claude Code events (was 16 hooks across 4 events). New events: SessionStart, SessionEnd, InstructionsLoaded, PostToolUse, PostToolUseFailure, PermissionRequest, SubagentStart, SubagentStop, Notification, TeammateIdle, TaskCompleted, ConfigChange, WorktreeCreate, WorktreeRemove
-- **Watchdog launchd daemon** — `extensions/watchdog/install.sh` creates a macOS launchd service with KeepAlive + RunAtLoad for automatic crash recovery, stuck detection (>10min idle via liveness heartbeat), and sleep/wake cycle management
-- `docs/getting-started.md` — install, scaffold, launch, verify
-- `docs/architecture.md` — 5-component deep dive, data flow, file ownership map
-- `docs/event-bus.md` — full bus API, side-effects, schema reference
-- `docs/hooks.md` — hook pipeline, context injection, policy enforcement, custom authoring
-- `CHANGELOG.md` — this file
-
-### Fixed
-- **`setup-hooks.sh`** — `_comment` entries in `manifest.json` (e.g. `{"_comment": "..."}`) no longer crash the Python parser with `KeyError: 'event'`
-- **`lint-hooks.sh`** — same `_comment` fix in both file-check and registration-check Python blocks
 
 ---
 

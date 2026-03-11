@@ -50,6 +50,26 @@ These are checked by the pre-commit hook whenever CLI, doc, completion, or test 
 
 16. **Crash loop bypass**: Changes to watchdog or recycle logic that weaken crash-loop protection (3/hr max).
 
+### Release & Version Integrity
+
+17. **Version string drift**: `cli/index.ts` `.version()`, `CHANGELOG.md` latest version header, and `package.json` `version` (if present) must all agree. Any version bump must update all locations.
+
+18. **Changelog freshness**: If `cli/` or `mcp/` source files are in the staged diff, `CHANGELOG.md` `[Unreleased]` section should have a corresponding entry. Warn-only — can be `skip` with justification in proof XML.
+
+### Security Hygiene
+
+19. **Secrets in staged diff**: Staged changes must not contain Fleet Mail tokens, API keys, passwords, or high-entropy strings matching `token`, `password`, `secret`, `Bearer`. Allowlist: type definitions, doc examples, test fixtures.
+
+### Structural Integrity
+
+20. **Import boundary violation**: `mcp/worker-fleet/` must not import from `cli/`. `cli/` must not import from `mcp/`. Both may import from `shared/`. Cross-boundary imports cause runtime failures (MCP server and CLI are separate processes).
+
+21. **MCP tool count drift**: CLAUDE.md "MCP tools (N)" header must match actual tool count in `mcp/worker-fleet/index.ts`. Tool table rows in CLAUDE.md must match tool registrations.
+
+### Operational Safety
+
+22. **Idempotency regression**: `fleet setup`, `scripts/setup-hooks.sh`, and `fleet doctor --fix` must be idempotent. Running twice produces identical results — no duplicate hooks, no duplicate configs, no errors.
+
 ---
 
 ## Never Flag (intentional design patterns)
@@ -82,6 +102,12 @@ These are checked by the pre-commit hook whenever CLI, doc, completion, or test 
 | Missing `addGlobalOpts()` | low (easy to spot, easy to fix) |
 | Worktree path injection | critical (shell command injection risk) |
 | Crash loop bypass | high (runaway agents burn API credits) |
+| Version string drift (17) | medium (causes confusion, not data loss) |
+| Changelog freshness (18) | low (warn-only, not blocking) |
+| Secrets in staged diff (19) | critical (credential exposure) |
+| Import boundary violation (20) | high (runtime failure in prod) |
+| MCP tool count drift (21) | medium (worker confusion, not crash) |
+| Idempotency regression (22) | high (watchdog amplifies the failure) |
 
 ---
 
@@ -104,9 +130,16 @@ When the pre-commit hook fires (staged files match `cli/|CLAUDE.md|README.md|com
     <check name="cli-tests" status="pass|fail|skip" note="optional" />
     <check name="key-files" status="pass|fail|skip" note="optional" />
     <check name="cross-refs" status="pass|fail|skip" note="optional" />
+    <check name="version-consistency" status="pass|fail|skip" note="optional" />
+    <check name="secrets-scan" status="pass|fail|skip" note="optional" />
+    <check name="import-boundaries" status="pass|fail|skip" note="optional" />
   </checks>
   <summary>1-2 sentence assessment</summary>
 </verification>
 ```
 
 All checks must be `pass` or `skip` (with justification). Proof is hash-tied to staged diff — any staging change invalidates it.
+
+### Automated Review Script
+
+Run `bash scripts/review.sh` for a deterministic scan of items 17–22. This complements `check-docs.sh` (items 1–5). Both are first-pass — the pre-commit hook still requires AI-verified proof XML for anything the scripts can't catch.
