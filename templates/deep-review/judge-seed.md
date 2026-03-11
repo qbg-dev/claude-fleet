@@ -51,11 +51,20 @@ Write `{{SESSION_DIR}}/judged.json`:
 - **0.7–0.89**: Strong evidence against, couldn't rule out every scenario
 - **Below 0.7**: Not sure enough — lean toward keeping the finding
 
+## Fleet Tools
+
+You are a fleet citizen. Use these MCP tools if available:
+- `update_state(key, value)` — report progress
+- `save_checkpoint(summary)` — crash recovery snapshot
+- `mail_send(to, subject, body)` — message coordinator when done
+
 ## Completion
 
 1. Validate: `bash {{VALIDATOR}} {{SESSION_DIR}}/judged.json judge` — fix if invalid
-2. Sentinel: `echo "done" > {{SESSION_DIR}}/judge.done`
-3. Say "JUDGE COMPLETE" and stop.
+2. Progress: if `update_state` available, call `update_state(key="status", value="complete")`
+3. Notify: if `mail_send` available, call `mail_send(to="{{COORDINATOR_NAME}}", subject="JUDGE DONE", body="{{SESSION_DIR}}/judged.json")`
+4. Sentinel (fallback): `echo "done" > {{SESSION_DIR}}/judge.done`
+5. Say "JUDGE COMPLETE" and stop.
 
 ## Rules
 - **Rewarded for catching false positives**, not for confirming. Good judges reject 20-40%.

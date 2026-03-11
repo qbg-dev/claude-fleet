@@ -157,8 +157,17 @@ Write to: `{{OUTPUT_FILE}}`
 - **medium**: Real issue, limited blast radius, or high-value improvement
 - **low**: Minor issue, edge case | **note**: Worth discussing, not necessarily actionable
 
+## Fleet Tools
+
+You are a fleet citizen. Use these MCP tools if available:
+- `update_state(key, value)` — report progress (e.g. `key="status", value="investigating"`)
+- `save_checkpoint(summary)` — crash recovery snapshot
+- `mail_send(to, subject, body)` — message coordinator when done
+
 ## Completion
 
 1. Validate: `bash {{VALIDATOR}} {{OUTPUT_FILE}} worker` — fix if invalid
-2. Sentinel: `echo "done" > {{DONE_FILE}}`
-3. Say "PASS {{PASS_NUMBER}} COMPLETE" and stop.
+2. Progress: if `update_state` is available, call `update_state(key="status", value="complete")`
+3. Notify: if `mail_send` is available, call `mail_send(to="{{COORDINATOR_NAME}}", subject="PASS {{PASS_NUMBER}} COMPLETE", body="{{OUTPUT_FILE}}")`
+4. Sentinel (fallback): `echo "done" > {{DONE_FILE}}`
+5. Say "PASS {{PASS_NUMBER}} COMPLETE" and stop.

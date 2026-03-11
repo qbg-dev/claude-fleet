@@ -9,7 +9,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from "node
 import { join, basename, dirname } from "node:path";
 import { addGlobalOpts } from "../index";
 import { fail } from "../lib/fmt";
-import { resolveProjectRoot } from "../lib/paths";
+import { resolveProjectRoot, resolveProject } from "../lib/paths";
 import { DEFAULT_DIFF_FOCUS, DEFAULT_CONTENT_FOCUS, DEFAULT_MIXED_FOCUS } from "../lib/deep-review/args";
 import { collectMaterial, shouldAutoSkip } from "../lib/deep-review/material";
 import { runContextPrePass } from "../lib/deep-review/context";
@@ -28,6 +28,7 @@ import {
   launchVerifiers,
   printSummary,
 } from "../lib/deep-review/tmux";
+import { provisionReviewFleet } from "../lib/deep-review/fleet-provisioning";
 import type { DeepReviewConfig, SessionContext, RoleDesignerResult } from "../lib/deep-review/types";
 
 const HOME = process.env.HOME || "/tmp";
@@ -252,7 +253,11 @@ async function runDeepReview(opts: Record<string, any>): Promise<void> {
     }
   }
 
-  // Build session context
+  // Build fleet names (populated after role design, placeholders for now)
+  const sessionHash = hashStr(sessionId).slice(0, 8);
+  const fleetProject = resolveProject(projectRoot);
+
+  // Build session context (fleet names populated after role design)
   const ctx: SessionContext = {
     sessionId,
     sessionDir,
@@ -266,6 +271,13 @@ async function runDeepReview(opts: Record<string, any>): Promise<void> {
     claudeOps,
     reviewConfig,
     validatorPath,
+    // Fleet fields — populated after role design determines worker count
+    sessionHash,
+    coordinatorName: "",
+    judgeName: "",
+    workerNames: [],
+    verifierNames: [],
+    fleetProject,
   };
 
   // Collect material
@@ -314,6 +326,34 @@ async function runDeepReview(opts: Record<string, any>): Promise<void> {
     applySmartFocus(config, material, ctx, roleResult);
   }
 
+  // Populate fleet names now that we know worker count
+  if (!config.v1Mode) {
+    ctx.coordinatorName = `dr-${sessionHash}-coord`;
+    ctx.judgeName = config.noJudge ? "" : `dr-${sessionHash}-judge`;
+    ctx.workerNames = [];
+    for (let i = 1; i <= roleResult.totalWorkers; i++) {
+      ctx.workerNames.push(`dr-${sessionHash}-${i}`);
+    }
+    ctx.verifierNames = config.verify
+      ? ["chrome", "curl", "test", "script"].map((t) => `dr-${sessionHash}-v-${t}`)
+      : [];
+
+    // Fleet provisioning
+    console.log(`Provisioning fleet (${ctx.workerNames.length + 1 + (ctx.judgeName ? 1 : 0) + ctx.verifierNames.length} workers)...`);
+    await provisionReviewFleet({
+      sessionHash,
+      project: fleetProject,
+      workerNames: ctx.workerNames,
+      coordinatorName: ctx.coordinatorName,
+      judgeName: ctx.judgeName || null,
+      verifierNames: ctx.verifierNames,
+      sharedWorktree: workDir,
+      workerModel: config.workerModel,
+      coordModel: config.coordModel,
+      tmuxSession: reviewSession,
+    });
+  }
+
   // Context pre-pass
   if (material.hasDiff && !config.noContext) {
     runContextPrePass(ctx, material);
@@ -352,6 +392,20 @@ async function runDeepReview(opts: Record<string, any>): Promise<void> {
 
   if (config.verify) {
     launchVerifiers(ctx);
+  }
+
+  // Write cleanup script for post-completion (coordinator or manual invocation)
+  if (!config.v1Mode && ctx.coordinatorName) {
+    const provisioningModule = join(claudeOps, "cli/lib/deep-review/fleet-provisioning.ts");
+    const cleanupScript = `#!/usr/bin/env bash
+# Auto-cleanup for deep-review fleet workers (dr-${sessionHash}-*)
+# Run after review completes, or manually if session is abandoned.
+cd "${projectRoot}"
+exec bun -e "
+import('${provisioningModule}').then(m => m.cleanupReviewFleet('${sessionHash}', '${fleetProject}')).then(() => console.log('Cleanup complete'));
+"
+`;
+    writeFileSync(join(sessionDir, "cleanup-fleet.sh"), cleanupScript, { mode: 0o755 });
   }
 
   // Print summary

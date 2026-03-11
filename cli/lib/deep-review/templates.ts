@@ -4,6 +4,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getAttackVectors } from "./args";
+import { buildMailEnvExport } from "./fleet-provisioning";
 import type { DeepReviewConfig, MaterialResult, SessionContext, RoleDesignerResult } from "./types";
 
 /** Replace all occurrences of a literal string */
@@ -77,6 +78,7 @@ export function generateWorkerSeeds(
       "{{SPEC}}": config.spec,
       "{{VALIDATOR}}": ctx.validatorPath,
       "{{ROLE_ID}}": focus,
+      "{{COORDINATOR_NAME}}": ctx.coordinatorName || "",
     });
 
     // Substitute fields that may contain special chars
@@ -118,6 +120,8 @@ export function generateCoordinatorSeed(
     "{{REVIEW_CONFIG}}": ctx.reviewConfig,
     "{{WORKTREE_DIR}}": ctx.worktreeDir,
     "{{VALIDATOR}}": ctx.validatorPath,
+    "{{COORDINATOR_NAME}}": ctx.coordinatorName || "",
+    "{{JUDGE_NAME}}": ctx.judgeName || "",
   });
 
   writeFileSync(join(ctx.sessionDir, "coordinator-seed.md"), seed);
@@ -133,6 +137,7 @@ export function generateJudgeSeed(ctx: SessionContext, roleResult: RoleDesignerR
     "{{PROJECT_ROOT}}": ctx.workDir,
     "{{NUM_PASSES}}": String(roleResult.totalWorkers),
     "{{VALIDATOR}}": ctx.validatorPath,
+    "{{COORDINATOR_NAME}}": ctx.coordinatorName || "",
   });
 
   seed = replaceAll(seed, "{{REVIEW_CONFIG}}", ctx.reviewConfig);
@@ -185,6 +190,7 @@ export function generateVerifierSeeds(
       "{{OUTPUT_FILE}}": voutput,
       "{{DONE_FILE}}": vdone,
       "{{VALIDATOR}}": ctx.validatorPath,
+      "{{COORDINATOR_NAME}}": ctx.coordinatorName || "",
     });
 
     const vc = verifierConfigs[vtype];
@@ -201,10 +207,19 @@ export function generateLaunchWrappers(
   ctx: SessionContext,
   roleResult: RoleDesignerResult,
 ): void {
+  const useFleet = !config.v1Mode && !!ctx.coordinatorName;
+  const project = ctx.fleetProject || "";
+
   // Worker wrappers
   for (let i = 1; i <= roleResult.totalWorkers; i++) {
+    const workerName = ctx.workerNames?.[i - 1] || "";
+    const fleetEnv = useFleet && workerName
+      ? buildMailEnvExport(workerName, project)
+      : "";
+
     const script = `#!/usr/bin/env bash
 cd "${ctx.workDir}"
+${fleetEnv ? fleetEnv + "\nexport PROJECT_ROOT=\"${ctx.workDir}\"" : ""}
 
 # Run the review worker
 claude --model ${config.workerModel} --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/worker-${i}-seed.md')"
@@ -233,16 +248,27 @@ fi
   }
 
   // Coordinator wrapper
+  const coordFleetEnv = useFleet && ctx.coordinatorName
+    ? buildMailEnvExport(ctx.coordinatorName, project)
+    : "";
+
   const coordScript = `#!/usr/bin/env bash
 cd "${ctx.workDir}"
+${coordFleetEnv ? coordFleetEnv + "\nexport PROJECT_ROOT=\"${ctx.workDir}\"" : ""}
 exec claude --model ${config.coordModel} --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/coordinator-seed.md')"
 `;
   writeFileSync(join(ctx.sessionDir, "run-coordinator.sh"), coordScript, { mode: 0o755 });
 
   // Judge wrapper
   if (!config.noJudge && existsSync(join(ctx.sessionDir, "judge-seed.md"))) {
+    const judgeName = ctx.judgeName || "";
+    const judgeFleetEnv = useFleet && judgeName
+      ? buildMailEnvExport(judgeName, project)
+      : "";
+
     const judgeScript = `#!/usr/bin/env bash
 cd "${ctx.workDir}"
+${judgeFleetEnv ? judgeFleetEnv + "\nexport PROJECT_ROOT=\"${ctx.workDir}\"" : ""}
 exec claude --model ${config.workerModel} --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/judge-seed.md')"
 `;
     writeFileSync(join(ctx.sessionDir, "run-judge.sh"), judgeScript, { mode: 0o755 });
@@ -251,12 +277,18 @@ exec claude --model ${config.workerModel} --dangerously-skip-permissions "$(cat 
   // Verifier wrappers
   if (config.verify) {
     const types = ["chrome", "curl", "test", "script"];
-    for (const vtype of types) {
+    for (let vi = 0; vi < types.length; vi++) {
+      const vtype = types[vi];
       const voutput = join(ctx.sessionDir, `verification-${vtype}-results.json`);
       const vdone = join(ctx.sessionDir, `verify-${vtype}.done`);
+      const verifierName = ctx.verifierNames?.[vi] || "";
+      const vFleetEnv = useFleet && verifierName
+        ? buildMailEnvExport(verifierName, project)
+        : "";
 
       const script = `#!/usr/bin/env bash
 cd "${ctx.workDir}"
+${vFleetEnv ? vFleetEnv + "\nexport PROJECT_ROOT=\"${ctx.workDir}\"" : ""}
 
 # Wait for coordinator to finish
 echo "Verifier (${vtype}) waiting for coordinator to complete..."

@@ -47,6 +47,13 @@ export interface SessionContext {
   claudeOps: string;
   reviewConfig: string;
   validatorPath: string;
+  /** Fleet integration fields (v2 only, empty strings if v1) */
+  sessionHash: string;
+  coordinatorName: string;
+  judgeName: string;
+  workerNames: string[];
+  verifierNames: string[];
+  fleetProject: string;
 }
 
 export interface RoleDesignerResult {

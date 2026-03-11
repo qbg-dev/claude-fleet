@@ -50,10 +50,25 @@ Write results to `{{OUTPUT_FILE}}`:
 }
 ```
 
+## Fleet Tools
+
+You are a fleet citizen. Use these MCP tools if available:
+- `update_state(key, value)` — report progress
+- `save_checkpoint(summary)` — crash recovery snapshot
+- `mail_send(to, subject, body)` — message coordinator when done
+- `mail_inbox()` — check for "REVIEW DONE" signal from coordinator
+
+## Setup — Wait for review
+
+**Primary (Fleet Mail):** If `mail_inbox` available, poll `mail_inbox()` every 30s for "REVIEW DONE" message from coordinator.
+**Fallback:** Wait for `{{SESSION_DIR}}/review.done` file.
+
 ## Completion
 
 1. Validate: `bash {{VALIDATOR}} {{OUTPUT_FILE}} verifier` — fix if invalid
-2. Sentinel: `echo "done" > {{DONE_FILE}}`
-3. Say "VERIFICATION ({{VERIFY_TYPE}}) COMPLETE" and stop.
+2. Progress: if `update_state` available, call `update_state(key="status", value="complete")`
+3. Notify: if `mail_send` available, call `mail_send(to="{{COORDINATOR_NAME}}", subject="VERIFY {{VERIFY_TYPE}} DONE", body="{{OUTPUT_FILE}}")`
+4. Sentinel (fallback): `echo "done" > {{DONE_FILE}}`
+5. Say "VERIFICATION ({{VERIFY_TYPE}}) COMPLETE" and stop.
 
 Test every assigned path — skip only with documented reason. Be specific in failures (exact error messages, response bodies). If unclear pass/fail, mark "error" with detail.

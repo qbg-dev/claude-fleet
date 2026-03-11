@@ -14,6 +14,8 @@ export interface WorkerConfig {
   branch: string;
   mcp: Record<string, unknown>;
   hooks: SystemHook[];
+  /** Ephemeral workers skip watchdog respawn and are auto-cleaned after completion (e.g. deep-review workers) */
+  ephemeral?: boolean;
   meta: {
     created_at: string;
     created_by: string;

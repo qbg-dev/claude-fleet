@@ -87,7 +87,9 @@ export function launchWorkers(
         ? roleResult.focusAreas.filter((f) => f === focus).length
         : config.passesPerFocus;
 
-      console.log(`  Worker ${worker} → ${pane} (win ${w}) [${focus} #${passInFocus}/${ppf}]`);
+      const fleetName = ctx.workerNames?.[worker - 1] || "";
+      const nameTag = fleetName ? ` (${fleetName})` : "";
+      console.log(`  Worker ${worker} → ${pane} (win ${w}) [${focus} #${passInFocus}/${ppf}]${nameTag}`);
       tmux("send-keys", "-t", pane, `bash '${ctx.sessionDir}/run-pass-${worker}.sh'`, "Enter");
       worker++;
       Bun.sleepSync(300);
@@ -187,6 +189,17 @@ export function printSummary(
 
   if (config.verify) {
     console.log("  Verify: enabled (verifiers spawn after coordinator)");
+  }
+
+  if (ctx.coordinatorName) {
+    console.log("");
+    console.log("  ── FLEET INTEGRATION ───────────────────────────────────");
+    console.log(`  Coordinator: ${ctx.coordinatorName}`);
+    if (ctx.judgeName) console.log(`  Judge:       ${ctx.judgeName}`);
+    console.log(`  Workers:     ${ctx.workerNames?.join(", ") || "none"}`);
+    if (ctx.verifierNames?.length) console.log(`  Verifiers:   ${ctx.verifierNames.join(", ")}`);
+    console.log("  Coordination: Fleet Mail (file sentinels as fallback)");
+    console.log(`  Cleanup:     bash ${ctx.sessionDir}/cleanup-fleet.sh`);
   }
 
   console.log("");

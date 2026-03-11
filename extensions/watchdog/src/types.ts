@@ -93,6 +93,8 @@ export interface WorkerSnapshot {
   reasoningEffort: string;
   /** custom.runtime */
   runtime: string;
+  /** Ephemeral workers (deep-review) — skip watchdog entirely */
+  ephemeral: boolean;
 }
 
 // ── Watchdog Config ──

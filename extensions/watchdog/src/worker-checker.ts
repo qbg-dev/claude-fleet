@@ -35,6 +35,11 @@ export function checkWorker(
 
   // ── Skip conditions ──
 
+  // Ephemeral — deep-review workers, no watchdog management
+  if (snap.ephemeral) {
+    return { type: "skip", reason: "ephemeral" };
+  }
+
   // Standby — intentionally dormant
   if (snap.status === "standby") {
     return { type: "skip", reason: "standby" };

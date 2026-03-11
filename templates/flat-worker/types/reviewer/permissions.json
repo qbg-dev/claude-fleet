@@ -1,0 +1,21 @@
+{
+  "model": "opus",
+  "permission_mode": "bypassPermissions",
+  "denyList": [
+    "Bash(git checkout main*)",
+    "Bash(git merge*)",
+    "Bash(git push*)",
+    "Bash(git reset --hard*)",
+    "Bash(git clean*)",
+    "Bash(rm -rf*)",
+    "Bash(sudo *)",
+    "Bash(git commit --amend*)",
+    "Bash(git stash drop*)",
+    "Bash(git stash clear*)",
+    "Bash(git rebase -i*)",
+    "Bash(git branch -D*)",
+    "Bash(*deploy-prod*)",
+    "Write(~/.claude/fleet/**/hooks/**)",
+    "Edit(~/.claude/fleet/**/hooks/**)"
+  ]
+}
