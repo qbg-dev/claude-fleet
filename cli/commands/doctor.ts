@@ -515,6 +515,42 @@ function checkWatchdog(): CheckResult {
   };
 }
 
+function checkTui(): CheckResult {
+  // Check PATH first
+  const which = Bun.spawnSync(["which", "boring-mail-tui"], { stderr: "pipe" });
+  if (which.exitCode === 0) {
+    return {
+      name: "Fleet Mail TUI",
+      status: "pass",
+      message: which.stdout.toString().trim(),
+      optional: true,
+    };
+  }
+
+  // Check known locations
+  const paths = [
+    join(HOME, ".cargo/bin/boring-mail-tui"),
+    join(HOME, "Desktop/zPersonalProjects/boring-mail-server/target/release/boring-mail-tui"),
+  ];
+  for (const p of paths) {
+    if (existsSync(p)) {
+      return {
+        name: "Fleet Mail TUI",
+        status: "pass",
+        message: p,
+        optional: true,
+      };
+    }
+  }
+
+  return {
+    name: "Fleet Mail TUI",
+    status: "skip",
+    message: "not found (optional — cargo install boring-mail-tui)",
+    optional: true,
+  };
+}
+
 // ─── Display ──────────────────────────────────────────────────────────────
 
 function formatCheckResult(r: CheckResult): void {
@@ -565,6 +601,7 @@ async function runDoctor(globalOpts: Record<string, unknown>): Promise<void> {
   results.push(await checkFleetMail());
   results.push(checkDeepReview());
   results.push(checkWatchdog());
+  results.push(checkTui());
 
   // ── Section 2: Fleet Health ──
   // Resolve project name

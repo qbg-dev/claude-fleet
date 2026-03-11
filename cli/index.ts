@@ -51,6 +51,8 @@ import { register as registerSetupAgent } from "./commands/setup-agent";
 import { register as registerNuke } from "./commands/nuke";
 import { register as registerDoctor } from "./commands/doctor";
 import { register as registerOnboard } from "./commands/onboard";
+import { register as registerTui } from "./commands/tui";
+import { register as registerLayout } from "./commands/layout";
 
 registerSetup(program);
 registerCreate(program);
@@ -71,5 +73,7 @@ registerSetupAgent(program);
 registerNuke(program);
 registerDoctor(program);
 registerOnboard(program);
+registerTui(program);
+registerLayout(program);
 
 program.parse();

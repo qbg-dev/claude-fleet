@@ -46,6 +46,8 @@ export interface FleetConfig {
   window_groups?: Record<string, string[]>;
   /** Per-type hooks — merged as creator-owned hooks when creating workers of that type */
   hooks_by_type?: Record<string, Omit<SystemHook, 'id' | 'owner'>[]>;
+  /** Saved tmux window layout strings (window name → layout) */
+  layouts?: Record<string, string>;
 }
 
 export interface SystemHook {

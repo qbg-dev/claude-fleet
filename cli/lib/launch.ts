@@ -87,6 +87,19 @@ export async function launchInTmux(
 
   setPaneTitle(paneId, name);
 
+  // Auto-restore saved layout if available
+  try {
+    const { readJson: readJsonImport } = await import("../../shared/io");
+    const fleetJsonPath = join(FLEET_DATA, project, "fleet.json");
+    const fleetJson = readJsonImport(fleetJsonPath) as any;
+    if (fleetJson?.layouts?.[window]) {
+      Bun.spawnSync(
+        ["tmux", "select-layout", "-t", `${session}:${window}`, fleetJson.layouts[window]],
+        { stderr: "pipe" }
+      );
+    }
+  } catch {} // non-fatal
+
   if (createdSession) {
     sendKeys(paneId, `cd "${worktree}"`);
     sendEnter(paneId);
