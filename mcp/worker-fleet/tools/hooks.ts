@@ -140,6 +140,8 @@ server.registerTool(
       status: "active",
       lifetime: resolvedLifetime,
       added_at: new Date().toISOString(),
+      registered_by: WORKER_NAME,
+      ownership: "self",
     };
     if (content) hook.content = content;
     if (condition) hook.condition = condition;
