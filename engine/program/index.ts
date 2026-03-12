@@ -32,7 +32,7 @@ export { isDynamic, isStaticAgents } from "./types";
 export { compile, compilePhase, savePipelineState, loadPipelineState } from "./compiler";
 
 // Seed resolver
-export { resolveSeed, resolveSeedToFile, substitute, buildStateVars } from "./seed-resolver";
+export { resolveSeed, resolveSeedToFile, substitute, buildStateVars, registerPartials } from "./seed-resolver";
 
 // Hook generator
 export { generateStopHook, installStopHook, installPipelineHooks } from "./hook-generator";

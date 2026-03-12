@@ -5,28 +5,56 @@
  *   { template: "deep-review/worker-seed.md", vars: { ... } }
  *   { inline: "You are a reviewer..." }
  *   { generator: "generateWorkerSeed" }  — called at bridge time
+ *
+ * Uses Handlebars for template compilation:
+ *   - {{VAR}} substitution (drop-in replacement for old split/join)
+ *   - {{> partial}} for shared fragments in templates/fragments/
+ *   - {{#if}}, {{#each}} for conditional/loop blocks
+ *   - noEscape: true (markdown, not HTML)
+ *   - helperMissing preserves literal {{UNRESOLVED}} for vars resolved later at bridge time
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import Handlebars from "handlebars";
 import type { AgentSpec, ProgramPipelineState } from "./types";
 
 const HOME = process.env.HOME || "/tmp";
 const FLEET_DIR = process.env.CLAUDE_FLEET_DIR || join(HOME, ".claude-fleet");
 
-/** Replace all occurrences of a literal string */
-function replaceAll(str: string, search: string, replacement: string): string {
-  return str.split(search).join(replacement);
+// ── Handlebars setup ──────────────────────────────────────────
+
+/** Preserve {{UNRESOLVED}} literally — phased compilation means some vars resolve at bridge time */
+Handlebars.registerHelper("helperMissing", function (this: unknown, ...args: unknown[]) {
+  const opts = args[args.length - 1] as { name: string };
+  return new Handlebars.SafeString(`{{${opts.name}}}`);
+});
+
+let _partialsRegistered = false;
+
+/** Auto-register all templates/fragments/*.md as Handlebars partials */
+export function registerPartials(templateDir?: string): void {
+  const dirs = [
+    templateDir ? join(templateDir, "fragments") : null,
+    join(FLEET_DIR, "templates", "fragments"),
+  ].filter(Boolean) as string[];
+
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const file of readdirSync(dir).filter(f => f.endsWith(".md"))) {
+      const name = file.replace(".md", "");
+      // Don't overwrite if already registered from a higher-priority dir
+      if (!(Handlebars.partials as Record<string, unknown>)[name]) {
+        Handlebars.registerPartial(name, readFileSync(join(dir, file), "utf-8"));
+      }
+    }
+  }
+  _partialsRegistered = true;
 }
 
-/** Substitute all {{PLACEHOLDER}} occurrences in template content */
+/** Substitute all {{PLACEHOLDER}} occurrences in template content using Handlebars */
 export function substitute(content: string, vars: Record<string, string>): string {
-  let result = content;
-  for (const [k, v] of Object.entries(vars)) {
-    // Support both raw key and {{KEY}} form
-    const key = k.startsWith("{{") ? k : `{{${k}}}`;
-    result = replaceAll(result, key, v);
-  }
-  return result;
+  const template = Handlebars.compile(content, { noEscape: true, strict: false });
+  return template(vars);
 }
 
 /**
@@ -68,6 +96,9 @@ export function resolveSeed(
   }
 
   if ("template" in seed) {
+    // Ensure partials are registered before first template resolution
+    if (!_partialsRegistered) registerPartials(state.templateDir);
+
     const templatePath = resolveTemplatePath(seed.template, state.templateDir);
     if (!templatePath) {
       console.log(`  WARN: Template not found: ${seed.template}`);
