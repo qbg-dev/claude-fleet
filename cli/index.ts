@@ -57,6 +57,7 @@ import { register as registerHook } from "./commands/hook";
 import { register as registerRecycle } from "./commands/recycle";
 import { register as registerPipeline } from "./commands/pipeline";
 import { register as registerCompletion } from "./commands/completion";
+import { register as registerUpdate } from "./commands/update";
 
 registerSetup(program);
 registerCreate(program);
@@ -83,5 +84,6 @@ registerHook(program);
 registerRecycle(program);
 registerPipeline(program);
 registerCompletion(program);
+registerUpdate(program);
 
 program.parse();

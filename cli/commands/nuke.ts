@@ -1,13 +1,111 @@
 import type { Command } from "commander";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, lstatSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname, basename } from "node:path";
 import chalk from "chalk";
-import { FLEET_DIR, FLEET_DATA } from "../lib/paths";
+import { FLEET_DIR, FLEET_DATA, workerDir, resolveProject, resolveProjectRoot } from "../lib/paths";
+import { getState, getConfig } from "../lib/config";
 import { ok, info, warn, fail } from "../lib/fmt";
+import { listPaneIds, killPane } from "../lib/tmux";
+import { addGlobalOpts } from "../index";
 
 const HOME = process.env.HOME || "/tmp";
 
-// --- Artifact definitions ---
+// ============================================================
+// Per-worker nuke
+// ============================================================
+
+async function nukeWorker(name: string, project: string, opts: { yes?: boolean }): Promise<void> {
+  const dir = workerDir(project, name);
+
+  if (!existsSync(dir)) fail(`Worker '${name}' not found in project '${project}'`);
+
+  console.log(chalk.bold.red(`fleet nuke ${name}`) + ` — removing worker from project '${project}'\n`);
+
+  const removed: string[] = [];
+
+  // 1. Kill tmux pane
+  const state = getState(project, name);
+  const paneId = state?.pane_id;
+  if (paneId && listPaneIds().has(paneId)) {
+    if (!opts.yes) {
+      const yes = await confirm(chalk.yellow(`Kill tmux pane ${paneId} and destroy worker '${name}'?`));
+      if (!yes) { info("Aborted."); return; }
+      console.log("");
+    }
+    killPane(paneId);
+    ok(`Killed tmux pane ${paneId}`);
+    removed.push(`tmux pane ${paneId}`);
+  } else {
+    if (!opts.yes) {
+      const yes = await confirm(chalk.yellow(`Destroy worker '${name}'? (no active pane)`));
+      if (!yes) { info("Aborted."); return; }
+      console.log("");
+    }
+    if (paneId) info(`Pane ${paneId} already gone`);
+  }
+
+  // 2. Remove git worktree
+  const config = getConfig(project, name);
+  const worktreeDir = config?.worktree;
+  if (worktreeDir && existsSync(worktreeDir)) {
+    // Find the main project root (strip worktree suffix)
+    const projectRoot = resolveProjectRoot(worktreeDir);
+    // Use git worktree remove from the parent repo
+    const parentRoot = dirname(worktreeDir);
+    // Try finding the actual main repo — worktree dirs sit alongside it
+    const projectBasename = basename(worktreeDir).replace(/-w-.*$/, "");
+    const mainRoot = join(parentRoot, projectBasename);
+    const gitRoot = existsSync(join(mainRoot, ".git")) ? mainRoot : projectRoot;
+
+    const result = Bun.spawnSync(
+      ["git", "-C", gitRoot, "worktree", "remove", worktreeDir, "--force"],
+      { stderr: "pipe" },
+    );
+    if (result.exitCode === 0) {
+      ok(`Removed worktree ${worktreeDir}`);
+      removed.push(`worktree ${worktreeDir}`);
+    } else {
+      // Fallback: just remove the directory
+      warn(`git worktree remove failed — removing directory directly`);
+      rmSync(worktreeDir, { recursive: true, force: true });
+      ok(`Removed worktree directory ${worktreeDir}`);
+      removed.push(`worktree dir ${worktreeDir}`);
+    }
+
+    // Clean up the branch too
+    const branch = config?.branch || `worker/${name}`;
+    Bun.spawnSync(["git", "-C", gitRoot, "branch", "-D", branch], { stderr: "pipe" });
+  } else if (worktreeDir) {
+    info(`Worktree ${worktreeDir} already gone`);
+  }
+
+  // 3. Remove fleet data dir
+  if (existsSync(dir)) {
+    rmSync(dir, { recursive: true, force: true });
+    ok(`Removed fleet data ${dir}`);
+    removed.push(`fleet data ${dir}`);
+  }
+
+  // 4. Remove mission symlink
+  const missionLink = join(FLEET_DATA, project, "missions", `${name}.md`);
+  if (existsSync(missionLink)) {
+    rmSync(missionLink, { force: true });
+    ok(`Removed mission symlink ${missionLink}`);
+    removed.push(`mission symlink`);
+  }
+
+  // Summary
+  console.log("");
+  if (removed.length > 0) {
+    ok(chalk.bold(`Worker '${name}' nuked (${removed.length} artifacts removed)`));
+  } else {
+    info(`Worker '${name}' — nothing to clean up`);
+  }
+}
+
+// ============================================================
+// Full nuke (--all) — existing behavior
+// ============================================================
 
 interface Artifact {
   label: string;
@@ -334,138 +432,158 @@ async function confirm(message: string): Promise<boolean> {
   return false;
 }
 
-// --- Command ---
+async function nukeAll(opts: { dryRun?: boolean; yes?: boolean; keepData?: boolean; keepMail?: boolean }): Promise<void> {
+  const dryRun = opts.dryRun ?? false;
+  const skipConfirm = opts.yes ?? false;
+  const keepFlags = new Set<string>();
+  if (opts.keepData) keepFlags.add("keep-data");
+  if (opts.keepMail) keepFlags.add("keep-mail");
+
+  console.log(chalk.bold.red(dryRun ? "fleet nuke --all (dry run)" : "fleet nuke --all") + " — remove all fleet artifacts\n");
+
+  const artifacts = getArtifacts();
+  const settingsInfo = settingsHasFleetEntries();
+
+  // Build list of what will be affected
+  const toRemove: Artifact[] = [];
+  const skippedByFlag: Artifact[] = [];
+  const skippedByGuard: Artifact[] = [];
+
+  for (const a of artifacts) {
+    // Check flag exclusion
+    if (a.flag && keepFlags.has(a.flag)) {
+      if (artifactExists(a)) skippedByFlag.push(a);
+      continue;
+    }
+
+    // Check guard
+    if (a.guard && !a.guard()) {
+      if (artifactExists(a)) skippedByGuard.push(a);
+      continue;
+    }
+
+    if (artifactExists(a)) {
+      toRemove.push(a);
+    }
+  }
+
+  const hasSettingsWork = settingsInfo.hasMcp || settingsInfo.hasHooks;
+
+  // Print summary
+  if (toRemove.length === 0 && !hasSettingsWork) {
+    info("Nothing to remove — fleet is not installed (or already nuked).");
+    if (skippedByFlag.length > 0) {
+      console.log("");
+      info("Preserved by flags:");
+      for (const a of skippedByFlag) console.log(`  ${chalk.dim("-")} ${a.label}`);
+    }
+    return;
+  }
+
+  console.log(chalk.bold("Will remove:"));
+  for (const a of toRemove) {
+    const kindTag = chalk.dim(`[${a.kind}]`);
+    if (a.kind === "process") {
+      const pids = findProcesses(a.processPattern!);
+      console.log(`  ${chalk.red("-")} ${a.label} (PIDs: ${pids.join(", ")}) ${kindTag}`);
+    } else {
+      console.log(`  ${chalk.red("-")} ${a.label} ${kindTag}`);
+    }
+  }
+  if (hasSettingsWork) {
+    if (settingsInfo.hasMcp) console.log(`  ${chalk.red("-")} mcpServers["worker-fleet"] in settings.json`);
+    if (settingsInfo.hasHooks) console.log(`  ${chalk.red("-")} Fleet hook entries in settings.json`);
+  }
+
+  if (skippedByFlag.length > 0) {
+    console.log("");
+    console.log(chalk.bold("Preserved (by flag):"));
+    for (const a of skippedByFlag) {
+      console.log(`  ${chalk.dim("-")} ${a.label}`);
+    }
+  }
+
+  if (skippedByGuard.length > 0) {
+    console.log("");
+    console.log(chalk.bold("Skipped (external reference):"));
+    for (const a of skippedByGuard) {
+      console.log(`  ${chalk.dim("-")} ${a.label} ${chalk.dim("(DEEP_REVIEW_DIR points elsewhere)")}`);
+    }
+  }
+
+  console.log("");
+
+  // Confirm
+  if (!dryRun && !skipConfirm) {
+    const yes = await confirm(chalk.yellow("This is destructive. Proceed?"));
+    if (!yes) {
+      info("Aborted.");
+      return;
+    }
+    console.log("");
+  }
+
+  // Back up settings.json before modification
+  if (hasSettingsWork) {
+    if (dryRun) {
+      info("Would back up settings.json before modification");
+    } else {
+      const backup = backupSettings();
+      if (backup) ok(`Backed up settings.json → ${backup}`);
+    }
+  }
+
+  // Execute removals in order: processes -> launchd -> symlinks -> settings -> data -> clones
+  const order: Artifact["kind"][] = ["process", "launchd", "symlink", "dir", "file"];
+  for (const kind of order) {
+    for (const a of toRemove.filter((x) => x.kind === kind)) {
+      removeArtifact(a, dryRun);
+    }
+
+    // Clean settings after symlinks, before data dirs
+    if (kind === "symlink" && hasSettingsWork) {
+      cleanSettings(dryRun);
+    }
+  }
+
+  // Summary
+  console.log("");
+  if (dryRun) {
+    info("Dry run complete — no changes made.");
+    console.log(`\n  Run ${chalk.cyan("fleet nuke --all")} (without --dry-run) to execute.`);
+  } else {
+    ok(chalk.bold("Fleet artifacts removed."));
+    console.log(`\n  Re-install: ${chalk.cyan("fleet setup")}`);
+  }
+}
+
+// ============================================================
+// Command registration
+// ============================================================
 
 export function register(parent: Command): void {
-  parent
-    .command("nuke")
-    .description("Remove all fleet-installed artifacts (clean slate for re-setup)")
+  const sub = parent
+    .command("nuke [name]")
+    .description("Destroy a worker or all fleet artifacts (--all)")
+    .option("-a, --all", "Remove ALL fleet-installed artifacts (clean slate)")
     .option("--dry-run", "Show what would be removed without doing it")
     .option("-y, --yes", "Skip confirmation prompt")
-    .option("--keep-data", "Preserve ~/.claude/fleet/ (worker configs & state)")
-    .option("--keep-mail", "Preserve Fleet Mail data (~/.boring-mail/)")
-    .action(async (opts: { dryRun?: boolean; yes?: boolean; keepData?: boolean; keepMail?: boolean }) => {
-      const dryRun = opts.dryRun ?? false;
-      const skipConfirm = opts.yes ?? false;
-      const keepFlags = new Set<string>();
-      if (opts.keepData) keepFlags.add("keep-data");
-      if (opts.keepMail) keepFlags.add("keep-mail");
-
-      console.log(chalk.bold.red(dryRun ? "fleet nuke (dry run)" : "fleet nuke") + " — remove all fleet artifacts\n");
-
-      const artifacts = getArtifacts();
-      const settingsInfo = settingsHasFleetEntries();
-
-      // Build list of what will be affected
-      const toRemove: Artifact[] = [];
-      const skippedByFlag: Artifact[] = [];
-      const skippedByGuard: Artifact[] = [];
-
-      for (const a of artifacts) {
-        // Check flag exclusion
-        if (a.flag && keepFlags.has(a.flag)) {
-          if (artifactExists(a)) skippedByFlag.push(a);
-          continue;
-        }
-
-        // Check guard
-        if (a.guard && !a.guard()) {
-          if (artifactExists(a)) skippedByGuard.push(a);
-          continue;
-        }
-
-        if (artifactExists(a)) {
-          toRemove.push(a);
-        }
-      }
-
-      const hasSettingsWork = settingsInfo.hasMcp || settingsInfo.hasHooks;
-
-      // Print summary
-      if (toRemove.length === 0 && !hasSettingsWork) {
-        info("Nothing to remove — fleet is not installed (or already nuked).");
-        if (skippedByFlag.length > 0) {
-          console.log("");
-          info("Preserved by flags:");
-          for (const a of skippedByFlag) console.log(`  ${chalk.dim("-")} ${a.label}`);
-        }
+    .option("--keep-data", "Preserve ~/.claude/fleet/ (--all only)")
+    .option("--keep-mail", "Preserve Fleet Mail data (--all only)");
+  addGlobalOpts(sub)
+    .action(async (name: string | undefined, opts: {
+      all?: boolean; dryRun?: boolean; yes?: boolean; keepData?: boolean; keepMail?: boolean;
+    }, cmd: Command) => {
+      if (opts.all) {
+        await nukeAll(opts);
         return;
       }
 
-      console.log(chalk.bold("Will remove:"));
-      for (const a of toRemove) {
-        const kindTag = chalk.dim(`[${a.kind}]`);
-        if (a.kind === "process") {
-          const pids = findProcesses(a.processPattern!);
-          console.log(`  ${chalk.red("-")} ${a.label} (PIDs: ${pids.join(", ")}) ${kindTag}`);
-        } else {
-          console.log(`  ${chalk.red("-")} ${a.label} ${kindTag}`);
-        }
-      }
-      if (hasSettingsWork) {
-        if (settingsInfo.hasMcp) console.log(`  ${chalk.red("-")} mcpServers["worker-fleet"] in settings.json`);
-        if (settingsInfo.hasHooks) console.log(`  ${chalk.red("-")} Fleet hook entries in settings.json`);
+      if (!name) {
+        fail("Usage: fleet nuke <name>  or  fleet nuke --all");
       }
 
-      if (skippedByFlag.length > 0) {
-        console.log("");
-        console.log(chalk.bold("Preserved (by flag):"));
-        for (const a of skippedByFlag) {
-          console.log(`  ${chalk.dim("-")} ${a.label}`);
-        }
-      }
-
-      if (skippedByGuard.length > 0) {
-        console.log("");
-        console.log(chalk.bold("Skipped (external reference):"));
-        for (const a of skippedByGuard) {
-          console.log(`  ${chalk.dim("-")} ${a.label} ${chalk.dim("(DEEP_REVIEW_DIR points elsewhere)")}`);
-        }
-      }
-
-      console.log("");
-
-      // Confirm
-      if (!dryRun && !skipConfirm) {
-        const yes = await confirm(chalk.yellow("This is destructive. Proceed?"));
-        if (!yes) {
-          info("Aborted.");
-          return;
-        }
-        console.log("");
-      }
-
-      // Back up settings.json before modification
-      if (hasSettingsWork) {
-        if (dryRun) {
-          info("Would back up settings.json before modification");
-        } else {
-          const backup = backupSettings();
-          if (backup) ok(`Backed up settings.json → ${backup}`);
-        }
-      }
-
-      // Execute removals in order: processes -> launchd -> symlinks -> settings -> data -> clones
-      const order: Artifact["kind"][] = ["process", "launchd", "symlink", "dir", "file"];
-      for (const kind of order) {
-        for (const a of toRemove.filter((x) => x.kind === kind)) {
-          removeArtifact(a, dryRun);
-        }
-
-        // Clean settings after symlinks, before data dirs
-        if (kind === "symlink" && hasSettingsWork) {
-          cleanSettings(dryRun);
-        }
-      }
-
-      // Summary
-      console.log("");
-      if (dryRun) {
-        info("Dry run complete — no changes made.");
-        console.log(`\n  Run ${chalk.cyan("fleet nuke")} (without --dry-run) to execute.`);
-      } else {
-        ok(chalk.bold("Fleet artifacts removed."));
-        console.log(`\n  Re-install: ${chalk.cyan("fleet setup")}`);
-      }
+      const project = cmd.optsWithGlobals().project as string || resolveProject();
+      await nukeWorker(name!, project, { yes: opts.yes });
     });
 }
