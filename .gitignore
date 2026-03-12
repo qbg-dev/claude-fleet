@@ -2,6 +2,13 @@
 state/
 logs/
 hooks/dynamic/
+
+# Fleet runtime state (per-session, not portable)
+.claude/triage/
+.claude/workers/.commit-log.jsonl
+
+# Lock files (auto-generated)
+mcp/worker-fleet/bun.lock
 harness/manifests/
 harness/reports/
 harness/data/
