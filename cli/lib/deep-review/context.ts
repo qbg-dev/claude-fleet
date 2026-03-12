@@ -25,6 +25,7 @@ export function runContextPrePass(ctx: SessionContext, material: MaterialResult)
       Bun.spawnSync([drContext, "dep-graph", ctx.projectRoot, changedFiles, depFile], {
         cwd: ctx.projectRoot,
         stderr: "pipe",
+        timeout: 60_000,
       });
 
       // 3. Test coverage
@@ -33,6 +34,7 @@ export function runContextPrePass(ctx: SessionContext, material: MaterialResult)
       Bun.spawnSync([drContext, "test-coverage", ctx.projectRoot, changedFiles, testFile], {
         cwd: ctx.projectRoot,
         stderr: "pipe",
+        timeout: 60_000,
       });
 
       // 4. Blame context
@@ -41,6 +43,7 @@ export function runContextPrePass(ctx: SessionContext, material: MaterialResult)
       Bun.spawnSync([drContext, "blame-context", ctx.projectRoot, material.materialFile, blameFile], {
         cwd: ctx.projectRoot,
         stderr: "pipe",
+        timeout: 60_000,
       });
     }
 

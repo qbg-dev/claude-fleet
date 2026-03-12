@@ -1,10 +1,11 @@
 use regex::Regex;
 use serde::Serialize;
 use serde_json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use walkdir::WalkDir;
 
 use crate::util;
 
@@ -18,8 +19,9 @@ pub struct DepEntry {
 
 /// Build a dependency graph for changed files.
 ///
-/// For each file: find callers (grep -E), parse imports (regex), count git churn.
-/// Equivalent to the inline Python dep-graph script in deep-review.sh.
+/// Single-pass approach: walk the project tree once, parse all import statements,
+/// build a reverse-import map, then look up each changed file. O(project_size + N)
+/// instead of O(N * project_size) from the old per-file grep approach.
 pub fn run(
     project_root: &str,
     changed_files_str: &str,
@@ -34,6 +36,10 @@ pub fn run(
     let import_re = Regex::new(r#"from\s+['"]([^'"]+)['"]"#)?;
     let mut graph: BTreeMap<String, DepEntry> = BTreeMap::new();
 
+    // Build reverse-import map: for each file in the project, parse its imports
+    // and record "target_basename -> [(importing_file, line_number)]"
+    let reverse_map = build_reverse_import_map(project_root, &import_re);
+
     for cf in &changed_files {
         let mut entry = DepEntry {
             imported_by: Vec::new(),
@@ -41,40 +47,26 @@ pub fn run(
             churn_30d: 0,
         };
 
-        // Extract basename without extension for caller search
+        // Look up callers from the reverse-import map
         let basename = Path::new(cf)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("");
 
         if !basename.is_empty() {
-            // Find callers: grep for imports of this file
-            // Use grep -E (ERE) for compatibility with regex::escape output (#6)
-            // Anchor with path separator to avoid substring matches (#3)
-            let escaped = regex::escape(basename);
-            let pattern = format!("from.*['\"].*[/]{}['\"]", escaped);
-            let mut cmd = Command::new("grep");
-            cmd.args([
-                "-E", // ERE mode — compatible with regex::escape (#6)
-                "-rn",
-                "--include=*.ts",
-                "--include=*.tsx",
-                "--include=*.js",
-                &pattern,
-                project_root,
-            ]);
-            if let Ok(output) = util::run_cmd(cmd, util::CMD_TIMEOUT) {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    let parts: Vec<&str> = line.splitn(3, ':').collect();
-                    if parts.len() >= 2 {
-                        if let Ok(rel) = pathdiff(parts[0], project_root) {
-                            // Skip self-imports: compare full relative path, not substring (#4)
-                            if rel == *cf {
-                                continue;
-                            }
-                            entry.imported_by.push(format!("{}:{}", rel, parts[1]));
-                        }
+            if let Some(importers) = reverse_map.get(basename) {
+                for (importer_path, line_num, import_specifier) in importers {
+                    // Skip self-imports: compare full relative path
+                    if importer_path == *cf {
+                        continue;
+                    }
+                    // Verify import specifier ends with basename (path-anchored match)
+                    let spec_basename = Path::new(import_specifier.as_str())
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    if spec_basename == basename {
+                        entry.imported_by.push(format!("{}:{}", importer_path, line_num));
                     }
                 }
                 entry.imported_by.truncate(20);
@@ -111,14 +103,69 @@ pub fn run(
     Ok(format!("    {} files mapped", graph.len()))
 }
 
-/// Compute relative path from `base` to `path`.
-fn pathdiff(path: &str, base: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let p = Path::new(path);
-    let b = Path::new(base);
-    match p.strip_prefix(b) {
-        Ok(rel) => Ok(rel.to_string_lossy().to_string()),
-        Err(_) => Ok(path.to_string()),
+/// Walk the project tree once, parse import statements from all TS/JS files,
+/// and build a map from imported basename to list of (importer_path, line_number, import_specifier).
+fn build_reverse_import_map(
+    project_root: &str,
+    import_re: &Regex,
+) -> HashMap<String, Vec<(String, usize, String)>> {
+    let mut reverse_map: HashMap<String, Vec<(String, usize, String)>> = HashMap::new();
+
+    let root = Path::new(project_root);
+
+    for entry in WalkDir::new(project_root)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_str().unwrap_or("");
+            // Skip common non-source directories
+            !matches!(
+                name,
+                "node_modules" | ".git" | "dist" | "build" | ".next" | "coverage" | ".claude"
+            )
+        })
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "ts" | "tsx" | "js" | "jsx") {
+            continue;
+        }
+
+        let rel_path = match path.strip_prefix(root) {
+            Ok(rel) => rel.to_string_lossy().to_string(),
+            Err(_) => continue,
+        };
+
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        for (line_num_0, line) in content.lines().enumerate() {
+            for cap in import_re.captures_iter(line) {
+                if let Some(specifier) = cap.get(1) {
+                    let spec = specifier.as_str();
+                    // Extract the basename of the import specifier
+                    let import_basename = Path::new(spec)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    if !import_basename.is_empty() && import_basename != "." && import_basename != ".." {
+                        reverse_map
+                            .entry(import_basename.to_string())
+                            .or_default()
+                            .push((rel_path.clone(), line_num_0 + 1, spec.to_string()));
+                    }
+                }
+            }
+        }
     }
+
+    reverse_map
 }
 
 #[cfg(test)]

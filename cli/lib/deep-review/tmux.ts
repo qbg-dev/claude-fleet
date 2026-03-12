@@ -1,6 +1,9 @@
 /**
  * Tmux session orchestration for deep review.
  */
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { FLEET_DATA } from "../../lib/paths";
 import type { DeepReviewConfig, SessionContext, RoleDesignerResult } from "./types";
 
 function tmux(...args: string[]): { ok: boolean; stdout: string } {
@@ -91,6 +94,18 @@ export function launchWorkers(
       const nameTag = fleetName ? ` (${fleetName})` : "";
       console.log(`  Worker ${worker} → ${pane} (win ${w}) [${focus} #${passInFocus}/${ppf}]${nameTag}`);
       tmux("send-keys", "-t", pane, `bash '${ctx.sessionDir}/run-pass-${worker}.sh'`, "Enter");
+
+      // Track pane ID in fleet state.json for observability (fleet ls, fleet attach)
+      if (fleetName && ctx.fleetProject) {
+        const stateFile = join(FLEET_DATA, ctx.fleetProject, fleetName, "state.json");
+        try {
+          const state = JSON.parse(readFileSync(stateFile, "utf-8"));
+          state.pane_id = pane;
+          state.pane_target = `${ctx.reviewSession}:workers-${w}`;
+          writeFileSync(stateFile, JSON.stringify(state, null, 2));
+        } catch {}
+      }
+
       worker++;
       Bun.sleepSync(300);
     }
@@ -103,6 +118,17 @@ export function launchCoordinator(ctx: SessionContext): void {
   console.log("Launching coordinator...");
   const coordPane = getPaneId(`${ctx.reviewSession}:coordinator`, 0);
   tmux("send-keys", "-t", coordPane, `bash '${ctx.sessionDir}/run-coordinator.sh'`, "Enter");
+
+  // Track coordinator pane ID
+  if (ctx.coordinatorName && ctx.fleetProject) {
+    const stateFile = join(FLEET_DATA, ctx.fleetProject, ctx.coordinatorName, "state.json");
+    try {
+      const state = JSON.parse(readFileSync(stateFile, "utf-8"));
+      state.pane_id = coordPane;
+      state.pane_target = `${ctx.reviewSession}:coordinator`;
+      writeFileSync(stateFile, JSON.stringify(state, null, 2));
+    } catch {}
+  }
 }
 
 /** Launch verifiers (if enabled) */
@@ -114,6 +140,19 @@ export function launchVerifiers(ctx: SessionContext): void {
     const pane = getPaneId(`${ctx.reviewSession}:verifiers`, i);
     tmux("send-keys", "-t", pane, `bash '${ctx.sessionDir}/run-verifier-${types[i]}.sh'`, "Enter");
     console.log(`  Verifier ${types[i]} → ${pane}`);
+
+    // Track verifier pane ID
+    const verifierName = ctx.verifierNames?.[i];
+    if (verifierName && ctx.fleetProject) {
+      const stateFile = join(FLEET_DATA, ctx.fleetProject, verifierName, "state.json");
+      try {
+        const state = JSON.parse(readFileSync(stateFile, "utf-8"));
+        state.pane_id = pane;
+        state.pane_target = `${ctx.reviewSession}:verifiers`;
+        writeFileSync(stateFile, JSON.stringify(state, null, 2));
+      } catch {}
+    }
+
     Bun.sleepSync(300);
   }
 }
@@ -180,8 +219,6 @@ export function printSummary(
   const hasJudge = !config.noJudge;
   console.log(`  Judge: ${hasJudge ? "enabled (adversarial validation)" : "disabled"}`);
 
-  const { existsSync } = require("node:fs");
-  const { join } = require("node:path");
   if (existsSync(join(ctx.sessionDir, "dep-graph.json"))) {
     console.log("  Context: pre-gathered (static analysis, deps, tests)");
   }

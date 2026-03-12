@@ -366,6 +366,7 @@ async function runDeepReview(opts: Record<string, any>): Promise<void> {
     Bun.spawnSync([drContext, "shuffle", material.materialFile, sessionDir, String(roleResult.totalWorkers)], {
       cwd: projectRoot,
       stderr: "pipe",
+      timeout: 60_000,
     });
   }
 
