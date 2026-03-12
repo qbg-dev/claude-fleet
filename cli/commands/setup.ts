@@ -452,6 +452,18 @@ export function register(parent: Command): void {
         info("Watchdog: not found (optional — supervises long-running workers)");
       }
 
+      // Restart watchdog if installed (picks up code changes)
+      if (watchdogInstalled) {
+        const plistPath = existsSync(watchdogPlist) ? watchdogPlist : legacyPlist;
+        const unload = Bun.spawnSync(["launchctl", "unload", plistPath], { stderr: "pipe" });
+        const load = Bun.spawnSync(["launchctl", "load", plistPath], { stderr: "pipe" });
+        if (load.exitCode === 0) {
+          ok("Watchdog: restarted (picks up code changes)");
+        } else {
+          warn("Watchdog: restart failed — may need manual `launchctl unload/load`");
+        }
+      }
+
       // Deep review extension
       const reviewInstallScript = join(fleetDir, "extensions/review/install.sh");
       const deepReviewDir = process.env.DEEP_REVIEW_DIR || join(HOME, ".deep-review");
