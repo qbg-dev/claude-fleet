@@ -1,0 +1,7 @@
+{
+  "name": "statusline",
+  "version": "1.0.0",
+  "description": "Rich Claude Code statusline with spending tracker",
+  "scripts": { "statusline": "statusline-command.sh" },
+  "install": "install.sh"
+}

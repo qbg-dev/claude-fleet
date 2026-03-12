@@ -221,21 +221,25 @@ export function register(parent: Command): void {
           info("claude-hooks not found — skipping (optional, install at ~/.claude-hooks)");
         }
 
-        // Configure statusline (shows worker identity via fleet v2 worktree detection)
-        const statuslineScript = join(fleetDir, "scripts/statusline-command.sh");
-        const statuslineLink = join(HOME, ".claude/statusline-command.sh");
-        if (existsSync(statuslineScript)) {
-          if (existsSync(statuslineLink) || settings.statusLine) {
+        // Configure statusline via extension installer
+        const statuslineInstaller = join(fleetDir, "extensions/statusline/install.sh");
+        if (existsSync(statuslineInstaller)) {
+          if (settings.statusLine) {
             // Existing statusline — don't overwrite. Onboarding agent will interview
             // the user and help merge fleet v2 worker detection into their script.
             info("Existing statusline detected — skipping (onboarding agent will help merge)");
           } else {
-            Bun.spawnSync(["ln", "-sf", statuslineScript, statuslineLink]);
-            settings.statusLine = {
-              type: "command",
-              command: `bash ~/.claude/statusline-command.sh`,
-            };
-            ok("Statusline: ~/.claude/statusline-command.sh → fleet script (worker identity via worktree)");
+            const slInstall = Bun.spawnSync(
+              ["bash", statuslineInstaller, "--link"],
+              { stdout: "pipe", stderr: "pipe", env: { ...process.env, HOME } },
+            );
+            if (slInstall.exitCode === 0) {
+              // Re-read settings.json after install script modified it
+              try { settings = JSON.parse(readFileSync(settingsFile, "utf-8")); } catch {}
+              ok("Statusline: installed via extension (worker identity via worktree)");
+            } else {
+              warn("Statusline install failed — try: bash extensions/statusline/install.sh");
+            }
           }
         }
 
