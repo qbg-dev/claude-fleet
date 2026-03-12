@@ -125,17 +125,30 @@ export function resolveSeed(
 /**
  * Resolve and write seed file for an agent.
  * Returns the path to the written seed file.
+ *
+ * If pipelineContext is provided and the seed doesn't contain the
+ * {{> pipeline-context}} partial, it's auto-appended to the end.
  */
 export function resolveSeedToFile(
   agent: AgentSpec,
   state: ProgramPipelineState,
   sessionDir: string,
   extraVars?: Record<string, string>,
+  pipelineContext?: string,
 ): string {
-  const content = resolveSeed(agent, state, extraVars);
+  let content = resolveSeed(agent, state, extraVars);
   const seedPath = join(sessionDir, `${agent.name}-seed.md`);
 
   if (content) {
+    if (pipelineContext) {
+      if (content.includes("{{> pipeline-context}}")) {
+        // Opt-in placement: replace partial marker with context
+        content = content.replace("{{> pipeline-context}}", pipelineContext);
+      } else {
+        // Auto-append: add context to the end
+        content += "\n\n---\n\n" + pipelineContext;
+      }
+    }
     writeFileSync(seedPath, content);
   } else {
     // Placeholder for generator seeds

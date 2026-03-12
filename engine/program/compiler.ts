@@ -24,9 +24,10 @@ import type {
   CompiledWorker,
   ProgramPipelineState,
 } from "./types";
+import { generatePipelineContext } from "./pipeline-context";
 import { isDynamic } from "./types";
 import { resolveSeedToFile, buildStateVars } from "./seed-resolver";
-import { installPipelineHooks } from "./hook-generator";
+import { installPipelineHooks, installToolRestrictionHooks } from "./hook-generator";
 import { FLEET_DATA } from "../../cli/lib/paths";
 import { phasesToGraph, topologicalSort, buildNodeIndexMap, outgoingEdges, END_SENTINEL } from "./graph";
 
@@ -53,6 +54,7 @@ export function compilePhase(
   agents: AgentSpec[],
   phase: Phase,
   state: ProgramPipelineState,
+  graph?: ProgramGraph,
 ): {
   phase: CompiledPhase;
   windows: CompiledWindow[];
@@ -92,12 +94,19 @@ export function compilePhase(
         const agent = subAgents[p];
         const model = agent.model || defaultModel;
 
+        // Generate pipeline context (unless agent opts out)
+        let pipelineContext: string | undefined;
+        if (graph && !agent.noPipelineContext) {
+          pipelineContext = generatePipelineContext(agent, phase.name, agents, graph, state);
+        }
+
         // Resolve seed
         const seedPath = resolveSeedToFile(
           agent,
           state,
           state.sessionDir,
           { ...stateVars, ...(agent.vars || {}) },
+          pipelineContext,
         );
 
         const wrapperPath = join(state.sessionDir, `run-${agent.name}.sh`);
@@ -112,6 +121,9 @@ export function compilePhase(
           paneIndex: p,
           phaseIndex,
           sleepDuration: agent.sleepDuration,
+          env: agent.env,
+          permissionMode: agent.permissionMode,
+          timeout: agent.timeout,
         });
       }
     }
@@ -211,7 +223,7 @@ export function compileGraph(
       }
     } else {
       // Eager
-      const compiled = compilePhase(idx, node.agents, phaseCompat, state);
+      const compiled = compilePhase(idx, node.agents, phaseCompat, state, g);
       compiled.phase.nodeName = nodeName;
       plan.phases.push(compiled.phase);
       plan.windows.push(...compiled.windows);
@@ -266,6 +278,11 @@ export function compileGraph(
         if (agent.hooks && agent.hooks.length > 0) {
           const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
           installPipelineHooks(workerHooksDir, agent.hooks, g.name).catch(() => {});
+        }
+        // Install tool restriction hooks from allowedTools/deniedTools
+        if (agent.allowedTools?.length || agent.deniedTools?.length) {
+          const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
+          installToolRestrictionHooks(workerHooksDir, agent.allowedTools, agent.deniedTools).catch(() => {});
         }
       }
     }

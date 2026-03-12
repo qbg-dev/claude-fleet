@@ -11,28 +11,35 @@
  * compiles the node, provisions fleet workers, adjusts tmux layout,
  * and launches agents.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   Program,
   AgentSpec,
   Phase,
   BridgeAction,
+  ProgramEdge,
   ProgramPipelineState,
 } from "./types";
 import { isDynamic } from "./types";
 import { compilePhase, installGraphStopHook, savePipelineState } from "./compiler";
 import { provisionWorkers, generateLaunchWrapper, generateCleanupScript } from "./fleet-provision";
-import { installPipelineHooks } from "./hook-generator";
+import { installPipelineHooks, installToolRestrictionHooks } from "./hook-generator";
 import { addWindowsToSession, launchAgents, launchInPlanningWindow } from "./tmux-layout";
 import { updateManifest } from "./manifest";
 import { FLEET_DATA } from "../../cli/lib/paths";
-import { phasesToGraph, outgoingEdges, buildNodeIndexMap } from "./graph";
+import { phasesToGraph, outgoingEdges, buildNodeIndexMap, END_SENTINEL } from "./graph";
 
 /**
  * Run a bridge transition for a graph node.
  */
-async function runBridge(sessionDir: string, nodeName: string): Promise<void> {
+const MAX_ADVANCE_DEPTH = 10;
+
+async function runBridge(sessionDir: string, nodeName: string, depth = 0): Promise<void> {
+  if (depth >= MAX_ADVANCE_DEPTH) {
+    throw new Error(`Maximum advancement depth (${MAX_ADVANCE_DEPTH}) reached — possible infinite loop`);
+  }
+
   console.log(`[bridge] Node "${nodeName}": loading pipeline state...`);
 
   const stateRaw = readFileSync(join(sessionDir, "pipeline-state.json"), "utf-8");
@@ -76,7 +83,7 @@ async function runBridge(sessionDir: string, nodeName: string): Promise<void> {
   // 1. Run prelaunch actions
   if (node.prelaunch) {
     for (const action of node.prelaunch) {
-      await runPrelaunchAction(action, state, programModule);
+      await runPrelaunchAction(action, state, programModule, nodeName);
     }
   }
 
@@ -84,7 +91,20 @@ async function runBridge(sessionDir: string, nodeName: string): Promise<void> {
   const agents = await resolveAgents(node.agents, programModule, state);
 
   if (agents.length === 0) {
-    console.log("[bridge] No agents to launch — skipping node");
+    console.log(`[bridge] No agents for node "${nodeName}" — evaluating edges to advance`);
+    state.phaseState[nodeName] = {
+      ...((state.phaseState[nodeName] as Record<string, unknown>) || {}),
+      skipped: true,
+    };
+    savePipelineState(state);
+
+    const skipEdges = outgoingEdges(g, nodeName);
+    const nextNode = await evaluateEdges(skipEdges, state, nodeName);
+    if (nextNode && nextNode !== END_SENTINEL) {
+      await runBridge(sessionDir, nextNode, depth + 1);
+    } else {
+      console.log("[bridge] No matching edge — pipeline complete");
+    }
     return;
   }
 
@@ -100,7 +120,7 @@ async function runBridge(sessionDir: string, nodeName: string): Promise<void> {
   };
 
   console.log(`[bridge] Compiling ${agents.length} agents...`);
-  const compiled = compilePhase(phaseIndex, agents, phaseCompat, state);
+  const compiled = compilePhase(phaseIndex, agents, phaseCompat, state, g);
 
   // 4. Provision fleet dirs + Fleet Mail
   console.log(`[bridge] Provisioning fleet (${compiled.workers.length} workers)...`);
@@ -141,6 +161,11 @@ async function runBridge(sessionDir: string, nodeName: string): Promise<void> {
     if (agent.hooks && agent.hooks.length > 0) {
       const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
       await installPipelineHooks(workerHooksDir, agent.hooks, g.name);
+    }
+    // Install tool restriction hooks from allowedTools/deniedTools
+    if (agent.allowedTools?.length || agent.deniedTools?.length) {
+      const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
+      await installToolRestrictionHooks(workerHooksDir, agent.allowedTools, agent.deniedTools);
     }
   }
 
@@ -229,6 +254,7 @@ async function runPrelaunchAction(
   action: BridgeAction,
   state: ProgramPipelineState,
   programModule: Record<string, unknown>,
+  nodeName: string,
 ): Promise<void> {
   switch (action.type) {
     case "parse-output": {
@@ -243,7 +269,7 @@ async function runPrelaunchAction(
           try {
             const data = JSON.parse(readFileSync(filePath, "utf-8"));
             const key = action.agent || "output";
-            state.phaseState[0] = { ...state.phaseState[0], [key]: data };
+            state.phaseState[nodeName] = { ...((state.phaseState[nodeName] as Record<string, unknown>) || {}), [key]: data };
           } catch (err) {
             console.log(`[bridge]   WARN: Failed to parse ${filePath}: ${err}`);
           }
@@ -301,6 +327,45 @@ async function runPrelaunchAction(
       break;
     }
   }
+}
+
+/**
+ * Evaluate outgoing edges to find the next node.
+ * Checks conditions (shell exit code) and cycle limits (file-based counters).
+ * Returns the target node name, END_SENTINEL, or null if no edge matches.
+ */
+async function evaluateEdges(
+  edges: ProgramEdge[],
+  state: ProgramPipelineState,
+  fromNode: string,
+): Promise<string | null> {
+  for (const edge of edges) {
+    // Check cycle limits for back-edges
+    if (edge.maxIterations) {
+      const counterFile = join(state.sessionDir, `cycle-${fromNode}-to-${edge.to}.count`);
+      let cycle = 0;
+      if (existsSync(counterFile)) {
+        cycle = parseInt(readFileSync(counterFile, "utf-8").trim(), 10) || 0;
+      }
+      if (cycle >= edge.maxIterations) continue;
+      writeFileSync(counterFile, String(cycle + 1));
+    }
+
+    // Evaluate condition
+    if (edge.condition) {
+      const result = (Bun.spawnSync as any)(["bash", "-c", edge.condition], {
+        cwd: state.projectRoot,
+        stderr: "pipe",
+        timeout: 10_000,
+      });
+      if (result.exitCode !== 0) continue;
+    }
+
+    console.log(`[bridge] Edge: ${fromNode} -> ${edge.to}${edge.label ? ` (${edge.label})` : ""}`);
+    return edge.to;
+  }
+
+  return null;
 }
 
 // ── CLI entry point ──────────────────────────────────────────────

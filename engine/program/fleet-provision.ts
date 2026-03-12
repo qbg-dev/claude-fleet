@@ -133,7 +133,27 @@ export async function provisionWorkers(
       }
     }
 
-    console.log(`  Fleet Mail: ${provisioned}/${names.length} accounts provisioned`);
+    const failed = names.length - provisioned;
+    if (failed > 0) {
+      const failedNames: string[] = [];
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        if (r.status === "rejected" || (r.status === "fulfilled" && !r.value.token)) {
+          failedNames.push(names[i]);
+        }
+      }
+      console.log(`  Fleet Mail: ${provisioned}/${names.length} accounts provisioned (failed: ${failedNames.join(", ")})`);
+
+      // Throw if >50% failed and more than 1 worker — pipeline can't function without messaging
+      if (failed > names.length / 2 && names.length > 1) {
+        throw new Error(
+          `Fleet Mail provisioning failed for ${failed}/${names.length} workers: ${failedNames.join(", ")}. ` +
+          `Pipeline requires messaging for coordination.`,
+        );
+      }
+    } else {
+      console.log(`  Fleet Mail: ${provisioned}/${names.length} accounts provisioned`);
+    }
   } else {
     console.log("  WARN: Fleet Mail not configured — workers will run without messaging");
   }
@@ -224,13 +244,27 @@ export function generateLaunchWrapper(
   const hooksDir = join(FLEET_DATA, state.fleetProject, worker.name, "hooks");
   const fleetDir = process.env.CLAUDE_FLEET_DIR || join(process.env.HOME || "/tmp", ".claude-fleet");
 
+  // BUG 4 fix: export worker.env entries
+  const customEnv = worker.env
+    ? Object.entries(worker.env)
+        .map(([k, v]) => `export ${k}="${v.replace(/"/g, '\\"')}"`)
+        .join("\n")
+    : "";
+
+  // BUG 5 fix: conditional permission flag from worker.permissionMode
+  const permMode = worker.permissionMode || state.defaults.permission || "bypassPermissions";
+  const permFlag = permMode === "bypassPermissions" ? " --dangerously-skip-permissions" : "";
+
+  // Timeout support
+  const execPrefix = worker.timeout && worker.timeout > 0 ? `timeout ${worker.timeout} ` : "";
+
   const script = `#!/usr/bin/env bash
 cd "${state.workDir}"
 ${fleetEnv}
-export PROJECT_ROOT="${state.workDir}"
+${customEnv ? customEnv + "\n" : ""}export PROJECT_ROOT="${state.workDir}"
 export HOOKS_DIR="${hooksDir}"
 export CLAUDE_FLEET_DIR="${fleetDir}"
-exec claude --model ${worker.model} --dangerously-skip-permissions "$(cat '${worker.seedPath}')"
+exec ${execPrefix}claude --model ${worker.model}${permFlag} "$(cat '${worker.seedPath}')"
 `;
 
   writeFileSync(worker.wrapperPath, script, { mode: 0o755 });

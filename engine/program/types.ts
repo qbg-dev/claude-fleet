@@ -104,6 +104,18 @@ export interface AgentSpec {
   hooks?: PipelineHook[];
   /** If set (number > 0), worker is perpetual — watchdog respawns after this many seconds. Null/undefined = one-shot ephemeral. */
   sleepDuration?: number | null;
+  /** Extra environment variables exported in the launch wrapper */
+  env?: Record<string, string>;
+  /** Permission mode: "bypassPermissions" | "default" | "plan". Default: from program defaults or "bypassPermissions". */
+  permissionMode?: string;
+  /** Tool allowlist — auto-generates PreToolUse gate hook blocking unlisted tools */
+  allowedTools?: string[];
+  /** Tool denylist — auto-generates PreToolUse gate hook blocking listed tools */
+  deniedTools?: string[];
+  /** Max runtime in seconds — wraps launch with timeout */
+  timeout?: number;
+  /** Opt out of auto-injected pipeline context in seed */
+  noPipelineContext?: boolean;
 }
 
 export type SeedSpec =
@@ -231,6 +243,10 @@ export interface CompiledWorker {
   env?: Record<string, string>;
   /** Perpetual sleep duration (seconds). Null = ephemeral one-shot. */
   sleepDuration?: number | null;
+  /** Permission mode for claude CLI */
+  permissionMode?: string;
+  /** Max runtime in seconds */
+  timeout?: number;
 }
 
 export interface CompiledHook {

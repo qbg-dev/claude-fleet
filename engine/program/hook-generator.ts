@@ -104,6 +104,74 @@ exit 0
 }
 
 /**
+ * Generate tool restriction hooks from allowedTools/deniedTools on an AgentSpec.
+ * Creates PreToolUse gate hooks that block disallowed tools.
+ */
+export async function installToolRestrictionHooks(
+  hooksDir: string,
+  allowedTools?: string[],
+  deniedTools?: string[],
+): Promise<void> {
+  if (!allowedTools?.length && !deniedTools?.length) return;
+
+  const { addHookToFile, writeScriptFile } = await getHooksIO();
+
+  if (deniedTools && deniedTools.length > 0) {
+    const id = `ph-${++_phCounter}`;
+    const matcher = deniedTools.join("|");
+    const script = `#!/usr/bin/env bash
+# Block denied tools: ${deniedTools.join(", ")}
+echo "Tool $TOOL_NAME is blocked by pipeline configuration" >&2
+exit 1
+`;
+    const filename = writeScriptFile(hooksDir, id, `Block denied tools`, script);
+    addHookToFile(hooksDir, {
+      id,
+      event: "PreToolUse",
+      description: `Pipeline: block tools (${deniedTools.join(", ")})`,
+      blocking: true,
+      completed: false,
+      added_at: new Date().toISOString(),
+      registered_by: "program-api",
+      ownership: "creator",
+      status: "active",
+      lifetime: "persistent",
+      script_path: filename,
+      condition: { tool: matcher },
+    });
+  }
+
+  if (allowedTools && allowedTools.length > 0) {
+    const id = `ph-${++_phCounter}`;
+    const allowed = allowedTools.join("|");
+    const script = `#!/usr/bin/env bash
+# Only allow: ${allowedTools.join(", ")}
+# TOOL_NAME is set by the hook runner
+if echo "$TOOL_NAME" | grep -qE "^(${allowed})$"; then
+  exit 0
+fi
+echo "Tool $TOOL_NAME is not in the allowlist" >&2
+exit 1
+`;
+    const filename = writeScriptFile(hooksDir, id, `Allow only listed tools`, script);
+    addHookToFile(hooksDir, {
+      id,
+      event: "PreToolUse",
+      description: `Pipeline: allowlist (${allowedTools.join(", ")})`,
+      blocking: true,
+      completed: false,
+      added_at: new Date().toISOString(),
+      registered_by: "program-api",
+      ownership: "creator",
+      status: "active",
+      lifetime: "persistent",
+      script_path: filename,
+      // No condition.tool — we want this to match ALL tools and filter in script
+    });
+  }
+}
+
+/**
  * Generate a shell script for a "message" hook that sends Fleet Mail.
  */
 function generateMessageHookScript(to: string, subject: string, body: string): string {
