@@ -26,8 +26,18 @@ if [ ! -f "$SESSION_DIR/roles.json" ]; then
   touch "$SESSION_DIR/roles-fallback"
 fi
 
-# Launch Phase 0.5 bridge (async — don't block the stop)
-nohup bun "$FLEET_DIR/cli/lib/deep-review/pipeline-bridge.ts" phase0-to-05 "$SESSION_DIR" \
-  >> "$SESSION_DIR/bridge-phase0.log" 2>&1 &
+# Extract tmux session name from pipeline state (for visible window)
+TMUX_SESSION=""
+if [ -f "$SESSION_DIR/pipeline-state.json" ]; then
+  TMUX_SESSION="$(python3 -c "import json; print(json.load(open('$SESSION_DIR/pipeline-state.json'))['ctx']['reviewSession'])" 2>/dev/null || true)"
+fi
+
+# Launch Phase 0.5 bridge in a visible tmux window (or fall back to background)
+BRIDGE_CMD="bun '$FLEET_DIR/cli/lib/deep-review/pipeline-bridge.ts' phase0-to-05 '$SESSION_DIR' 2>&1 | tee -a '$SESSION_DIR/bridge-phase0.log'"
+if [ -n "$TMUX_SESSION" ] && tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  tmux new-window -d -t "$TMUX_SESSION" -n "bridge" bash -c "$BRIDGE_CMD; echo ''; echo '[bridge] Done. Press Enter to close.'; read" &
+else
+  nohup bash -c "$BRIDGE_CMD" &
+fi
 
 exit 0  # allow stop
