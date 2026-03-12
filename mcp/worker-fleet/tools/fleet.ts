@@ -449,13 +449,28 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
         } else {
           // Copy session data to new worktree's project dir.
           // Session JSONLs are stored under ~/.claude/projects/{cwd-slug}/.
-          // The caller's session is under their WORKTREE's slug (process.cwd()), not PROJECT_ROOT.
+          // Search all project dirs for the session file (session IDs are globally unique)
+          // instead of assuming it's under process.cwd()'s slug.
           if (worktreeReady) {
             try {
-              const callerCwd = process.cwd();
-              const parentSlug = callerCwd.replace(/\//g, "-");
+              const { readdirSync } = await import("fs");
+              const projectsDir = join(HOME, ".claude/projects");
+              let parentProj = "";
+              // Search all project dirs for the session file
+              for (const dir of readdirSync(projectsDir)) {
+                const candidate = join(projectsDir, dir, `${sessionId}.jsonl`);
+                if (existsSync(candidate)) {
+                  parentProj = join(projectsDir, dir);
+                  break;
+                }
+              }
+              // Fallback: try cwd-based slug (original behavior)
+              if (!parentProj) {
+                const callerCwd = process.cwd();
+                const parentSlug = callerCwd.replace(/\//g, "-");
+                parentProj = join(HOME, ".claude/projects", parentSlug);
+              }
               const newSlug = worktreeDir.replace(/\//g, "-");
-              const parentProj = join(HOME, ".claude/projects", parentSlug);
               const newProj = join(HOME, ".claude/projects", newSlug);
               mkdirSync(newProj, { recursive: true });
               const jsonlSrc = join(parentProj, `${sessionId}.jsonl`);

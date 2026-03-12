@@ -1,5 +1,5 @@
 /**
- * Extension discovery — scan extensions/*/manifest.json and load seed fragments.
+ * Extension discovery — scan extension manifests and load seed fragments.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -19,7 +19,7 @@ export interface SeedFragment {
 }
 
 /**
- * Discover all extensions by scanning extensions/*/manifest.json.
+ * Discover all extensions by scanning each subdirectory of extensions/ for manifest.json.
  * Returns manifests sorted alphabetically by name.
  */
 export function loadExtensionManifests(): LoadedExtension[] {

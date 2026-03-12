@@ -44,7 +44,6 @@ plugins/
 *.swo
 *~
 node_modules/
-bun.lock
 relay-secret
 
 # Removed junk (prevent re-tracking)

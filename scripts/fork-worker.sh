@@ -181,10 +181,18 @@ fi
 # ── Copy session data to new project dir + cd to launch directory ──
 # Claude stores sessions at ~/.claude/projects/{path-slug}/{session-id}.jsonl
 # Path slug = CWD path with / replaced by -. Different worktree = different slug.
+# Find parent session file across all project dirs (session IDs are unique)
+_PARENT_SESSION_FILE=$(find "$HOME/.claude/projects" -maxdepth 2 -name "${PARENT_SESSION}.jsonl" -print -quit 2>/dev/null)
+if [ -n "$_PARENT_SESSION_FILE" ]; then
+  _PARENT_PROJ=$(dirname "$_PARENT_SESSION_FILE")
+else
+  # Fallback: try pwd-based slug (original behavior)
+  _PARENT_PROJ="$HOME/.claude/projects/$(echo "$(pwd)" | tr '/' '-')"
+fi
+
 _LAUNCH_DIR=""
 if [ -n "$LAUNCH_CWD" ] && [ -d "$LAUNCH_CWD" ]; then
   # create_worker may have copied session data; verify and copy if missing
-  _PARENT_PROJ="$HOME/.claude/projects/$(echo "$(pwd)" | tr '/' '-')"
   _NEW_PROJ="$HOME/.claude/projects/$(echo "$LAUNCH_CWD" | tr '/' '-')"
   if [ -f "$_PARENT_PROJ/$PARENT_SESSION.jsonl" ] && [ ! -f "$_NEW_PROJ/$PARENT_SESSION.jsonl" ]; then
     mkdir -p "$_NEW_PROJ"
@@ -195,7 +203,6 @@ if [ -n "$LAUNCH_CWD" ] && [ -d "$LAUNCH_CWD" ]; then
   _LAUNCH_DIR="$LAUNCH_CWD"
 elif [ -n "${_worktree_dir:-}" ] && [ -d "$_worktree_dir" ]; then
   # Copy session JSONL + subdir from parent project dir to new worktree's project dir
-  _PARENT_PROJ="$HOME/.claude/projects/$(echo "$(pwd)" | tr '/' '-')"
   _NEW_PROJ="$HOME/.claude/projects/$(echo "$_worktree_dir" | tr '/' '-')"
   if [ -f "$_PARENT_PROJ/$PARENT_SESSION.jsonl" ]; then
     mkdir -p "$_NEW_PROJ"
