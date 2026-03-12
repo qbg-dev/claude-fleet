@@ -6,7 +6,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-VERIFY_DIR="$REPO_ROOT/.git/verification"
+# Use git-common-dir so this works in linked worktrees (.git is a file, not a dir)
+GIT_COMMON="$(git rev-parse --git-common-dir)"
+VERIFY_DIR="$GIT_COMMON/verification"
 mkdir -p "$VERIFY_DIR"
 
 # Hash the staged diff content — any change to staging invalidates the proof
