@@ -1,12 +1,12 @@
 # REVIEW.md — Deep Review Rules for claude-fleet
 
-Project context: CLI orchestration tool for Claude Code agents (Bun + TypeScript), tmux-based lifecycle, Fleet Mail messaging, MCP server, zsh completions.
+Project context: Agent orchestration platform (Bun + TypeScript + Rust). Graph-native program pipelines, tmux-based lifecycle, Fleet Mail messaging, MCP server, extension system (watchdog, deep review), zsh completions.
 
 ---
 
 ## Always Flag (default-high severity, see Severity Overrides for exceptions)
 
-### Doc Sync (pre-commit gate)
+### Documentation & Sync (1–7) — pre-commit gate
 
 These are checked by the pre-commit hook whenever CLI, doc, completion, or test files are staged. Claude must verify each and write proof XML before committing.
 
@@ -16,71 +16,111 @@ These are checked by the pre-commit hook whenever CLI, doc, completion, or test 
 
 3. **CLI ↔ tests drift**: Every registered command must appear in `cli/tests/help-format.test.ts` `ALL_COMMANDS` array. The "contains all N commands" test description must match actual count. `commands-smoke.test.ts` should have `--help` tests for write commands.
 
-4. **Key files table stale**: New command files or scripts introducing significant functionality must be reflected in the `## Key files` table in CLAUDE.md.
+4. **Key files table stale**: New command files, scripts, or significant source files must be reflected in the `## Key files` table in CLAUDE.md. Every path in the table must resolve to an existing file — stale entries for deleted/moved files must be removed.
 
 5. **Cross-reference breakage**: `~/.claude/fleet.md` symlink must resolve to the same CLAUDE.md. If MCP tools changed, the MCP tools table must be current.
 
-### MCP Server
+6. **Version string drift**: `cli/index.ts` `.version()`, `CHANGELOG.md` latest version header, and `package.json` `version` (if present) must all agree. Any version bump must update all locations.
 
-6. **Tool schema mismatch**: MCP tool definitions in `mcp/worker-fleet/tools/*.ts` must match the tool table in CLAUDE.md and the `fleet_help()` output in `mcp/worker-fleet/helpers.ts`.
+7. **Changelog freshness**: If `cli/` or `mcp/` or `engine/` source files are in the staged diff, `CHANGELOG.md` `[Unreleased]` section should have a corresponding entry. Warn-only — can be `skip` with justification in proof XML.
 
-7. **Missing input validation**: MCP tool handlers accepting worker names, project names, or paths without sanitization. These are called by LLM agents — never trust input.
+### Core Infrastructure — CLI, MCP, Config (8–14)
 
-8. **State mutation without locking**: Writing to `config.json` or `state.json` without the `mkdir`-based atomic lock pattern. Concurrent workers can corrupt JSON.
+8. **Missing `addGlobalOpts()`**: New commands that don't call `addGlobalOpts(sub)`, breaking `--project` and `--json` passthrough.
 
-### CLI Commands
+9. **Hardcoded tmux session names**: Using literal session names instead of reading from `fleetConfig.tmux_session` or `DEFAULT_SESSION`.
 
-9. **Missing `addGlobalOpts()`**: New commands that don't call `addGlobalOpts(sub)`, breaking `--project` and `--json` passthrough.
+10. **Tool schema mismatch**: MCP tool definitions in `mcp/worker-fleet/tools/*.ts` must match the tool table in CLAUDE.md and the `fleet_help()` output in `mcp/worker-fleet/helpers.ts`.
 
-10. **Hardcoded tmux session names**: Using literal session names instead of reading from `fleetConfig.tmux_session` or `DEFAULT_SESSION`.
+11. **Missing input validation**: MCP tool handlers accepting worker names, project names, or paths without sanitization. These are called by LLM agents — never trust input. Concrete checks: worker names must match `/^[a-z0-9][a-z0-9-]*$/` (no `.`, `..`, `/`). Paths containing `@` must resolve within `{FLEET_DIR}` — reject `../../` traversal. Project names go through `sanitizeProjectName()`.
 
-11. **Missing error handling on tmux calls**: `Bun.spawnSync()` for tmux commands without checking `exitCode` — tmux may not be running.
+12. **State mutation without locking**: Writing to `config.json` or `state.json` without the `mkdir`-based atomic lock pattern. Concurrent workers can corrupt JSON.
 
-### Hooks
+13. **Missing error handling on tmux calls**: `Bun.spawnSync()` for tmux commands without checking `exitCode` — tmux may not be running.
 
-12. **Hook ownership violation**: Worker-created hooks (`self` tier) that bypass the ownership model — e.g., removing `system` or `creator` hooks, or hooks that disable safety gates.
+14. **Concurrent JSON writes in bridge**: Multiple bridge invocations writing to the same `pipeline-state.json` without coordination. The bridge reads state → mutates → writes back, but parallel agent completions can trigger overlapping bridge calls on the same session directory. Must use the `mkdir`-based lock or atomic-write pattern from `shared/fs.ts`.
 
-13. **Hook event mismatch**: Hook registered for wrong event (e.g., `PreToolUse` handler in a `Stop` event). The `manifest.json` event names must match Claude Code's actual event names.
+### Programs & Pipelines (15–20)
 
-### Worker Lifecycle
+15. **Graph cycle safety**: Back-edges in `ProgramGraph` (edges where `backEdge: true`) must specify `maxIterations`. A back-edge without `maxIterations` creates an infinite agent relaunch loop — the bridge will keep cycling the node forever. The `topologicalSort()` in `engine/program/graph.ts` skips back-edges for ordering but does not validate this invariant.
 
-14. **Worktree path injection**: Worker names used in `git worktree add` or file paths without sanitization. Names come from user input or Fleet Mail.
+16. **Dynamic agent generator error handling**: `DynamicAgents` specs with a `generator` function must have a `fallback` array. If the generator throws or returns an empty array (e.g., prior phase output missing), the bridge silently proceeds with zero agents, leaving the pipeline stuck. The `fallback` field in `engine/program/types.ts` exists for this — flag generators without it.
 
-15. **Missing cleanup on nuke/stop**: Worker teardown that leaves orphaned tmux panes, stale worktrees, or dangling Fleet Mail accounts.
+17. **Bridge deprecated field writes**: Programs writing to top-level `ProgramPipelineState` fields (`roleResult`, `reviewConfig`, `spec`, `workerNames`, `coordinatorName`, `judgeName`, `verifierNames`) instead of `ext.*`. These fields are `@deprecated` in `engine/program/types.ts`. New programs must use `state.ext.myField`. The bridge compat layer (`state.roleResult || state.ext?.roleResult`) should not be relied upon for new code.
 
-16. **Crash loop bypass**: Changes to watchdog or recycle logic that weaken crash-loop protection (3/hr max).
+18. **Session directory reuse**: Bridge reads `pipeline-state.json` from `sessionDir` on every transition. If a previous pipeline's session directory is reused (same program name + timestamp collision, or manual `--session-dir`), stale state from the old pipeline corrupts the new one. Session IDs must be unique — verify `sessionDir` doesn't already contain `pipeline-state.json` before first write.
 
-### Release & Version Integrity
+19. **Prelaunch parser naming convention**: Prelaunch action handlers registered in `engine/program/bridge.ts` use hyphenated names (`"context-prepass"`, `"shuffle-material"`, `"parse-output"`) but imported function names use camelCase or underscores. New actions must follow the existing hyphenated `BridgeAction` type. Flag any action string not in the `BridgeAction` union type.
 
-17. **Version string drift**: `cli/index.ts` `.version()`, `CHANGELOG.md` latest version header, and `package.json` `version` (if present) must all agree. Any version bump must update all locations.
+20. **Compilation artifact cleanup**: `engine/program/compiler.ts` generates wrapper scripts and seed files into `sessionDir`. If compilation fails mid-way, partial artifacts remain. The `cleanup.sh` script generated at bridge time must cover all artifacts — flag compilation code paths that create files without adding them to the cleanup list.
 
-18. **Changelog freshness**: If `cli/` or `mcp/` source files are in the staged diff, `CHANGELOG.md` `[Unreleased]` section should have a corresponding entry. Warn-only — can be `skip` with justification in proof XML.
+### Hooks & Dynamic Behaviors (21–24)
 
-### Security Hygiene
+21. **Hook ownership violation**: Worker-created hooks (`self` tier) that bypass the ownership model — e.g., removing `system` or `creator` hooks, or hooks that disable safety gates. The 12 `SYSTEM_HOOKS` in `shared/types.ts` are irremovable.
 
-19. **Secrets in staged diff**: Staged changes must not contain Fleet Mail tokens, API keys, passwords, or high-entropy strings matching `token`, `password`, `secret`, `Bearer`. Allowlist: type definitions, doc examples, test fixtures.
+22. **Hook event mismatch**: Hook registered for wrong event (e.g., `PreToolUse` handler in a `Stop` event). The `manifest.json` event names must match Claude Code's actual event names: `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `InstructionsLoaded`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `Notification`, `SubagentStart`, `SubagentStop`, `TeammateIdle`, `TaskCompleted`, `ConfigChange`, `PreCompact`, `WorktreeCreate`, `WorktreeRemove`, `Stop`.
 
-### Structural Integrity
+23. **Hook script content vs deny-list**: A hook script that performs actions equivalent to a denied tool (e.g., a `PreToolUse` gate that runs `rm -rf` itself, or a publisher that exfiltrates state via curl). Hook scripts run with the same privileges as Claude Code — the deny-list only blocks Claude's tool calls, not arbitrary shell commands in hooks. Flag any hook script containing destructive commands (`rm -rf`, `git reset --hard`, `git push --force`) or network calls to non-Fleet-Mail endpoints.
 
-20. **Import boundary violation**: `mcp/worker-fleet/` must not import from `cli/`. `cli/` must not import from `mcp/`. Both may import from `shared/`. Cross-boundary imports cause runtime failures (MCP server and CLI are separate processes).
+24. **Pipeline hook path resolution**: Hooks installed by the bridge at pipeline runtime (Stop hooks for node transitions, gate hooks for convergence checks) use paths relative to the fleet installation directory (`~/.claude-fleet/`). If the bridge resolves paths at compile time but the hook runs at a later time when the fleet directory has been updated or moved, the path breaks silently. Flag any hook `path` field that uses a variable resolved at compile time rather than a stable absolute path or `$FLEET_DIR` reference.
 
-21. **MCP tool count drift**: CLAUDE.md "MCP tools (N)" header must match actual tool count in `mcp/worker-fleet/index.ts`. Tool table rows in CLAUDE.md must match tool registrations.
+### Worker Lifecycle & Watchdog (25–31)
 
-### Template & Seed Integrity
+25. **Dual-instance watchdog prevention** *(critical)*: `extensions/watchdog-rs/src/main.rs` has no pidfile or lockfile guard — it relies solely on launchd `KeepAlive` to ensure single-instance. If a user manually runs `boring-watchdog` while launchd is active, or if launchd respawns before the previous instance exits, two watchdog instances run simultaneously. Each independently relaunches workers, causing double Claude sessions and 2x API credit burn. Flag any change to `main.rs` or `install.rs` that doesn't add or preserve a pidfile/lockfile check. The pidfile should be at `{FLEET_STATE_DIR}/watchdog.pid` and checked with `flock` or atomic `O_EXCL` create.
 
-23. **MCP tool reference staleness**: `templates/seed-context.md` must reference only MCP tools that are actually registered in `mcp/worker-fleet/tools/*.ts`. Newly registered tools must be documented in the seed context.
+26. **Pane detection false negatives**: `extensions/watchdog-rs/src/tmux.rs` checks if Claude is running by capturing the last 5 lines of a pane and matching against `TUI_INDICATORS` (`"bypass permissions"`, `"❯"`, `"Plan:"`, `"claude-code"`, `"Thinking"`, `"Tool:"`). If Claude's UI changes indicator text, or if a long tool output pushes indicators off-screen, the watchdog falsely detects a dead session and relaunches — killing an active agent mid-work. Flag changes to TUI_INDICATORS that remove existing patterns, and flag any capture window smaller than 5 lines.
 
-24. **Hook event staleness**: Hook event names in template seeds must match events in `hooks/manifest.json`. Adding or renaming events requires updating all seed templates.
+27. **Missing cleanup on nuke/stop**: Worker teardown that leaves orphaned tmux panes, stale worktrees, or dangling Fleet Mail accounts. The `nuke` command must clean all three; `stop` must at minimum kill the pane and set status.
 
-25. **Worker type drift**: Every directory in `templates/flat-worker/types/` must have a corresponding row in the CLAUDE.md `## Worker types` table, and vice versa. Each type directory must contain a `mission.md`.
+28. **Crash loop bypass**: Changes to watchdog or recycle logic that weaken crash-loop protection (3/hr max). The Rust watchdog in `checker.rs` uses cooldown-based gating — flag any change that reduces cooldown or removes the relaunch count check.
 
-26. **Key files table staleness**: Every path in the CLAUDE.md `## Key files` table must resolve to an existing file. Adding significant new files requires updating the table.
+29. **Cooldown vs check_interval timing invariant**: In watchdog config, `cooldown_secs` must be ≥ `check_interval_secs`. If cooldown < check_interval, the watchdog can relaunch a worker on consecutive checks (check fires, relaunch, next check fires before cooldown expires — but cooldown is measured from last relaunch, not last check). Default: check=30s, cooldown=60s. Flag any config change that violates `cooldown >= check_interval`.
 
-27. **Hook count drift**: CLAUDE.md "N hooks across M events" must match the actual counts in `hooks/manifest.json`.
+30. **Watchdog plugin timeout requirement**: Plugins implementing the `Plugin` trait in `extensions/watchdog-rs/src/plugin.rs` run on their own async interval but share the Tokio runtime. A blocking plugin (e.g., network call that hangs) starves other plugins and the core check loop. Flag any `Plugin::check()` implementation that performs I/O without a timeout (e.g., `tokio::time::timeout` wrapper). The liveness plugin in `plugins/liveness.rs` is file-based (fast) — network-based plugins need explicit timeouts.
 
-### Operational Safety
+31. **Ephemeral vs perpetual misclassification**: Workers with `ephemeral: true` skip watchdog respawn and auto-cleanup. Workers with `sleep_duration > 0` are perpetual (watchdog respawns them). These are independent flags — a worker can be `ephemeral: true` AND `sleep_duration > 0`, which means "perpetual but don't watchdog-respawn" (contradictory). Flag any worker config where both `ephemeral: true` and `sleep_duration > 0`, and any code path that sets one without considering the other.
 
-28. **Idempotency regression**: `fleet setup`, `scripts/setup-hooks.sh`, and `fleet doctor --fix` must be idempotent. Running twice produces identical results — no duplicate hooks, no duplicate configs, no errors.
+### Extensions & Manifests (32–33)
+
+32. **Extension manifest required fields**: Every extension in `extensions/*/` must have a `manifest.json` with at minimum: `name`, `version`, `description`. Optional but validated if present: `binary` (must point to a buildable target), `install` (must be a runnable command), `scripts` (values must be relative paths that exist). Flag any extension directory without a manifest, or a manifest missing required fields.
+
+33. **Extension install idempotency**: Extension install commands (from `manifest.json` `install` field or dedicated install scripts like `extensions/review/install.sh`) must be idempotent — running twice produces identical results with no errors. Flag install scripts that fail on "already exists" conditions (e.g., `ln -s` without `-f`, `mkdir` without `-p`, `cargo install` without `--force`).
+
+### Runtime Environment & Path Safety (34–38)
+
+34. **Worktree path injection**: Worker names used in `git worktree add` or file paths without sanitization. Names come from user input or Fleet Mail. Must match `/^[a-z0-9][a-z0-9-]*$/` — reject names containing `/`, `..`, spaces, or shell metacharacters.
+
+35. **launchd PATH/HOME inheritance**: The watchdog runs as a launchd daemon, which inherits a minimal `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`). `tmux`, `fleet`, `claude`, and `bun` are typically in `/usr/local/bin`, `~/.bun/bin`, or Homebrew paths — none in launchd's default PATH. Flag any change to `extensions/watchdog-rs/src/install.rs` that generates a plist without explicit `PATH` and `HOME` environment keys. The plist must include at minimum: `PATH` with `/usr/local/bin:$HOME/.bun/bin:$HOME/.local/bin` and `HOME` set to the user's home directory.
+
+36. **Symlink chain resolution**: Scripts that use `dirname "$0"` to find the fleet installation directory will get the symlink's parent, not the target's parent, if the script is invoked through a symlink (e.g., `~/.local/bin/fleet` → `~/.claude-fleet/cli/bin/fleet.sh`). Flag scripts using `dirname "$0"` without a preceding `readlink` loop (or `realpath`) to resolve the symlink chain. Canonical pattern: `SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"`.
+
+37. **Worktree path doubling**: Worker worktree paths are constructed as `{repo}-w-{name}`. If the worker name already contains a `-w-` segment (e.g., forked worker `review-w-pass2`), the path becomes `repo-w-review-w-pass2` and suffix-stripping logic that looks for the last `-w-` segment extracts `pass2` instead of `review-w-pass2`. Flag any worktree path construction or name extraction that uses simple `-w-` split without anchoring to the repo name prefix.
+
+38. **JSDoc glob syntax conflicts**: TypeScript files using JSDoc `@type {import("./path").Type}` inside glob-matched hook scripts can confuse the Bun bundler or test runner if the glob pattern matches `.ts` files not intended for compilation. Flag hook scripts (in `hooks/`) that contain TypeScript-style imports but aren't listed in `tsconfig.json` include paths.
+
+### Security & Input Validation (39–42)
+
+39. **Secrets in staged diff**: Staged changes must not contain Fleet Mail tokens, API keys, passwords, or high-entropy strings matching `token`, `password`, `secret`, `Bearer`. Allowlist: type definitions, doc examples, test fixtures with clearly fake values.
+
+40. **Import boundary violation**: `mcp/worker-fleet/` must not import from `cli/`. `cli/` must not import from `mcp/`. `engine/` must not import from `cli/` or `mcp/`. All three may import from `shared/`. Cross-boundary imports cause runtime failures (MCP server, CLI, and engine bridge are separate processes).
+
+41. **MCP tool count drift**: CLAUDE.md "MCP tools (N)" header must match actual tool count in `mcp/worker-fleet/index.ts`. Tool table rows in CLAUDE.md must match tool registrations.
+
+42. **Hook script @-path directory escape**: Hook scripts that accept `@`-prefixed file path arguments (e.g., `@/path/to/config`) must validate that the resolved path stays within the worker's worktree or fleet directory. An LLM agent could craft `@../../etc/passwd` to read arbitrary files. Flag any `@`-path resolution that doesn't check `realpath` is a prefix of the allowed directory.
+
+### Templates & Seeds (43–48)
+
+43. **MCP tool reference staleness**: `templates/seed-context.md` and `templates/fragments/fleet-tools.md` must reference only MCP tools that are actually registered in `mcp/worker-fleet/tools/*.ts`. Newly registered tools must be documented in seed context.
+
+44. **Hook event staleness**: Hook event names in template seeds must match events in `hooks/manifest.json`. Adding or renaming events requires updating all seed templates. The canonical event list is in rule 22 above.
+
+45. **Worker type drift**: Every directory in `templates/flat-worker/types/` must have a corresponding row in the CLAUDE.md `## Worker types` table, and vice versa. Each type directory must contain a `mission.md`.
+
+46. **Hook count drift**: CLAUDE.md "N hooks across M events" must match the actual counts in `hooks/manifest.json`.
+
+47. **Handlebars partial drift**: Every `{{> partial-name}}` reference in `templates/**/*.md` seed files must resolve to a file in `templates/fragments/`. If a fragment is renamed or deleted, all referencing seeds break silently (Handlebars strict mode is off — unresolved partials render as empty string). Flag any `{{> ...}}` where the partial name doesn't match a filename (minus `.md`) in `templates/fragments/`.
+
+48. **Idempotency regression**: `fleet setup`, `fleet setup --extensions`, `scripts/setup-hooks.sh`, and `fleet doctor --fix` must be idempotent. Running twice produces identical results — no duplicate hooks, no duplicate configs, no errors. This extends to extension install scripts (`extensions/*/install.sh`) — each must handle the "already installed" case gracefully.
 
 ---
 
@@ -100,6 +140,18 @@ These are checked by the pre-commit hook whenever CLI, doc, completion, or test 
 
 7. **MCP server split into 15 modules**: Was a 4,656-line monolith. The module count is intentional, not over-engineering.
 
+8. **Handlebars for seed templates**: `engine/program/seed-resolver.ts` uses Handlebars with `noEscape: true` for markdown-safe rendering. The `helperMissing` hook preserving unresolved `{{VARS}}` literally is intentional (phased compilation — eager vars at compile time, deferred vars at bridge time).
+
+9. **Bridge state is JSON-serializable**: `ProgramPipelineState.ext` is `Record<string, unknown>` — no class instances, functions, or circular references. This is by design for `pipeline-state.json` persistence. Don't "fix" it to use typed classes.
+
+10. **`gate:"all"` uses `.done` marker files**: When a pipeline node has `gate: "all"`, the bridge waits for all agents to complete by checking for `.done` marker files in the session directory. This is simpler than IPC and survives crashes.
+
+11. **Extensions use `manifest.json` not `package.json`**: Extensions are not npm packages. The manifest schema is intentionally minimal (name, version, description) and fleet-specific.
+
+12. **Watchdog uses plugin trait**: The `Plugin` trait in `extensions/watchdog-rs/src/plugin.rs` with async `check()` returning `Option<PluginAction>` is the stable interface. Don't collapse plugins into the core check loop.
+
+13. **Deprecated fields preserved with `@deprecated`**: Top-level `ProgramPipelineState` fields (`roleResult`, `reviewConfig`, etc.) are kept for backward compatibility with existing session state files. The bridge compat layer (`state.field || state.ext?.field`) is intentional — don't remove the deprecated fields or the compat reads.
+
 ---
 
 ## Severity Overrides
@@ -108,29 +160,51 @@ These are checked by the pre-commit hook whenever CLI, doc, completion, or test 
 |---------|----------|
 | Doc sync drift (1–5) caught by `check-docs.sh` | medium (deterministic scan catches most) |
 | Doc sync drift missed by deterministic scan (descriptions, key files) | high (only AI verification catches these) |
-| MCP tool schema mismatch | high (workers rely on accurate tool docs) |
-| Missing input validation in MCP handlers | critical (LLM agents are unpredictable callers) |
-| State mutation without locking | critical (silent data corruption) |
-| Missing `addGlobalOpts()` | low (easy to spot, easy to fix) |
-| Worktree path injection | critical (shell command injection risk) |
-| Crash loop bypass | high (runaway agents burn API credits) |
-| Version string drift (17) | medium (causes confusion, not data loss) |
-| Changelog freshness (18) | low (warn-only, not blocking) |
-| Secrets in staged diff (19) | critical (credential exposure) |
-| Import boundary violation (20) | high (runtime failure in prod) |
-| MCP tool count drift (21) | medium (worker confusion, not crash) |
-| MCP tool reference staleness (23) | medium (worker confusion, not crash) |
-| Hook event staleness (24) | medium (hooks may silently not fire) |
-| Worker type drift (25) | low (cosmetic, no runtime impact) |
-| Key files table staleness (26) | low (documentation accuracy) |
-| Hook count drift (27) | low (documentation accuracy) |
-| Idempotency regression (28) | high (watchdog amplifies the failure) |
+| Version string drift (6) | medium (causes confusion, not data loss) |
+| Changelog freshness (7) | low (warn-only, not blocking) |
+| Missing `addGlobalOpts()` (8) | low (easy to spot, easy to fix) |
+| Tool schema mismatch (10) | high (workers rely on accurate tool docs) |
+| Missing input validation in MCP handlers (11) | critical (LLM agents are unpredictable callers) |
+| State mutation without locking (12) | critical (silent data corruption) |
+| Concurrent bridge JSON writes (14) | critical (silent pipeline state corruption) |
+| Graph cycle safety (15) | critical (infinite agent relaunch = unbounded API spend) |
+| Dynamic agent generator without fallback (16) | high (stuck pipeline, manual recovery needed) |
+| Bridge deprecated field writes (17) | medium (compat layer handles it, but tech debt accrues) |
+| Session directory reuse (18) | high (stale state corrupts new pipeline) |
+| Prelaunch parser naming (19) | low (convention, not runtime failure) |
+| Compilation artifact cleanup (20) | medium (disk waste, potential confusion) |
+| Hook ownership violation (21) | critical (safety bypass) |
+| Hook script content vs deny-list (23) | critical (privilege escalation through hook scripts) |
+| Pipeline hook path resolution (24) | high (silent failure on fleet update) |
+| Dual-instance watchdog (25) | critical (2x API credit burn, duplicate sessions) |
+| Pane detection false negatives (26) | high (kills active agents mid-work) |
+| Missing cleanup on nuke/stop (27) | high (orphaned resources accumulate) |
+| Crash loop bypass (28) | high (runaway agents burn API credits) |
+| Cooldown vs check_interval invariant (29) | medium (relaunch storm, bounded by cooldown) |
+| Watchdog plugin timeout (30) | high (starves entire watchdog runtime) |
+| Ephemeral vs perpetual misclassification (31) | medium (contradictory config, unpredictable behavior) |
+| Extension manifest missing fields (32) | medium (install may fail, not runtime) |
+| Extension install idempotency (33) | high (fleet setup breaks on second run) |
+| Worktree path injection (34) | critical (shell command injection risk) |
+| launchd PATH/HOME inheritance (35) | critical (watchdog silently non-functional after install) |
+| Symlink chain resolution (36) | high (fleet commands fail when invoked via symlink) |
+| Worktree path doubling (37) | high (wrong worktree used, wrong code deployed) |
+| Secrets in staged diff (39) | critical (credential exposure) |
+| Import boundary violation (40) | high (runtime failure in prod) |
+| MCP tool count drift (41) | medium (worker confusion, not crash) |
+| Hook script @-path escape (42) | critical (arbitrary file read via LLM agent) |
+| MCP tool reference staleness (43) | medium (worker confusion, not crash) |
+| Hook event staleness (44) | medium (hooks may silently not fire) |
+| Worker type drift (45) | low (cosmetic, no runtime impact) |
+| Hook count drift (46) | low (documentation accuracy) |
+| Handlebars partial drift (47) | high (silent empty render in seed context) |
+| Idempotency regression (48) | high (watchdog amplifies the failure) |
 
 ---
 
 ## Pre-commit Verification
 
-When the pre-commit hook fires (staged files match `cli/|CLAUDE.md|README.md|completions/`):
+When the pre-commit hook fires (staged files match `cli/|engine/|CLAUDE.md|README.md|completions/`):
 
 1. Get proof path: `bash scripts/verification-hash.sh`
 2. Run `bash scripts/check-docs.sh` as a quick deterministic first pass
@@ -150,6 +224,9 @@ When the pre-commit hook fires (staged files match `cli/|CLAUDE.md|README.md|com
     <check name="version-consistency" status="pass|fail|skip" note="optional" />
     <check name="secrets-scan" status="pass|fail|skip" note="optional" />
     <check name="import-boundaries" status="pass|fail|skip" note="optional" />
+    <check name="graph-cycle-safety" status="pass|fail|skip" note="optional" />
+    <check name="bridge-state-compat" status="pass|fail|skip" note="optional" />
+    <check name="extension-manifests" status="pass|fail|skip" note="optional" />
   </checks>
   <summary>1-2 sentence assessment</summary>
 </verification>
@@ -159,7 +236,7 @@ All checks must be `pass` or `skip` (with justification). Proof is hash-tied to 
 
 ### Automated Review Script
 
-Run `bash scripts/review.sh` for a deterministic scan of items 17–22 (renumbered to 17–22→17–28 with template checks). `bash scripts/check-templates.sh` scans items 23–27 (template & seed staleness). `bash scripts/check-docs.sh` covers items 1–5. All three run automatically in the **pre-push hook** — errors block the push, warnings are advisory. The pre-commit hook still requires AI-verified proof XML for anything the scripts can't catch.
+Run `bash scripts/review.sh` for a deterministic scan of structural integrity rules (40–41, 45–46). `bash scripts/check-templates.sh` scans template & seed staleness (43–47). `bash scripts/check-docs.sh` covers documentation sync (1–5). All three run automatically in the **pre-push hook** — errors block the push, warnings are advisory. The pre-commit hook still requires AI-verified proof XML for anything the scripts can't catch.
 
 ---
 
