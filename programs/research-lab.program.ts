@@ -1,21 +1,24 @@
 /**
- * Research Lab Program — Prof. HT Kung + PhD Students
+ * Research Lab Program — Watchdog-Driven Perpetual PI + Dynamic Students
  *
- * A 2-phase research analysis pipeline:
- *   Phase 0: Professor HT Kung (Opus) analyzes material, designs research questions
- *   Phase 1: PhD students (Golden, Matheus, HongYang) investigate independently,
- *            then HT Kung synthesizes findings into a unified report
+ * Architecture:
+ *   - HT Kung (Opus, perpetual, sleepDuration: 1200) — watchdog-managed PI
+ *     Each cycle: read mail → review student results → update notebook → assign work → round_stop()
+ *     Spawns students dynamically via create_worker() MCP tool
+ *   - Students (Sonnet, one-shot, deferred) — spawned by PI when needed
+ *     Stop hooks message results back to PI via Fleet Mail
+ *   - Lab assistants — spawned by students for sub-tasks (recursive delegation)
  *
- * HT Kung is a Harvard CS professor, direct descendant of Confucius, known for
- * rigorous empirical results and genuine insight without bullshit.
+ * The graph has a single node (ht-kung) with a self-edge for the cycle.
+ * Students are NOT declared in the graph — PI creates them at runtime.
+ * Communication is via Fleet Mail, not phase transitions.
  *
  * Usage:
  *   fleet pipeline research-lab --scope HEAD~5..HEAD
- *   fleet pipeline research-lab --content src/server.ts --spec "Performance analysis"
+ *   fleet pipeline research-lab --spec "Benchmark harness evaluation"
  */
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import type { Program, AgentSpec, ProgramPipelineState, ProgramDefaults } from "../engine/program/types";
+import type { Program, ProgramPipelineState, ProgramDefaults } from "../engine/program/types";
+import { graph } from "../engine/program/graph";
 
 export interface ResearchLabOpts {
   scope: string;
@@ -36,150 +39,201 @@ export interface ResearchLabOpts {
 }
 
 /**
- * The program declaration.
+ * The program declaration — a single perpetual PI node with a self-edge.
+ *
+ * The PI is the only worker declared in the graph. Everything else (students,
+ * assistants) is created dynamically at runtime via create_worker() and
+ * communicated via Fleet Mail.
  */
 export default function researchLab(opts: ResearchLabOpts): Program {
-  return {
-    name: "research-lab",
-    description: "Prof. HT Kung's research lab — rigorous analysis with PhD students",
-    phases: [
-      // ── Phase 0: Professor Planning ────────────────────────────
-      {
-        name: "professor",
-        description: "Prof. HT Kung analyzes material and assigns research questions",
-        agents: [{
-          name: "ht-kung",
-          role: "professor",
-          model: "opus",
-          seed: { template: "research-lab/professor-seed.md" },
-          window: "professor",
-        }],
-      },
+  const piSleepDuration = 1200; // 20-minute cycles
 
-      // ── Phase 1: PhD Students + Synthesis ──────────────────────
-      {
-        name: "research",
-        description: "PhD students investigate, then professor synthesizes",
-        agents: {
-          generator: "generateResearchTeam",
-          estimate: 4, // 3 students + 1 coordinator
-          fallback: defaultTeam(),
-        },
-        gate: "ht-kung-coordinator",
-        prelaunch: [
-          { type: "parse-output", agent: "ht-kung", file: "research-plan.json" },
+  const g = graph("research-lab", "Prof. HT Kung's research lab — watchdog-driven perpetual PI with dynamic students")
+    .node("ht-kung", {
+      description: "Principal investigator — perpetual, watchdog-managed",
+      agents: [{
+        name: "ht-kung",
+        role: "professor",
+        model: "opus",
+        sleepDuration: piSleepDuration,
+        seed: { inline: buildPISeed(opts) },
+        window: "professor",
+        hooks: [
+          // Re-inject critical research state before context compaction
+          {
+            event: "PreCompact",
+            type: "prompt",
+            description: "Re-inject research state (hypotheses, progress, cycle count)",
+            prompt: [
+              "CRITICAL RESEARCH STATE — do not lose this across compaction:",
+              "- Check your observation notebook in notebooks/ for current hypotheses",
+              "- Check Fleet Mail inbox for student results: mail_inbox()",
+              "- Review checkpoints for prior cycle state",
+              "- Your spec: {{SPEC}}",
+            ].join("\n"),
+          },
+          // Register experiment tracking hooks on session start
+          {
+            event: "SessionStart",
+            type: "prompt",
+            description: "Remind PI to check mail and checkpoints on startup",
+            prompt: [
+              "You are resuming after a watchdog respawn. Before doing anything:",
+              "1. mail_inbox() — check for student results from last cycle",
+              "2. Read your last checkpoint/handoff if it exists",
+              "3. Read notebooks/ for your observation notebook",
+              "4. Decide: assign new work, analyze results, or conclude",
+              "5. When done with this cycle, call round_stop() to checkpoint",
+            ].join("\n"),
+          },
+          // Notify Warren with cycle summary on Stop
+          {
+            event: "Stop",
+            type: "message",
+            description: "Send cycle summary to Warren",
+            to: "user",
+            subject: "Research cycle complete",
+            body: "PI completed a research cycle. Check notebooks/ for updated observations.",
+          },
         ],
-      },
-    ],
-    defaults: {
+      }],
+    })
+    // Self-edge: PI cycles via watchdog respawn, not via bridge.
+    // This edge exists for manifest readability — the actual cycling is done by
+    // the watchdog detecting round_stop() → sleep → respawn.
+    .edge("ht-kung", "$end", { label: "watchdog manages cycling via round_stop()" })
+    .defaults({
       model: opts.workerModel || "sonnet",
+      effort: "high",
       permission: "bypassPermissions",
-    },
-    material: {
+    })
+    .material({
       scope: opts.scope,
       contentFiles: opts.contentFiles,
       spec: opts.spec || "Analyze this material thoroughly for issues, patterns, and insights.",
-    },
+    })
+    .build();
+
+  return {
+    name: g.name,
+    description: g.description,
+    phases: [],
+    graph: g,
+    defaults: g.defaults,
+    material: g.material,
   };
 }
 
-// ── Dynamic Generator (called at bridge time) ────────────────────
+// ── PI Seed ─────────────────────────────────────────────────────
 
-/**
- * Generate the research team from the professor's research plan.
- * Called by bridge.ts when Phase 1 launches.
- */
-export function generateResearchTeam(
-  state: ProgramPipelineState,
-  _defaults: ProgramDefaults,
-): AgentSpec[] {
-  const agents: AgentSpec[] = [];
+function buildPISeed(opts: ResearchLabOpts): string {
+  const spec = opts.spec || "Analyze this material thoroughly for issues, patterns, and insights.";
 
-  // Try to read the professor's research plan
-  let assignments: Array<{
-    student: string;
-    focus: string;
-    approach: string;
-    key_files_or_sections: string[];
-  }> = [];
+  return `# Prof. HT Kung — Principal Investigator
 
-  const planPath = join(state.sessionDir, "research-plan.json");
-  if (existsSync(planPath)) {
-    try {
-      const plan = JSON.parse(readFileSync(planPath, "utf-8"));
-      assignments = plan.student_assignments || [];
-    } catch (err) {
-      console.log(`[research-lab] WARN: Failed to parse research-plan.json: ${err}`);
-    }
-  }
+> Named after H.T. Kung — Harvard CS professor, direct descendant of Confucius.
+> Rigorous empirical methodology. Scientific discipline above all. No bullshit.
 
-  // Fall back to default assignments if plan not available
-  if (assignments.length === 0) {
-    assignments = [
-      {
-        student: "golden",
-        focus: "Architectural analysis — system structure, coupling, abstraction quality",
-        approach: "Examine module boundaries, dependency patterns, and layering",
-        key_files_or_sections: ["all"],
-      },
-      {
-        student: "matheus",
-        focus: "Detail analysis — edge cases, error handling, subtle bugs",
-        approach: "Line-by-line examination of critical paths and error handling",
-        key_files_or_sections: ["all"],
-      },
-      {
-        student: "hong-yang",
-        focus: "Creative analysis — alternative approaches, non-obvious implications",
-        approach: "Consider what's missing, what could be done differently, future risks",
-        key_files_or_sections: ["all"],
-      },
-    ];
-  }
+## Role
 
-  const today = new Date().toISOString().split("T")[0];
+You are the principal investigator of a research lab. You are a **perpetual worker** —
+you run in 20-minute cycles, managed by the watchdog. Each cycle:
 
-  // Create student agents
-  for (const assignment of assignments) {
-    const studentName = assignment.student.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-    const notebookFile = `notebook-${studentName}.md`;
+1. **Read mail** — \`mail_inbox()\` for student results
+2. **Review** — Read notebooks/, analyze what students found
+3. **Decide** — Assign new work, re-analyze, or conclude
+4. **Spawn students** — Use \`create_worker()\` for new investigations
+5. **Update notebook** — Write observations to \`notebooks/\`
+6. **Checkpoint** — Call \`round_stop()\` when done with this cycle
 
-    agents.push({
-      name: studentName,
-      role: "student",
-      seed: { template: "research-lab/student-seed.md" },
-      window: "students",
-      vars: {
-        STUDENT_NAME: assignment.student,
-        FOCUS: assignment.focus,
-        APPROACH: assignment.approach,
-        KEY_AREAS: assignment.key_files_or_sections.join(", "),
-        NOTEBOOK_FILE: notebookFile,
-        DATE: today,
-      },
-    });
-  }
+## Research Spec
 
-  // Add coordinator (Prof. Kung synthesizing)
-  agents.push({
-    name: "ht-kung-coordinator",
-    role: "coordinator",
-    model: "opus",
-    seed: { template: "research-lab/coordinator-seed.md" },
-    window: "professor",
-  });
+${spec}
 
-  return agents;
+## Your PhD Students
+
+Create them via \`create_worker()\` MCP tool. Give each a precise mission.
+
+| Student | Personality | Best for |
+|---------|------------|----------|
+| **golden** | Experienced, reliable | Benchmark curation, complex experiments |
+| **matheus** | Methodical, detail-oriented | Docker setup, reproducibility, data collection |
+| **hong-yang** | Creative, unconventional | Novel task design, failure analysis, edge cases |
+
+Lab assistants: \`golden-assist\`, \`matheus-assist\`, \`hongyang-assist\` — students can spawn these for sub-tasks.
+
+**Max 6 workers at once** (not counting yourself). Give precise missions with clear deliverables.
+
+## Creating Students
+
+Use the \`create_worker()\` MCP tool:
+
+\`\`\`
+create_worker(
+  name: "golden",
+  mission: "Investigate X. Write findings to notebooks/golden-findings.md. When done, mail results to ht-kung.",
+  type: "implementer"
+)
+\`\`\`
+
+Students are one-shot — they run until they call \`round_stop()\` or the task is done.
+They message you their results via Fleet Mail. You read them on your next cycle.
+
+## Communication
+
+- **Read student results**: \`mail_inbox()\` — check for messages from students
+- **Assign work**: Create workers with \`create_worker()\` and precise missions
+- **Message Warren**: \`mail_send(to: "user", subject: "...", body: "...")\` for important findings
+- **Message students**: \`mail_send(to: "golden", subject: "...", body: "...")\` for guidance
+
+## Observation Notebooks
+
+Write in \`notebooks/\` with:
+- Date, cycle number
+- Hypotheses tested
+- Experiment config
+- Quantitative results
+- Analysis
+- Three daily reflections (Confucian 三省吾身):
+  1. 为人谋而不忠乎 — Was my experimental design rigorous?
+  2. 与朋友交而不信乎 — Are my results reproducible?
+  3. 传不习乎 — What methodology improvements should I apply next cycle?
+
+## Cycle Workflow
+
+\`\`\`
+1. mail_inbox()                    → read student reports
+2. Read notebooks/ and results/    → review progress
+3. Analyze findings                → what's working, what's failing, WHY
+4. Design next experiments         → precise missions, clear deliverables
+5. create_worker() for each        → spawn students
+6. Update observation notebook     → write to notebooks/
+7. round_stop()                    → checkpoint and handoff
+\`\`\`
+
+## Important
+
+- You are PERPETUAL — the watchdog respawns you after each cycle
+- Always call \`round_stop()\` at the end of your cycle — this checkpoints your state
+- Read your last checkpoint/handoff on startup to maintain continuity
+- Students report via Fleet Mail — always check \`mail_inbox()\` first
+- Do NOT run experiments yourself — delegate to students
+`;
 }
+
+// ── Parser (for legacy compat — reads research-plan.json) ─────────
 
 /**
  * Parse the professor's output (research-plan.json) into pipeline state.
- * Called by bridge prelaunch action.
+ * Called by bridge prelaunch action (if using Phase[] mode).
+ * In watchdog mode, the PI handles its own state via checkpoints.
  */
 export function parse_ht_kung_output(state: ProgramPipelineState): void {
+  const { existsSync, readFileSync } = require("node:fs");
+  const { join } = require("node:path");
   const planPath = join(state.sessionDir, "research-plan.json");
   if (!existsSync(planPath)) {
-    console.log("[research-lab] No research-plan.json found — using default assignments");
+    console.log("[research-lab] No research-plan.json found — PI handles state via checkpoints");
     return;
   }
 
@@ -189,81 +243,19 @@ export function parse_ht_kung_output(state: ProgramPipelineState): void {
 
     const result = {
       useDynamicRoles: true,
-      totalWorkers: assignments.length + 1, // students + coordinator
+      totalWorkers: assignments.length + 1,
       numFocus: assignments.length,
       passesPerFocus: 1,
       focusAreas: assignments.map((a: { focus: string }) => a.focus),
       roleNames: assignments.map((a: { student: string }) => a.student).join(", "),
     };
 
-    // Write to ext (canonical) + legacy field (compat)
     if (!state.ext) state.ext = {};
     state.ext.roleResult = result;
     state.roleResult = result;
 
     console.log(`[research-lab] Research plan: ${assignments.length} student assignments`);
-    for (const a of assignments) {
-      console.log(`  ${a.student}: ${a.focus}`);
-    }
   } catch (err) {
     console.log(`[research-lab] WARN: Failed to parse research-plan.json: ${err}`);
   }
-}
-
-// ── Fallback Team ────────────────────────────────────────────────
-
-function defaultTeam(): AgentSpec[] {
-  const today = new Date().toISOString().split("T")[0];
-
-  return [
-    {
-      name: "golden",
-      role: "student",
-      seed: { template: "research-lab/student-seed.md" },
-      window: "students",
-      vars: {
-        STUDENT_NAME: "Golden",
-        FOCUS: "Architectural analysis — system structure, coupling, abstraction quality",
-        APPROACH: "Examine module boundaries, dependency patterns, and layering",
-        KEY_AREAS: "all",
-        NOTEBOOK_FILE: "notebook-golden.md",
-        DATE: today,
-      },
-    },
-    {
-      name: "matheus",
-      role: "student",
-      seed: { template: "research-lab/student-seed.md" },
-      window: "students",
-      vars: {
-        STUDENT_NAME: "Matheus",
-        FOCUS: "Detail analysis — edge cases, error handling, subtle bugs",
-        APPROACH: "Line-by-line examination of critical paths and error handling",
-        KEY_AREAS: "all",
-        NOTEBOOK_FILE: "notebook-matheus.md",
-        DATE: today,
-      },
-    },
-    {
-      name: "hong-yang",
-      role: "student",
-      seed: { template: "research-lab/student-seed.md" },
-      window: "students",
-      vars: {
-        STUDENT_NAME: "HongYang",
-        FOCUS: "Creative analysis — alternative approaches, non-obvious implications",
-        APPROACH: "Consider what's missing, what could be done differently, future risks",
-        KEY_AREAS: "all",
-        NOTEBOOK_FILE: "notebook-hong-yang.md",
-        DATE: today,
-      },
-    },
-    {
-      name: "ht-kung-coordinator",
-      role: "coordinator",
-      model: "opus",
-      seed: { template: "research-lab/coordinator-seed.md" },
-      window: "professor",
-    },
-  ];
 }
