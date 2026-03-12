@@ -12,7 +12,7 @@ These are checked by the pre-commit hook whenever CLI, doc, completion, or test 
 
 1. **CLI ↔ CLAUDE.md drift**: Every command registered in `cli/commands/*.ts` (via `.command("name")`) must appear in the `## CLI` code block of `CLAUDE.md`. Aliases (`.alias()`) satisfy the check. No stale commands in CLAUDE.md that were removed from CLI.
 
-2. **CLI ↔ completions drift**: Every registered command must have a `'name:Description'` entry in `completions/fleet.zsh`. Aliases need their own entries. Commands with subcommands need completion handlers in the `case` block.
+2. **CLI ↔ completions drift**: Every registered command must have a `'name:Description'` entry in `completions/_fleet`. Aliases don't need separate entries (zsh resolves them via commander). Commands with flags or subcommands need completion handlers in the `case` block. Only one completion file (`_fleet`) — no duplicates.
 
 3. **CLI ↔ tests drift**: Every registered command must appear in `cli/tests/help-format.test.ts` `ALL_COMMANDS` array. The "contains all N commands" test description must match actual count. `commands-smoke.test.ts` should have `--help` tests for write commands.
 
