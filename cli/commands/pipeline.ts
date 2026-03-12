@@ -183,7 +183,9 @@ export async function runPipeline(programName: string, opts: Record<string, any>
   console.log(`Session: ${sessionDir}`);
 
   // Compile the program (eager pass)
-  console.log(`Compiling program: ${program.name} (${program.phases.length} phases)`);
+  const nodeCount = program.graph ? Object.keys(program.graph.nodes).length : program.phases.length;
+  const unitLabel = program.graph ? "node" : "phase";
+  console.log(`Compiling program: ${program.name} (${nodeCount} ${unitLabel}${nodeCount !== 1 ? "s" : ""})`);
   const plan = compile(program, state);
 
   // Store compiled phases in state
@@ -256,48 +258,33 @@ export async function runPipeline(programName: string, opts: Record<string, any>
   }
   console.log("");
   if (program.graph) {
-    // Graph-native: render nodes + edges as flow diagram
     const g = program.graph;
     const nodeNames = Object.keys(g.nodes);
-    console.log(`  Pipeline: ${nodeNames.length} nodes (graph-native)`);
-    console.log("");
-    // Render each node
-    for (const name of nodeNames) {
-      const node = g.nodes[name];
-      const isEntry = name === g.entry;
-      const marker = isEntry ? " ← running now" : "";
-      const desc = node.description ? ` — ${node.description}` : "";
-      console.log(`    [${name}]${desc}${marker}`);
+    // Chain: entry ──> ... ──> end
+    const chain = [g.entry];
+    const visited = new Set([g.entry]);
+    let cur = g.entry;
+    for (let i = 0; i < nodeNames.length; i++) {
+      const fwd = g.edges.find(e => e.from === cur && !e.maxIterations && !visited.has(e.to));
+      if (!fwd) break;
+      chain.push(fwd.to);
+      visited.add(fwd.to);
+      cur = fwd.to;
     }
-    console.log("");
-    // Render edges as flow
-    const edgesByFrom = new Map<string, typeof g.edges>();
-    for (const e of g.edges) {
-      if (!edgesByFrom.has(e.from)) edgesByFrom.set(e.from, []);
-      edgesByFrom.get(e.from)!.push(e);
-    }
-    console.log("  Flow:");
-    for (const [from, edges] of edgesByFrom) {
-      for (const e of edges) {
-        const label = e.label ? ` "${e.label}"` : e.condition ? " (conditional)" : "";
-        const iter = e.maxIterations ? ` [max ${e.maxIterations}x]` : "";
-        console.log(`    ${from} ──${label}──> ${e.to}${iter}`);
-      }
+    const chainStr = chain.map(n => n === g.entry ? `[${n}]` : n).join(" ──> ");
+    console.log(`  Flow: ${chainStr}`);
+    // Back-edges / cycles
+    const backEdges = g.edges.filter(e => e.maxIterations);
+    for (const e of backEdges) {
+      const label = e.label ? ` "${e.label}"` : "";
+      console.log(`         ${e.to} <──${label}── ${e.from} (max ${e.maxIterations}x)`);
     }
   } else {
-    // Linear phases: render as chain
-    console.log(`  Pipeline: ${program.phases.length} phases (linear)`);
-    console.log("");
-    const parts: string[] = [];
-    for (let i = 0; i < program.phases.length; i++) {
-      const phase = program.phases[i];
-      const desc = phase.description ? ` — ${phase.description}` : "";
-      parts.push(`[${phase.name}${desc}]`);
-    }
-    console.log(`    ${parts.join(" ──> ")}`);
-    console.log("");
-    console.log(`    ${program.phases[0].name} ← running now`);
+    const names = program.phases.map(p => p.name);
+    const chainStr = names.map((n, i) => i === 0 ? `[${n}]` : n).join(" ──> ");
+    console.log(`  Flow: ${chainStr}`);
   }
+  console.log("");
   console.log("");
   console.log(`  Attach: tmux switch-client -t ${sessionName}`);
   console.log(`          tmux a -t ${sessionName}`);
