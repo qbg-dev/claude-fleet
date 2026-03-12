@@ -31,7 +31,7 @@ The system is described by two prompts. See them for more detailed explanations:
 ## Reference
 
 - [CLAUDE.md](CLAUDE.md) — architecture, key files, development conventions
-- [claude-hooks](https://github.com/qbg-dev/claude-hooks) — 29 hooks across 18 Claude Code events. Safety gates, context injection, event publishing. Workers register dynamic hooks at runtime for self-governance. Pairs with fleet for autonomous agent safety.
+- [runtime-hooks](https://github.com/qbg-dev/runtime-hooks) — 29 hooks across 18 Claude Code events. Safety gates, context injection, event publishing. Workers register dynamic hooks at runtime for self-governance.
 - [fleet-server](https://github.com/qbg-dev/fleet-server) — Fleet Mail messaging server (Rust + SQLite)
 - [extensions/](extensions/) — watchdog (auto-respawn), deep-review (adversarial code review)
 - [conventions/](conventions/README-CONVENTIONS.md) — README writing conventions (100 rules)
