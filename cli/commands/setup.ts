@@ -542,6 +542,29 @@ export function register(parent: Command): void {
         }
       }
 
+      // 13. Shell completions
+      info("Shell completions...");
+      const completionSrc = join(fleetDir, "completions/_fleet");
+      const completionDst = join(fleetDir, "completions"); // fpath target dir
+      if (existsSync(completionSrc)) {
+        const shell = process.env.SHELL || "";
+        if (shell.endsWith("/zsh")) {
+          const rcFile = join(HOME, ".zshrc");
+          const rcContent = existsSync(rcFile) ? readFileSync(rcFile, "utf-8") : "";
+          if (rcContent.includes("completions/_fleet") || rcContent.includes(`fpath=(${completionDst}`)) {
+            ok("Zsh completions already in ~/.zshrc");
+          } else {
+            appendFileSync(rcFile, `\n# Fleet CLI completions (added by fleet setup)\nfpath=(${completionDst} $fpath)\nautoload -Uz compinit && compinit\n`);
+            ok("Added fleet completions to ~/.zshrc");
+            console.log("    Reload: exec zsh");
+          }
+        } else {
+          info(`Completions available at ${completionSrc} (zsh only — add fpath manually for other shells)`);
+        }
+      } else {
+        warn("Completion file not found — skipping");
+      }
+
       console.log("");
       ok("Fleet setup complete!");
       console.log("");

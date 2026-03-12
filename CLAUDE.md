@@ -34,6 +34,7 @@ fleet stop <name> [--all]               # graceful stop
 fleet ls [--json]                       # list with liveness
 fleet status                            # fleet overview dashboard
 fleet completion                        # output shell completion script
+fleet get <name>                        # show worker mission + info
 fleet config <name> [key] [value]       # get/set config
 fleet defaults [key] [value]            # global defaults
 fleet fork <parent> <child> "<mission>" # fork from existing
@@ -137,6 +138,7 @@ Install: `bash extensions/watchdog/install.sh`
 |------|------|
 | `cli/index.ts` | CLI entry |
 | `cli/commands/` | Subcommands |
+| `cli/commands/get.ts` | Show worker mission + info |
 | `cli/commands/onboard.ts` | Fleet architect agent |
 | `mcp/worker-fleet/index.ts` | MCP server |
 | `shared/types.ts` | Canonical types |

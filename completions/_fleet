@@ -89,6 +89,7 @@ _fleet() {
     'completion:Output shell completions'
     'launch:Launch fleet from manifest'
     'deploy:Deploy fleet to remote machine'
+    'get:Show worker mission and info'
   )
 
   _arguments -C \
@@ -156,6 +157,12 @@ _fleet() {
             '1:parent:_fleet_workers' \
             '2:child name:' \
             '3:mission:'
+          ;;
+
+        get)
+          _arguments \
+            '--mission-only[Print only mission text]' \
+            '1:worker:_fleet_workers'
           ;;
 
         # --- Inspect ---

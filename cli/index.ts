@@ -60,6 +60,7 @@ import { register as registerCompletion } from "./commands/completion";
 import { register as registerUpdate } from "./commands/update";
 import { register as registerLaunch } from "./commands/launch";
 import { register as registerDeploy } from "./commands/deploy";
+import { register as registerGet } from "./commands/get";
 
 registerSetup(program);
 registerCreate(program);
@@ -89,5 +90,6 @@ registerCompletion(program);
 registerUpdate(program);
 registerLaunch(program);
 registerDeploy(program);
+registerGet(program);
 
 program.parse();

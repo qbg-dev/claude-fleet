@@ -42,6 +42,7 @@ const ALL_COMMANDS = [
   "update",
   "launch",
   "deploy",
+  "get",
 ] as const;
 
 describe("fleet --help", () => {
