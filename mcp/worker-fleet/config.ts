@@ -61,7 +61,8 @@ export const LINT_ENABLED = process.env.WORKER_FLEET_LINT !== "0";
 
 /** Compute the worktree directory path (PROJECT_ROOT/../ProjectName-w-WORKER) */
 export function getWorktreeDir(): string {
-  const projectName = PROJECT_ROOT.split("/").pop()!;
+  // Strip existing -w-* suffix to avoid doubling (PROJECT_ROOT may already be a worktree)
+  const projectName = PROJECT_ROOT.split("/").pop()!.replace(/-w-.*$/, "");
   return join(PROJECT_ROOT, "..", `${projectName}-w-${WORKER_NAME}`);
 }
 

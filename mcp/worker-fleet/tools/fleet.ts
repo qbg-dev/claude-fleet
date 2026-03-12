@@ -328,7 +328,7 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
     });
 
     // Create worktree for the new worker
-    const projectName = PROJECT_ROOT.split("/").pop()!;
+    const projectName = PROJECT_ROOT.split("/").pop()!.replace(/-w-.*$/, "");
     const worktreeDir = join(PROJECT_ROOT, "..", `${projectName}-w-${name}`);
     const workerBranch = `worker/${name}`;
     let worktreeReady = false;
