@@ -255,7 +255,7 @@ export function parse_role_designer_output(state: ProgramPipelineState): void {
       if (rolePasses > maxPassesPerFocus) maxPassesPerFocus = rolePasses;
     }
 
-    state.roleResult = {
+    const result = {
       useDynamicRoles: true,
       focusAreas,
       numFocus: roles.roles.length,
@@ -264,8 +264,13 @@ export function parse_role_designer_output(state: ProgramPipelineState): void {
       roleNames: roleNameParts.join(", "),
     };
 
-    console.log(`[parse] Roles: ${state.roleResult.roleNames}`);
-    console.log(`[parse] Total workers: ${state.roleResult.totalWorkers}`);
+    // Write to ext (canonical) + legacy field (compat)
+    if (!state.ext) state.ext = {};
+    state.ext.roleResult = result;
+    state.roleResult = result;
+
+    console.log(`[parse] Roles: ${result.roleNames}`);
+    console.log(`[parse] Total workers: ${result.totalWorkers}`);
   } catch (err) {
     console.log(`[parse] Failed to parse roles.json: ${err}`);
   }
@@ -290,6 +295,9 @@ export function parse_review_improver_output(state: ProgramPipelineState): void 
       wf(join(state.sessionDir, "review-md-original.md"), state.reviewConfig);
     }
 
+    // Write to ext (canonical) + legacy field (compat)
+    if (!state.ext) state.ext = {};
+    state.ext.reviewConfig = improved;
     state.reviewConfig = improved;
     console.log("[parse] REVIEW.md improved and applied");
   }

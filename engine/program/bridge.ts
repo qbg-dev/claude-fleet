@@ -216,8 +216,8 @@ async function runPrelaunchAction(
   switch (action.type) {
     case "parse-output": {
       console.log(`[bridge] Prelaunch: parse-output (${action.agent}/${action.file})`);
-      // Look for a parser function in the program module
-      const parserName = `parse_${action.agent?.replace(/-/g, "_")}_output`;
+      // Look for a parser function in the program module (explicit parser overrides convention)
+      const parserName = action.parser || `parse_${action.agent?.replace(/-/g, "_")}_output`;
       const parserFn = programModule[parserName] as Function | undefined;
       if (parserFn) {
         await parserFn(state);

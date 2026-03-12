@@ -187,7 +187,7 @@ export function parse_ht_kung_output(state: ProgramPipelineState): void {
     const plan = JSON.parse(readFileSync(planPath, "utf-8"));
     const assignments = plan.student_assignments || [];
 
-    state.roleResult = {
+    const result = {
       useDynamicRoles: true,
       totalWorkers: assignments.length + 1, // students + coordinator
       numFocus: assignments.length,
@@ -195,6 +195,11 @@ export function parse_ht_kung_output(state: ProgramPipelineState): void {
       focusAreas: assignments.map((a: { focus: string }) => a.focus),
       roleNames: assignments.map((a: { student: string }) => a.student).join(", "),
     };
+
+    // Write to ext (canonical) + legacy field (compat)
+    if (!state.ext) state.ext = {};
+    state.ext.roleResult = result;
+    state.roleResult = result;
 
     console.log(`[research-lab] Research plan: ${assignments.length} student assignments`);
     for (const a of assignments) {

@@ -24,13 +24,21 @@ export type HookEvent =
 
 export interface PipelineHook {
   event: HookEvent;
-  type: "command" | "prompt" | "agent";
+  type: "command" | "prompt" | "agent" | "launch" | "message";
   command?: string;       // for type:"command"
   prompt?: string;        // for type:"prompt"/"agent"
   matcher?: string;       // regex for tool names (PreToolUse/PostToolUse)
   blocking?: boolean;     // gate vs inject
   check?: string;         // bash command: exit 0=pass, non-zero=block
   description?: string;
+
+  // For type:"launch" — explicitly launch workers on this event
+  workers?: AgentSpec[] | string;  // inline specs or node name ref
+
+  // For type:"message" — send Fleet Mail
+  to?: string;        // recipient worker name
+  subject?: string;
+  body?: string;
 }
 
 export interface ConvergenceSpec {
@@ -94,6 +102,8 @@ export interface AgentSpec {
   vars?: Record<string, string>;
   /** Per-agent hooks (e.g. read-only guard on review workers) */
   hooks?: PipelineHook[];
+  /** If set (number > 0), worker is perpetual — watchdog respawns after this many seconds. Null/undefined = one-shot ephemeral. */
+  sleepDuration?: number | null;
 }
 
 export type SeedSpec =
@@ -118,6 +128,8 @@ export interface BridgeAction {
   file?: string;
   /** For custom: exported function name in the program file */
   handler?: string;
+  /** Explicit parser function name (overrides parse_{agent}_output convention) */
+  parser?: string;
 }
 
 // ── Graph-based Program ─────────────────────────────────────────
@@ -217,6 +229,8 @@ export interface CompiledWorker {
   phaseIndex: number;
   /** Extra env vars for the launch wrapper */
   env?: Record<string, string>;
+  /** Perpetual sleep duration (seconds). Null = ephemeral one-shot. */
+  sleepDuration?: number | null;
 }
 
 export interface CompiledHook {
@@ -282,8 +296,11 @@ export interface ProgramPipelineState {
   /** Tracks iterations for cyclic phases */
   cycleCount?: Record<number, number>;
 
-  // ── Deep-review specific state (carried from legacy PipelineState) ──
-  /** Role designer result (populated after Phase 0) */
+  /** Program-specific extension state. Programs should use this instead of top-level fields. */
+  ext: Record<string, unknown>;
+
+  // ── Deep-review specific (DEPRECATED — use ext) ──
+  /** @deprecated Use ext.roleResult */
   roleResult?: {
     useDynamicRoles: boolean;
     focusAreas: string[];
@@ -292,17 +309,17 @@ export interface ProgramPipelineState {
     passesPerFocus: number;
     roleNames: string;
   };
-  /** Review config (REVIEW.md content, may be improved by Phase 0.5) */
+  /** @deprecated Use ext.reviewConfig */
   reviewConfig?: string;
-  /** Spec text */
+  /** @deprecated Use ext.spec */
   spec?: string;
-  /** Worker names (populated during worker phase compilation) */
+  /** @deprecated Use ext.workerNames */
   workerNames?: string[];
-  /** Coordinator name */
+  /** @deprecated Use ext.coordinatorName */
   coordinatorName?: string;
-  /** Judge name */
+  /** @deprecated Use ext.judgeName */
   judgeName?: string;
-  /** Verifier names */
+  /** @deprecated Use ext.verifierNames */
   verifierNames?: string[];
 }
 

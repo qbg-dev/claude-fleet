@@ -239,6 +239,7 @@ export function compilePhase(
           window: windowName,
           paneIndex: p,
           phaseIndex,
+          sleepDuration: agent.sleepDuration,
         });
       }
     }

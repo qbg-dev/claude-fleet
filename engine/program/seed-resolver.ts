@@ -168,27 +168,32 @@ export function buildStateVars(state: ProgramPipelineState): Record<string, stri
     vars.MATERIAL_TYPES = state.material.materialTypesStr;
   }
 
-  if (state.spec) {
-    vars.REVIEW_SPEC = state.spec;
+  // Check ext first, fall back to deprecated top-level fields
+  const spec = (state.ext?.spec as string) || state.spec;
+  if (spec) {
+    vars.REVIEW_SPEC = spec;
   }
 
-  if (state.reviewConfig) {
-    vars.REVIEW_CONFIG = state.reviewConfig;
+  const reviewConfig = (state.ext?.reviewConfig as string) || state.reviewConfig;
+  if (reviewConfig) {
+    vars.REVIEW_CONFIG = reviewConfig;
   }
 
-  if (state.coordinatorName) {
-    vars.COORDINATOR_NAME = state.coordinatorName;
+  const coordinatorName = (state.ext?.coordinatorName as string) || state.coordinatorName;
+  if (coordinatorName) {
+    vars.COORDINATOR_NAME = coordinatorName;
   }
 
-  if (state.roleResult) {
-    vars.NUM_PASSES = String(state.roleResult.totalWorkers);
-    vars.NUM_FOCUS = String(state.roleResult.numFocus);
-    vars.PASSES_PER_FOCUS = String(state.roleResult.passesPerFocus);
-    vars.FOCUS_LIST = state.roleResult.focusAreas
+  const roleResult = (state.ext?.roleResult as typeof state.roleResult) || state.roleResult;
+  if (roleResult) {
+    vars.NUM_PASSES = String(roleResult.totalWorkers);
+    vars.NUM_FOCUS = String(roleResult.numFocus);
+    vars.PASSES_PER_FOCUS = String(roleResult.passesPerFocus);
+    vars.FOCUS_LIST = roleResult.focusAreas
       .filter((v, i, a) => a.indexOf(v) === i)
       .join(",");
-    if (state.roleResult.roleNames) {
-      vars.ROLE_NAMES = state.roleResult.roleNames;
+    if (roleResult.roleNames) {
+      vars.ROLE_NAMES = roleResult.roleNames;
     }
   }
 

@@ -212,6 +212,20 @@ export async function installPipelineHooks(
       dynHook.script_path = filename;
     }
 
+    if (hook.type === "launch" && hook.workers) {
+      // Generate a script that launches workers via bridge or fleet create
+      const launchScript = generateLaunchHookScript(hook.workers);
+      const filename = writeScriptFile(hooksDir, id, desc, launchScript);
+      dynHook.script_path = filename;
+    }
+
+    if (hook.type === "message" && hook.to) {
+      // Generate a script that sends Fleet Mail via curl
+      const messageScript = generateMessageHookScript(hook.to, hook.subject || "", hook.body || "");
+      const filename = writeScriptFile(hooksDir, id, desc, messageScript);
+      dynHook.script_path = filename;
+    }
+
     if (hook.prompt) {
       dynHook.content = hook.prompt;
     }
@@ -222,4 +236,54 @@ export async function installPipelineHooks(
 
     addHookToFile(hooksDir, dynHook);
   }
+}
+
+/**
+ * Generate a shell script for a "launch" hook that creates workers.
+ */
+function generateLaunchHookScript(workers: import("./types").AgentSpec[] | string): string {
+  if (typeof workers === "string") {
+    // Node name reference — delegate to bridge
+    return `#!/usr/bin/env bash
+set -euo pipefail
+FLEET_DIR="\${CLAUDE_FLEET_DIR:-${FLEET_DIR_DEFAULT}}"
+SESSION_DIR="\${SESSION_DIR:-.}"
+nohup bun "$FLEET_DIR/engine/program/bridge.ts" "$SESSION_DIR" --node "${workers}" \\
+  >> "$SESSION_DIR/bridge-launch.log" 2>&1 &
+exit 0
+`;
+  }
+
+  // Inline specs — create workers via fleet create
+  const creates = (workers as import("./types").AgentSpec[]).map(w =>
+    `fleet create "${w.name}" "${w.role}" --model "${w.model || 'sonnet'}" &`
+  ).join("\n");
+
+  return `#!/usr/bin/env bash
+set -euo pipefail
+${creates}
+wait
+exit 0
+`;
+}
+
+/**
+ * Generate a shell script for a "message" hook that sends Fleet Mail.
+ */
+function generateMessageHookScript(to: string, subject: string, body: string): string {
+  return `#!/usr/bin/env bash
+set -euo pipefail
+if [ -z "\${FLEET_MAIL_URL:-}" ] || [ -z "\${FLEET_MAIL_TOKEN:-}" ]; then
+  echo "WARN: Fleet Mail not configured, skipping message to ${to}" >&2
+  exit 0
+fi
+curl -s -X POST "\${FLEET_MAIL_URL}/api/messages" \\
+  -H "Authorization: Bearer \${FLEET_MAIL_TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d "$(cat <<'EOFMSG'
+{"to":"${to}","subject":"${subject}","body":"${body}"}
+EOFMSG
+)" > /dev/null 2>&1 || true
+exit 0
+`;
 }

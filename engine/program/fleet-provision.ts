@@ -31,17 +31,18 @@ export async function provisionWorkers(
     const workerDir = join(projectDir, worker.name);
     mkdirSync(workerDir, { recursive: true });
 
+    const isPerpetual = typeof worker.sleepDuration === "number" && worker.sleepDuration > 0;
     const config: WorkerConfig = {
       model: worker.model,
       reasoning_effort: state.defaults.effort || "high",
       permission_mode: state.defaults.permission || "bypassPermissions",
-      sleep_duration: null,
+      sleep_duration: isPerpetual ? worker.sleepDuration! : null,
       window: null,
       worktree: state.workDir,
       branch: "HEAD",
       mcp: {},
       hooks: [],
-      ephemeral: true,
+      ephemeral: !isPerpetual,
       meta: {
         created_at: now,
         created_by: state.programName,
@@ -73,7 +74,7 @@ export async function provisionWorkers(
 
     writeFileSync(join(workerDir, "token"), "");
     writeFileSync(join(workerDir, "mission.md"),
-      `# ${worker.name}\n${state.programName} ${worker.role} (ephemeral)`);
+      `# ${worker.name}\n${state.programName} ${worker.role} (${isPerpetual ? `perpetual, ${worker.sleepDuration}s cycles` : "ephemeral"})`);
   }
 
   // 2. Provision Fleet Mail accounts in parallel
