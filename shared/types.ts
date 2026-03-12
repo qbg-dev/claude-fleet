@@ -9,6 +9,8 @@ export interface WorkerConfig {
   reasoning_effort: string;
   permission_mode: string;
   sleep_duration: number | null;
+  /** Agent runtime: "claude" (default) or "codex" */
+  runtime?: "claude" | "codex";
   window: string | null;
   worktree: string;
   branch: string;

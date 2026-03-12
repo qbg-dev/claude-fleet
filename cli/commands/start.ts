@@ -16,7 +16,7 @@ import { addGlobalOpts } from "../index";
 /** Start a single worker with optional overrides */
 async function startOne(
   name: string, project: string,
-  opts: { model?: string; effort?: string; permissionMode?: string; window?: string; windowIndex?: string; save?: boolean; force?: boolean },
+  opts: { model?: string; effort?: string; permissionMode?: string; runtime?: "claude" | "codex"; window?: string; windowIndex?: string; save?: boolean; force?: boolean },
 ): Promise<boolean> {
   const dir = workerDir(project, name);
   const configPath = join(dir, "config.json");
@@ -37,6 +37,7 @@ async function startOne(
   if (opts.model) overrides.model = opts.model;
   if (opts.effort) overrides.reasoning_effort = opts.effort;
   if (opts.permissionMode) overrides.permission_mode = opts.permissionMode;
+  if (opts.runtime) overrides.runtime = opts.runtime;
   if (opts.window) overrides.window = opts.window;
 
   const hasOverrides = Object.keys(overrides).length > 0;
@@ -72,7 +73,8 @@ async function startOne(
   }
 
   try {
-    await launchInTmux(name, project, session, window, windowIndex);
+    const runtime = (config?.runtime || "claude") as "claude" | "codex";
+    await launchInTmux(name, project, session, window, windowIndex, { runtime });
     return true;
   } catch (e) {
     warn(`Failed to start ${name}: ${e}`);
@@ -172,6 +174,7 @@ export function register(parent: Command): void {
     .option("--model <model>", "Override model")
     .option("--effort <effort>", "Override effort")
     .option("--permission-mode <mode>", "Override permission mode")
+    .option("--runtime <runtime>", "Agent runtime: claude or codex")
     .option("--window <name>", "tmux window group")
     .option("--window-index <index>", "Explicit window position")
     .option("--save", "Persist flag overrides to config")
@@ -179,7 +182,7 @@ export function register(parent: Command): void {
   addGlobalOpts(sub)
     .action(async (name: string | undefined, opts: {
       all?: boolean; concurrency?: string;
-      model?: string; effort?: string; permissionMode?: string;
+      model?: string; effort?: string; permissionMode?: string; runtime?: string;
       window?: string; windowIndex?: string; save?: boolean; force?: boolean;
     }, cmd: Command) => {
       const project = cmd.optsWithGlobals().project as string || resolveProject();
@@ -191,6 +194,14 @@ export function register(parent: Command): void {
       }
 
       if (!name) fail("Usage: fleet start <name> or fleet start --all");
-      await startOne(name!, project, opts);
+      let runtime: "claude" | "codex" | undefined;
+      if (opts.runtime) {
+        if (opts.runtime !== "claude" && opts.runtime !== "codex") {
+          console.error(`Invalid runtime: ${opts.runtime} (must be "claude" or "codex")`);
+          process.exit(1);
+        }
+        runtime = opts.runtime as "claude" | "codex";
+      }
+      await startOne(name!, project, { ...opts, runtime });
     });
 }

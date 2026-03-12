@@ -19,7 +19,7 @@ export function register(parent: Command): void {
       const json = globalOpts.json as boolean;
       const panes = listPaneIds();
       const results: Array<{
-        name: string; project: string; status: string;
+        name: string; project: string; status: string; runtime: string;
         model: string; pane: string; window: string; branch: string;
       }> = [];
 
@@ -60,6 +60,7 @@ export function register(parent: Command): void {
             name,
             project,
             status,
+            runtime: config.runtime || "claude",
             model: config.model || "-",
             pane: state.pane_id || "-",
             window: config.window || "-",
@@ -79,21 +80,29 @@ export function register(parent: Command): void {
         return;
       }
 
+      // Show RUNTIME column when any worker uses a non-default runtime
+      const hasNonClaude = results.some(r => r.runtime !== "claude");
       // Show PROJECT column when workers span multiple projects
       const uniqueProjects = new Set(results.map(r => r.project));
       if (uniqueProjects.size > 1) {
+        const headers = hasNonClaude
+          ? ["NAME", "PROJECT", "RUNTIME", "STATUS", "MODEL", "PANE", "WINDOW", "BRANCH"]
+          : ["NAME", "PROJECT", "STATUS", "MODEL", "PANE", "WINDOW", "BRANCH"];
         table(
-          ["NAME", "PROJECT", "STATUS", "MODEL", "PANE", "WINDOW", "BRANCH"],
-          results.map((r) => [
-            r.name, r.project, statusColor(r.status), r.model, r.pane, r.window, r.branch,
-          ]),
+          headers,
+          results.map((r) => hasNonClaude
+            ? [r.name, r.project, r.runtime, statusColor(r.status), r.model, r.pane, r.window, r.branch]
+            : [r.name, r.project, statusColor(r.status), r.model, r.pane, r.window, r.branch]),
         );
       } else {
+        const headers = hasNonClaude
+          ? ["NAME", "RUNTIME", "STATUS", "MODEL", "PANE", "WINDOW", "BRANCH"]
+          : ["NAME", "STATUS", "MODEL", "PANE", "WINDOW", "BRANCH"];
         table(
-          ["NAME", "STATUS", "MODEL", "PANE", "WINDOW", "BRANCH"],
-          results.map((r) => [
-            r.name, statusColor(r.status), r.model, r.pane, r.window, r.branch,
-          ]),
+          headers,
+          results.map((r) => hasNonClaude
+            ? [r.name, r.runtime, statusColor(r.status), r.model, r.pane, r.window, r.branch]
+            : [r.name, statusColor(r.status), r.model, r.pane, r.window, r.branch]),
         );
       }
     });

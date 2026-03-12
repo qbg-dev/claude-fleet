@@ -182,11 +182,24 @@ export function generateLaunchScript(name: string, config: WorkerConfig): string
   const model = config.model || "opus";
   const effort = config.reasoning_effort || "high";
   const permMode = config.permission_mode || "bypassPermissions";
+  const runtime = config.runtime || "claude";
   const missionPath = join(FLEET_DIR, name, "mission.md");
 
-  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
-  if (permMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
-  if (effort) cmd += ` --effort ${effort}`;
+  let cmd: string;
+  if (runtime === "codex") {
+    cmd = `WORKER_NAME="${name}" WORKER_RUNTIME=codex codex -m ${model}`;
+    if (permMode === "bypassPermissions") {
+      cmd += " --dangerously-bypass-approvals-and-sandbox";
+    } else {
+      cmd += " -s workspace-write -a on-request";
+    }
+    if (effort) cmd += ` -c model_reasoning_effort=${effort}`;
+    cmd += " --no-alt-screen";
+  } else {
+    cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    if (permMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
+    if (effort) cmd += ` --effort ${effort}`;
+  }
   // Note: disallowed_tools are now hooks in config.json, not CLI flags
 
   return `#!/bin/bash
@@ -217,6 +230,7 @@ export function registryEntryToConfigState(
     reasoning_effort: (entry.custom?.reasoning_effort as string) || "high",
     permission_mode: entry.permission_mode || "bypassPermissions",
     sleep_duration: entry.sleep_duration ?? null,
+    runtime: (entry.custom?.runtime as "claude" | "codex") || "claude",
     window: entry.window || null,
     worktree: entry.worktree || null,
     branch: entry.branch || `worker/${name}`,

@@ -19,6 +19,7 @@ export interface CreateOpts {
   model?: string;
   effort?: string;
   permissionMode?: string;
+  runtime?: "claude" | "codex";
   window?: string;
   windowIndex?: string;
   type?: string;
@@ -49,7 +50,9 @@ export async function runCreate(
 
   // Resolve config: CLI > type template > defaults > hardcoded
   const defaults = getDefaults();
-  const model = opts.model || String(defaults.model || "opus");
+  const runtime = opts.runtime || "claude";
+  const runtimeModelDefault = runtime === "codex" ? "gpt-5.4" : String(defaults.model || "opus");
+  const model = opts.model || runtimeModelDefault;
   const effort = opts.effort || String(defaults.effort || "high");
   const perm = opts.permissionMode || String(defaults.permission_mode || "bypassPermissions");
   let sleepDuration: number | null = null;
@@ -100,6 +103,7 @@ export async function runCreate(
     reasoning_effort: effort,
     permission_mode: perm,
     sleep_duration: sleepDuration ?? null,
+    runtime,
     window,
     worktree: worktreeDir,
     branch,
@@ -310,7 +314,7 @@ export async function runCreate(
 
   // 11. Launch in tmux
   const windowIndex = opts.windowIndex ? parseInt(opts.windowIndex, 10) : undefined;
-  await launchInTmux(name, project, tmuxSession, window, windowIndex);
+  await launchInTmux(name, project, tmuxSession, window, windowIndex, { runtime });
 }
 
 export function register(parent: Command): void {
@@ -320,19 +324,26 @@ export function register(parent: Command): void {
     .option("--model <model>", "Override model")
     .option("--effort <effort>", "Override effort")
     .option("--permission-mode <mode>", "Override permission mode")
+    .option("--runtime <runtime>", "Agent runtime: claude or codex")
     .option("--window <name>", "tmux window group")
     .option("--window-index <index>", "Explicit window position")
     .option("--type <type>", "Worker archetype template")
     .option("--no-launch", "Create only, don't launch");
   addGlobalOpts(sub)
     .action(async (name: string, mission: string, opts: {
-      model?: string; effort?: string; permissionMode?: string;
+      model?: string; effort?: string; permissionMode?: string; runtime?: string;
       window?: string; windowIndex?: string; type?: string; launch?: boolean;
     }, cmd: Command) => {
+      const runtime = opts.runtime as "claude" | "codex" | undefined;
+      if (runtime && runtime !== "claude" && runtime !== "codex") {
+        console.error(`Invalid runtime: ${runtime} (must be "claude" or "codex")`);
+        process.exit(1);
+      }
       await runCreate(name, mission, {
         model: opts.model,
         effort: opts.effort,
         permissionMode: opts.permissionMode,
+        runtime,
         window: opts.window,
         windowIndex: opts.windowIndex,
         type: opts.type,

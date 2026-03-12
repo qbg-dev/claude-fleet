@@ -56,7 +56,7 @@ fleet nuke <name>                       # destroy worker
 fleet update [--reload] [--extensions]    # pull + reinstall + setup (--reload recycles workers, --extensions installs all)
 ```
 
-Flags: `--model opus|sonnet|haiku`, `--effort high|max`, `--save`, `--json`, `-p <project>`
+Flags: `--model opus|sonnet|haiku`, `--runtime claude|codex`, `--effort high|max`, `--save`, `--json`, `-p <project>`
 
 Resolution: CLI flag > worker `config.json` > `defaults.json` > hardcoded
 

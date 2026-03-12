@@ -68,7 +68,7 @@ export function buildSnapshot(name: string, projectName: string, config: Watchdo
     model: cfg.model || "opus",
     permissionMode: cfg.permission_mode || "bypassPermissions",
     reasoningEffort: cfg.reasoning_effort || "high",
-    runtime: (state?.custom?.runtime as string) || "claude",
+    runtime: (cfg as any).runtime || (state?.custom?.runtime as string) || "claude",
     ephemeral: !!cfg.ephemeral,
     onSpawn: (cfg.on_spawn as SpawnHook[] | undefined) ?? DEFAULT_SPAWN_HOOKS,
   };

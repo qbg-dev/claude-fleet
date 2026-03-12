@@ -18,9 +18,10 @@ export function register(parent: Command): void {
   const sub = parent
     .command("fork <parent> <child> [mission]")
     .description("Fork from existing session (inherits parent mission if omitted)")
-    .option("--model <model>", "Override model");
+    .option("--model <model>", "Override model")
+    .option("--runtime <runtime>", "Override runtime: claude or codex");
   addGlobalOpts(sub)
-    .action(async (parentName: string, childName: string, mission: string | undefined, opts: { model?: string }, cmd: Command) => {
+    .action(async (parentName: string, childName: string, mission: string | undefined, opts: { model?: string; runtime?: string }, cmd: Command) => {
       const project = cmd.optsWithGlobals().project as string || resolveProject();
       const parentDir = workerDir(project, parentName);
       const parentState = getState(project, parentName);
@@ -71,10 +72,21 @@ export function register(parent: Command): void {
 
       info(`Forking '${childName}' from '${parentName}'`);
 
+      // Inherit parent's runtime unless overridden
+      const parentRuntime = parentConfig.runtime || "claude";
+      let runtime: "claude" | "codex" = parentRuntime as "claude" | "codex";
+      if (opts.runtime) {
+        if (opts.runtime !== "claude" && opts.runtime !== "codex") {
+          return fail(`Invalid runtime: ${opts.runtime} (must be "claude" or "codex")`);
+        }
+        runtime = opts.runtime as "claude" | "codex";
+      }
+
       // Create child via runCreate --no-launch
       const { runCreate } = await import("./create");
       await runCreate(childName, mission, {
         model: opts.model,
+        runtime,
         noLaunch: true,
       }, cmd.optsWithGlobals());
 
@@ -131,19 +143,36 @@ export function register(parent: Command): void {
 
       setPaneTitle(paneId, childName);
 
-      const model = childConfig?.model || "opus";
+      const model = childConfig?.model || (runtime === "codex" ? "gpt-5.4" : "opus");
       const effort = childConfig?.reasoning_effort || "high";
       const perm = childConfig?.permission_mode || "bypassPermissions";
+      const childRuntime = childConfig?.runtime || runtime;
 
-      let launchCmd = `cd "${worktree}" && CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${childName}" claude`;
-      launchCmd += ` --model "${model}" --effort "${effort}"`;
-      if (perm === "bypassPermissions") {
-        launchCmd += " --dangerously-skip-permissions";
+      let launchCmd: string;
+      if (childRuntime === "codex") {
+        launchCmd = `cd "${worktree}" && WORKER_NAME="${childName}" WORKER_RUNTIME=codex codex`;
+        launchCmd += ` -m "${model}"`;
+        if (perm === "bypassPermissions") {
+          launchCmd += " --dangerously-bypass-approvals-and-sandbox";
+        } else {
+          launchCmd += " -s workspace-write -a on-request";
+        }
+        launchCmd += ` -c model_reasoning_effort=${effort}`;
+        launchCmd += " --no-alt-screen";
+        launchCmd += ` --add-dir "${childDir}"`;
+        // Codex fork uses its own fork subcommand
+        launchCmd += ` fork ${sessionId}`;
       } else {
-        launchCmd += ` --permission-mode "${perm}"`;
+        launchCmd = `cd "${worktree}" && CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${childName}" claude`;
+        launchCmd += ` --model "${model}" --effort "${effort}"`;
+        if (perm === "bypassPermissions") {
+          launchCmd += " --dangerously-skip-permissions";
+        } else {
+          launchCmd += ` --permission-mode "${perm}"`;
+        }
+        launchCmd += ` --add-dir "${childDir}"`;
+        launchCmd += ` --resume "${sessionId}" --fork-session`;
       }
-      launchCmd += ` --add-dir "${childDir}"`;
-      launchCmd += ` --resume "${sessionId}" --fork-session`;
 
       sendKeys(paneId, launchCmd);
       sendEnter(paneId);

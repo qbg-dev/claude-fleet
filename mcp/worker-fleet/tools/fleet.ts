@@ -269,6 +269,7 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
       reasoning_effort: permissions.reasoning_effort || "high",
       permission_mode: permissions.permission_mode || "bypassPermissions",
       sleep_duration: state.sleep_duration ?? null,
+      runtime: resolvedRuntime || "claude",
       window: permissions.window || null,
       worktree: null, // Will be set after worktree creation below
       branch: `worker/${name}`,

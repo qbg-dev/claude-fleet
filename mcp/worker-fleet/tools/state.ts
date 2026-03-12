@@ -12,7 +12,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 
 import { join, basename } from "path";
 import { execSync } from "child_process";
 import { PROJECT_ROOT, CLAUDE_FLEET, WORKERS_DIR, FLEET_DIR, FLEET_MAIL_URL, WORKER_NAME } from "../config";
-import { getWorkerEntry, withRegistryLocked, ensureWorkerInRegistry, canUpdateWorker, type RegistryWorkerEntry } from "../registry";
+import { getWorkerEntry, withRegistryLocked, ensureWorkerInRegistry, canUpdateWorker, readWorkerConfig, type RegistryWorkerEntry } from "../registry";
 import { isPaneAlive } from "../tmux";
 import { withLint } from "../diagnostics";
 
@@ -103,7 +103,9 @@ server.registerTool(
           const w = entry as RegistryWorkerEntry;
           const task = ""; // Tasks are now LKML mail threads — no local lookup
           const paneStatus = w.pane_id ? (checkPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD`) : "—";
-          const runtime = String(w.custom?.runtime || "claude");
+          // Prefer config.json runtime, fall back to registry custom.runtime
+          const workerCfg = readWorkerConfig(n);
+          const runtime = String(workerCfg?.runtime || w.custom?.runtime || "claude");
           const unread = unreadCounts.get(n) ?? 0;
           const inboxStr = unread > 0 ? String(unread) : "—";
           output += `${n.padEnd(22)} ${runtime.padEnd(9)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${inboxStr.padEnd(7)} ${task}\n`;
