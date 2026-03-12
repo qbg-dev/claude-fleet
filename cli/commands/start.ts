@@ -10,6 +10,7 @@ import {
 import { info, ok, warn, fail } from "../lib/fmt";
 import { launchInTmux } from "../lib/launch";
 import { listPaneIds } from "../lib/tmux";
+import { syncWorktree } from "../lib/worktree";
 import { addGlobalOpts } from "../index";
 
 /** Start a single worker with optional overrides */
@@ -62,6 +63,13 @@ async function startOne(
   const fleetConfig = getFleetConfig(project);
   const session = fleetConfig?.tmux_session || DEFAULT_SESSION;
   const windowIndex = opts.windowIndex ? parseInt(opts.windowIndex, 10) : undefined;
+
+  // Re-sync worktree files (mission symlink, .mcp.json, etc.)
+  if (config?.worktree) {
+    // Derive project root from worktree path: /path/boring-w-name → /path/boring
+    const projectRoot = config.worktree.replace(/-w-[^/]+$/, "");
+    syncWorktree({ name, project, projectRoot, worktreeDir: config.worktree });
+  }
 
   try {
     await launchInTmux(name, project, session, window, windowIndex);
