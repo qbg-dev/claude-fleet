@@ -15,7 +15,7 @@ Core tools for worker operation. Use `fleet_help()` or `mail_help()` for full re
 | `update_state(key, value)` | Persist state across recycles. |
 | `get_worker_state(name?)` | Read worker state; `name="all"` for fleet overview. |
 
-### Hooks (self-governance)
+### Hooks
 
 | Tool | What it does |
 |------|-------------|
@@ -23,6 +23,7 @@ Core tools for worker operation. Use `fleet_help()` or `mail_help()` for full re
 | `complete_hook(id, result?)` | Mark a blocking hook as done (`id="all"` to clear all). |
 | `remove_hook(id)` | Remove a hook and its script file (`id="all"` to clear all). |
 | `list_hooks(event?)` | Show all active hooks (including script info). |
+| `manage_worker_hooks(action, target, ...)` | Manage another worker's hooks: add gates, inject context, remove, complete, list. Requires authority (mission_authority or direct report_to). |
 
 **CLI equivalent** (same storage, same logic — for workers without MCP):
 ```bash
@@ -259,6 +260,57 @@ list_hooks(include_archived=true)
 # See another worker's hooks (cross-worker discovery)
 list_hooks(worker="finance")
 ```
+
+### Cross-Worker Hooks (Supervisor Pattern)
+
+You can manage hooks on **other workers** using `manage_worker_hooks`. This enables supervisor-style interventions — deploying guardrails, quality gates, and context injections on workers you have authority over.
+
+**Authorization model:**
+- **mission_authority**: Workers listed as another worker's `mission_authority` can manage their hooks
+- **report_to**: Workers in a `report_to` relationship have reciprocal hook authority
+
+**Ownership: `creator`** — hooks you place on another worker have `ownership: "creator"`, meaning the target worker **cannot remove them**. Only you (the creator) or the operator can remove them. This makes interventions tamper-proof.
+
+**Patterns:**
+
+| Pattern | When to use | Example |
+|---------|-------------|---------|
+| **Quality gate** | Ensure a worker verifies before stopping | Add a Stop gate requiring tests pass |
+| **Guardrail** | Prevent a known mistake | Inject context warning about a gotcha |
+| **Lockout** | Block a worker from a dangerous operation | Gate PreToolUse on specific files |
+| **Course correction** | Redirect a drifting worker | Inject focus reminder on every prompt |
+| **Release valve** | Unblock a stuck worker | Complete their blocking gate remotely |
+
+**Examples:**
+
+```
+# Deploy a TypeScript compile gate on worker "executor"
+manage_worker_hooks(action="add", target="executor",
+  event="Stop", description="verify TypeScript compiles",
+  check="cd $PROJECT_ROOT && bun build src/server-web.ts --outdir /tmp/check --target bun 2>&1 | tail -1 | grep -q 'Build succeeded'")
+
+# Inject a guardrail on worker "frontend" for ontology files
+manage_worker_hooks(action="add", target="frontend",
+  event="PreToolUse", content="All ontology writes must use applyAction(). Check ontology-invariants.md.",
+  condition={file_glob: "src/ontology/**"})
+
+# List another worker's hooks
+manage_worker_hooks(action="list", target="executor")
+
+# Complete a blocking gate on a stuck worker
+manage_worker_hooks(action="complete", target="executor", hook_id="dh-3", result="PASS — verified by supervisor")
+
+# Remove a hook you placed (creator ownership required)
+manage_worker_hooks(action="remove", target="executor", hook_id="dh-3")
+```
+
+**When to use cross-worker hooks vs other interventions:**
+
+| Intervention | Best for | Persistence |
+|-------------|----------|-------------|
+| **Message** | One-time guidance, questions, context sharing | Read once |
+| **Mission edit** | Changing priorities, adding lessons learned | Permanent until edited |
+| **Cross-worker hook** | Automated enforcement, guardrails that must survive recycles | Survives recycles, tamper-proof |
 
 ### Verification Methods
 
