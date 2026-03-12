@@ -10,7 +10,29 @@ import { WORKERS_DIR, WORKER_NAME } from "../config";
 import { readRegistry, type RegistryWorkerEntry } from "../registry";
 import { isPaneAlive, tmuxSendMessage, resolveRecipient } from "../tmux";
 import { withLint } from "../diagnostics";
+import { readFileSync } from "fs";
+import { join } from "path";
+import { FLEET_DIR, FLEET_MAIL_URL as MAIL_URL_CONFIG } from "../config";
 import { fleetMailRequest, resolveFleetMailRecipients, getFleetMailToken, fleetMailTextResult, mailAccountName, FLEET_MAIL_URL } from "../mail-client";
+
+const BACKPRESSURE_THRESHOLD = 10;
+
+/** Get unread count for a specific worker (best-effort, returns 0 on failure) */
+async function getRecipientUnreadCount(workerName: string): Promise<number> {
+  const tokenPath = join(FLEET_DIR, workerName, "token");
+  let token: string;
+  try { token = readFileSync(tokenPath, "utf-8").trim(); } catch { return 0; }
+  if (!token) return 0;
+  try {
+    const resp = await fetch(
+      `${MAIL_URL_CONFIG}/api/messages?label=UNREAD&maxResults=1`,
+      { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) },
+    );
+    if (!resp.ok) return 0;
+    const data = await resp.json() as any;
+    return data?._diagnostics?.unread_count ?? data?.messages?.length ?? 0;
+  } catch { return 0; }
+}
 
 export function registerMailTools(server: McpServer): void {
 
@@ -177,7 +199,15 @@ Escalate to operator when: (1) design/architecture decisions need human judgment
       if (entry && (!entry.pane_id || !isPaneAlive(entry.pane_id))) {
         paneWarning = ` (WARNING: no active pane — queued in Fleet Mail inbox)`;
       }
-      parts.push(`Sent to ${recipientNames[0]} [${lastMsgId}]${paneWarning}`);
+      // Backpressure warning: check recipient's unread count
+      let backpressureWarning = "";
+      try {
+        const unreadCount = await getRecipientUnreadCount(recipientNames[0]);
+        if (unreadCount > BACKPRESSURE_THRESHOLD) {
+          backpressureWarning = ` (⚠ recipient has ${unreadCount} unread messages — may be slow to respond)`;
+        }
+      } catch {}
+      parts.push(`Sent to ${recipientNames[0]} [${lastMsgId}]${paneWarning}${backpressureWarning}`);
     } else {
       parts.push(`Sent to ${mailSuccesses.length}/${recipientNames.length} workers`);
       if (tmuxDelivered.length > 0) parts.push(`Tmux overlay: ${tmuxDelivered.join(", ")}`);

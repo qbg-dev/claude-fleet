@@ -168,6 +168,10 @@ async function runOnce(): Promise<void> {
             const unreadCount = await effects.getWorkerUnreadCount(snap.name);
             if (unreadCount > 0) {
               notifyUnreadMail(snap.name, unreadCount);
+              // Log high-watermark warning for mailbox depth (Erlang-style backpressure signal)
+              if (unreadCount > 10) {
+                logWarn("MAILBOX-DEPTH", `${unreadCount} unread messages — may be falling behind`, snap.name);
+              }
             }
           }
         }

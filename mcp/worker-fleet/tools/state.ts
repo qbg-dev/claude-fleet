@@ -8,13 +8,32 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { writeFileSync, existsSync, mkdirSync, readdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { execSync } from "child_process";
-import { PROJECT_ROOT, CLAUDE_FLEET, WORKERS_DIR, FLEET_DIR, WORKER_NAME } from "../config";
+import { PROJECT_ROOT, CLAUDE_FLEET, WORKERS_DIR, FLEET_DIR, FLEET_MAIL_URL, WORKER_NAME } from "../config";
 import { getWorkerEntry, withRegistryLocked, ensureWorkerInRegistry, canUpdateWorker, type RegistryWorkerEntry } from "../registry";
 import { isPaneAlive } from "../tmux";
 import { withLint } from "../diagnostics";
+
+/** Get unread count for a worker from Fleet Mail (best-effort, returns 0 on failure) */
+async function getWorkerUnreadCount(workerName: string): Promise<number> {
+  const tokenPath = join(FLEET_DIR, workerName, "token");
+  let token: string;
+  try {
+    token = readFileSync(tokenPath, "utf-8").trim();
+  } catch { return 0; }
+  if (!token) return 0;
+  try {
+    const resp = await fetch(
+      `${FLEET_MAIL_URL}/api/messages?label=UNREAD&maxResults=1`,
+      { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) },
+    );
+    if (!resp.ok) return 0;
+    const data = await resp.json() as any;
+    return data?._diagnostics?.unread_count ?? data?.messages?.length ?? 0;
+  } catch { return 0; }
+}
 
 export function registerStateTools(server: McpServer): void {
 
@@ -66,16 +85,28 @@ server.registerTool(
 
         const projectName = basename(PROJECT_ROOT);
         let output = `=== Fleet Status (${projectName}) ===\n${new Date().toISOString()}\n\n`;
-        const header = `${"Worker".padEnd(22)} ${"Runtime".padEnd(9)} ${"Status".padEnd(10)} ${"Pane".padEnd(12)} ${"Active Task"}`;
-        output += header + "\n" + `${"------".padEnd(22)} ${"-------".padEnd(9)} ${"------".padEnd(10)} ${"----".padEnd(12)} ${"-----------"}\n`;
+        const header = `${"Worker".padEnd(22)} ${"Runtime".padEnd(9)} ${"Status".padEnd(10)} ${"Pane".padEnd(12)} ${"Inbox".padEnd(7)} ${"Active Task"}`;
+        output += header + "\n" + `${"------".padEnd(22)} ${"-------".padEnd(9)} ${"------".padEnd(10)} ${"----".padEnd(12)} ${"-----".padEnd(7)} ${"-----------"}\n`;
 
         const entries = Object.entries(registry).filter(([k]) => k !== "_config").sort(([a], [b]) => a.localeCompare(b));
+
+        // Fetch unread counts in parallel (best-effort, 3s timeout each)
+        const unreadCounts = new Map<string, number>();
+        await Promise.allSettled(
+          entries.map(async ([n]) => {
+            const count = await getWorkerUnreadCount(n);
+            unreadCounts.set(n, count);
+          })
+        );
+
         for (const [n, entry] of entries) {
           const w = entry as RegistryWorkerEntry;
           const task = ""; // Tasks are now LKML mail threads — no local lookup
           const paneStatus = w.pane_id ? (checkPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD`) : "—";
           const runtime = String(w.custom?.runtime || "claude");
-          output += `${n.padEnd(22)} ${runtime.padEnd(9)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${task}\n`;
+          const unread = unreadCounts.get(n) ?? 0;
+          const inboxStr = unread > 0 ? String(unread) : "—";
+          output += `${n.padEnd(22)} ${runtime.padEnd(9)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${inboxStr.padEnd(7)} ${task}\n`;
         }
 
         // Custom state
