@@ -181,9 +181,9 @@ export function pasteBuffer(paneId: string, content: string): boolean {
   }
 }
 
-/** Send /stop to a pane and wait for exit */
+/** Send /exit to a pane and wait for Claude to exit */
 export async function gracefulStop(paneId: string, timeoutMs = 30_000): Promise<boolean> {
-  sendKeys(paneId, "/stop");
+  sendKeys(paneId, "/exit");
   sendEnter(paneId);
 
   const start = Date.now();
