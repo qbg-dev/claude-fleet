@@ -84,7 +84,8 @@ _fleet() {
     'doctor:Verify fleet health'
     'onboard:Setup + launch architect'
     'setup:Bootstrap fleet infrastructure'
-    'nuke:Remove all fleet artifacts'
+    'nuke:Destroy a worker or all fleet artifacts'
+    'update:Pull latest, reinstall, re-setup'
     'completion:Output shell completions'
   )
 
@@ -296,11 +297,16 @@ _fleet() {
           ;;
         nuke)
           _arguments \
+            '(-a --all)'{-a,--all}'[Remove ALL fleet artifacts]' \
             '--dry-run[Show what would be removed]' \
             '(-y --yes)'{-y,--yes}'[Skip confirmation]' \
-            '--keep-data[Preserve worker configs]' \
-            '--keep-mail[Preserve Fleet Mail data]'
+            '--keep-data[Preserve worker configs (--all only)]' \
+            '--keep-mail[Preserve Fleet Mail data (--all only)]' \
+            '1:worker:_fleet_workers'
           ;;
+        update)
+          ;;
+
         onboard)
           _arguments \
             '--model[Model]:model:_fleet_models' \
