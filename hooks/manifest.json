@@ -378,6 +378,14 @@
       "required": true,
       "category": "core",
       "description": "[INJECT] Auto-installs git pre-commit hooks from manifest on session start"
+    },
+    {
+      "id": "session-start-config-seed",
+      "event": "SessionStart",
+      "path": "~/.claude-fleet/hooks/interceptors/session-start-config-seed.sh",
+      "required": false,
+      "category": "core",
+      "description": "[INJECT] Injects config-driven seed fragments on session start (e.g. cron_schedule enforcement)"
     }
   ]
 }
