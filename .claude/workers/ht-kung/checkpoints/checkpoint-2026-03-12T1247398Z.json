@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-03-12T12:47:39.821Z",
+  "type": "manual",
+  "summary": "Wake-cycle complete. All 3 students delivered cycle 1 and assigned cycle 2 experiments. Golden's taxonomy: 60-70% harness-fixable. 7 hypotheses, 3 being tested. Experiments running: spec ambiguity (HongYang 6 subagents), feedback quality (Matheus assigned), context injection (Golden assigned).",
+  "git_state": {
+    "branch": "worker/ht-kung",
+    "sha": "264b5e4",
+    "dirty_count": 0,
+    "staged_count": 0
+  },
+  "dynamic_hooks": [
+    {
+      "id": "dh-1",
+      "event": "Stop",
+      "description": "ops-reflection written to notebooks/ops-reflection.md",
+      "blocking": true,
+      "completed": false,
+      "status": "active",
+      "lifetime": "persistent",
+      "check": "test -f /Users/kevinster/boring-w-ht-kung/notebooks/ops-reflection.md && test -s /Users/kevinster/boring-w-ht-kung/notebooks/ops-reflection.md"
+    },
+    {
+      "id": "dh-3",
+      "event": "Stop",
+      "description": "commit all cycle work before stopping",
+      "blocking": true,
+      "completed": false,
+      "status": "active",
+      "lifetime": "persistent",
+      "check": "cd /Users/kevinster/boring-w-ht-kung && git diff --quiet notebooks/"
+    },
+    {
+      "id": "dh-4",
+      "event": "Stop",
+      "description": "observation notebook updated",
+      "blocking": true,
+      "completed": false,
+      "status": "active",
+      "lifetime": "persistent",
+      "check": "test -f /Users/kevinster/boring-w-ht-kung/notebooks/observation-001.md && test -s /Users/kevinster/boring-w-ht-kung/notebooks/observation-001.md"
+    }
+  ],
+  "key_facts": [
+    "Golden taxonomy: 60-70% of 24.2pp METR gap is harness/prompting-fixable",
+    "Code quality = 14-16pp of gap, primarily an elicitation problem, not capability",
+    "Model progression: newer models improve elicitation sensitivity, not reasoning",
+    "Time horizon 7x overstatement: 50min auto vs 8min human",
+    "H7 (NEW): benchmark increasingly measures elicitation skill, not model capability",
+    "Three experiments running: H3 (context injection, Golden), H5 (spec ambiguity, HongYang), H6 (feedback quality, Matheus)",
+    "OpenDev paper: instruction fade-out countered by event-driven reminders",
+    "Industry converging on harness engineering: OpenAI, Anthropic, Martin Fowler all publishing",
+    "If H5+H6 validate, enough for paper: Diagnostic Benchmark for Agent Harnesses",
+    "All 3 students + hongyang-assist active on non-overlapping tasks"
+  ],
+  "transcript_ref": "/Users/kevinster/.claude/projects/-Users-kevinster-boring-w-ht-kung/cc71a670-a8d5-416d-8e55-0ee7cef7c7fa.jsonl"
+}
