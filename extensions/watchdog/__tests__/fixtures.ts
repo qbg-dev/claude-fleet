@@ -3,6 +3,7 @@
  */
 
 import type { WatchdogEffects, WorkerSnapshot, WatchdogConfig } from "../src/types";
+import { DEFAULT_SPAWN_HOOKS } from "../src/types";
 
 /** Create a mock WatchdogEffects with call recording */
 export function makeMockEffects(overrides?: Partial<WatchdogEffects>): WatchdogEffects & { calls: Record<string, any[][]> } {
@@ -53,6 +54,8 @@ export function makeSnapshot(overrides?: Partial<WorkerSnapshot>): WorkerSnapsho
     permissionMode: "bypassPermissions",
     reasoningEffort: "high",
     runtime: "claude",
+    ephemeral: false,
+    onSpawn: DEFAULT_SPAWN_HOOKS,
     ...overrides,
   };
 }
@@ -65,6 +68,7 @@ export function makeConfig(overrides?: Partial<WatchdogConfig>): WatchdogConfig 
     maxCrashesPerHr: 3,
     maxCycleSec: 7200,
     memoryLimitMb: 2048,
+    onSpawn: DEFAULT_SPAWN_HOOKS,
     ...overrides,
   };
 }

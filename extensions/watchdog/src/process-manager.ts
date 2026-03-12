@@ -1,13 +1,13 @@
 /**
  * Process lifecycle: kill agent, relaunch, resume in pane.
- * Handles Claude/Codex TUI detection, seed injection, dialog auto-accept.
+ * Handles Claude/Codex TUI detection, dialog auto-accept, and spawn hooks.
  */
 
-import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { logInfo, logWarn } from "./logger";
 import { FLEET_DATA } from "./config";
 import type { WorkerSnapshot } from "./types";
+import { executeSpawnHooks, type SpawnHookContext } from "./spawn-hooks";
 
 /** Tmux helper */
 function tmux(...args: string[]): { ok: boolean; stdout: string } {
@@ -84,7 +84,7 @@ function tuiPattern(runtime: string): string {
 
 /**
  * Resume a worker in its existing pane (unstick or sleep-respawn).
- * Runs seed injection asynchronously.
+ * Waits for TUI, then executes on_spawn hooks (default: seed-inject).
  */
 export async function resumeInPane(
   snap: WorkerSnapshot,
@@ -97,18 +97,27 @@ export async function resumeInPane(
   // 1. Kill existing agent
   killAgentInPane(paneId);
 
-  // 2. Generate seed
-  const seed = generateSeed(snap.name, projectRoot);
-
-  // 3. Build and send agent command
+  // 2. Build and send agent command
   const cmd = buildAgentCmd(snap, projectName);
   tmux("send-keys", "-t", paneId, cmd);
   tmux("send-keys", "-t", paneId, "-H", "0d");
 
   logInfo("RESUME", `${snap.runtime} — fresh start in pane ${paneId} (reason: ${reason})`, snap.name);
 
-  // 4. Wait for TUI + inject seed (async)
-  await waitAndInjectSeed(paneId, snap.name, seed, snap.runtime);
+  // 3. Wait for TUI, then execute spawn hooks
+  const ctx: SpawnHookContext = {
+    workerName: snap.name,
+    paneId,
+    projectRoot,
+    projectName,
+    reason,
+    runtime: snap.runtime,
+    worktree: snap.worktree || projectRoot,
+  };
+  const ready = await waitForTui(paneId, snap.name, snap.runtime);
+  if (ready) {
+    await executeSpawnHooks(snap.onSpawn, ctx);
+  }
 }
 
 /**
@@ -132,13 +141,27 @@ export async function relaunchInPane(
   tmux("send-keys", "-t", paneId, cmd);
   tmux("send-keys", "-t", paneId, "-H", "0d");
 
-  // Generate seed and inject after TUI starts
-  const seed = generateSeed(snap.name, projectRoot);
-  await waitAndInjectSeed(paneId, snap.name, seed, snap.runtime);
+  // Wait for TUI, then execute spawn hooks
+  const ctx: SpawnHookContext = {
+    workerName: snap.name,
+    paneId,
+    projectRoot,
+    projectName,
+    reason: "relaunch",
+    runtime: snap.runtime,
+    worktree,
+  };
+  const ready = await waitForTui(paneId, snap.name, snap.runtime);
+  if (ready) {
+    await executeSpawnHooks(snap.onSpawn, ctx);
+  }
 }
 
-/** Wait for TUI prompt, handle dialogs, inject seed */
-async function waitAndInjectSeed(paneId: string, workerName: string, seed: string, runtime: string): Promise<void> {
+/**
+ * Wait for TUI to be ready, handle startup dialogs (bypass, trust).
+ * Returns true if TUI is ready, false if timed out.
+ */
+export async function waitForTui(paneId: string, workerName: string, runtime: string): Promise<boolean> {
   await Bun.sleep(8000);
 
   const pattern = tuiPattern(runtime);
@@ -149,7 +172,7 @@ async function waitAndInjectSeed(paneId: string, workerName: string, seed: strin
   while (waited < maxWait) {
     const { stdout } = tmux("capture-pane", "-t", paneId, "-p");
     const tail = stdout.split("\n").slice(-10).join("\n");
-    if (tail.toLowerCase().includes(pattern)) break;
+    if (tail.toLowerCase().includes(pattern)) return true;
     await Bun.sleep(3000);
     waited += 3;
   }
@@ -179,35 +202,10 @@ async function waitAndInjectSeed(paneId: string, workerName: string, seed: strin
     // Final check
     const { stdout: finalCheck } = tmux("capture-pane", "-t", paneId, "-p");
     if (!finalCheck.split("\n").slice(-5).join("\n").toLowerCase().includes(pattern)) {
-      logWarn("TUI-TIMEOUT", `TUI not ready after ${waited + 8}s, skipping seed`, workerName);
-      return;
+      logWarn("TUI-TIMEOUT", `TUI not ready after ${waited + 8}s, skipping spawn hooks`, workerName);
+      return false;
     }
   }
 
-  await Bun.sleep(2000);
-
-  // Inject seed via tmux buffer
-  const seedFile = `/tmp/worker-${workerName}-watchdog-seed.txt`;
-  writeFileSync(seedFile, seed);
-  try {
-    const bufName = `watchdog-${workerName}-${process.pid}`;
-    tmux("delete-buffer", "-b", bufName);
-    const load = tmux("load-buffer", "-b", bufName, seedFile);
-    if (!load.ok) {
-      logWarn("SEED-ERR", "failed to load seed into tmux buffer", workerName);
-      return;
-    }
-    tmux("paste-buffer", "-b", bufName, "-t", paneId, "-d");
-    await Bun.sleep(4000);
-    tmux("send-keys", "-t", paneId, "-H", "0d");
-
-    // Retry Enter after 3s if prompt visible
-    await Bun.sleep(3000);
-    const { stdout: promptCheck } = tmux("capture-pane", "-t", paneId, "-p");
-    if (promptCheck.split("\n").slice(-3).join("\n").includes("❯")) {
-      tmux("send-keys", "-t", paneId, "-H", "0d");
-    }
-  } finally {
-    try { unlinkSync(seedFile); } catch {}
-  }
+  return true;
 }

@@ -4,7 +4,8 @@
 
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
-import type { WatchdogConfig } from "./types";
+import type { WatchdogConfig, SpawnHook } from "./types";
+import { DEFAULT_SPAWN_HOOKS } from "./types";
 
 const HOME = process.env.HOME || "/tmp";
 const FLEET_DIR = process.env.CLAUDE_FLEET_DIR || join(HOME, ".claude-fleet");
@@ -15,6 +16,7 @@ const HARDCODED: WatchdogConfig = {
   maxCrashesPerHr: 3,
   maxCycleSec: 7200,
   memoryLimitMb: 2048,
+  onSpawn: DEFAULT_SPAWN_HOOKS,
 };
 
 /** Read defaults.json from the watchdog extension directory */
@@ -34,6 +36,7 @@ function readDefaultsJson(): Partial<WatchdogConfig> {
           maxCrashesPerHr: raw.max_crashes_per_hr,
           maxCycleSec: raw.max_cycle_sec,
           memoryLimitMb: raw.memory_limit_mb,
+          onSpawn: raw.on_spawn,
         };
       } catch {}
     }
@@ -59,6 +62,7 @@ export function resolveConfig(overrides?: Partial<WatchdogConfig>): WatchdogConf
     maxCrashesPerHr: overrides?.maxCrashesPerHr ?? env.maxCrashesPerHr ?? fromFile.maxCrashesPerHr ?? HARDCODED.maxCrashesPerHr,
     maxCycleSec: overrides?.maxCycleSec ?? env.maxCycleSec ?? fromFile.maxCycleSec ?? HARDCODED.maxCycleSec,
     memoryLimitMb: overrides?.memoryLimitMb ?? env.memoryLimitMb ?? fromFile.memoryLimitMb ?? HARDCODED.memoryLimitMb,
+    onSpawn: overrides?.onSpawn ?? fromFile.onSpawn ?? HARDCODED.onSpawn,
   };
 }
 

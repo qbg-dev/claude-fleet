@@ -6,7 +6,8 @@
 import { readFileSync, readdirSync, existsSync } from "fs";
 import { join } from "path";
 import { FLEET_DATA } from "./config";
-import type { WorkerSnapshot, WatchdogConfig } from "./types";
+import type { WorkerSnapshot, WatchdogConfig, SpawnHook } from "./types";
+import { DEFAULT_SPAWN_HOOKS } from "./types";
 
 /** Read and parse JSON, return null on failure */
 function readJson<T>(path: string): T | null {
@@ -69,6 +70,7 @@ export function buildSnapshot(name: string, projectName: string, config: Watchdo
     reasoningEffort: cfg.reasoning_effort || "high",
     runtime: (state?.custom?.runtime as string) || "claude",
     ephemeral: !!cfg.ephemeral,
+    onSpawn: (cfg.on_spawn as SpawnHook[] | undefined) ?? DEFAULT_SPAWN_HOOKS,
   };
 }
 

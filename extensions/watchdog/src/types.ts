@@ -95,7 +95,23 @@ export interface WorkerSnapshot {
   runtime: string;
   /** Ephemeral workers (deep-review) — skip watchdog entirely */
   ephemeral: boolean;
+  /** Spawn hooks for this worker (per-worker override or global default) */
+  onSpawn: SpawnHook[];
 }
+
+// ── Spawn Hooks (configurable behavior on worker respawn) ──
+
+export interface SpawnHook {
+  /** Built-in action or external command */
+  type: "seed-inject" | "command";
+  /** Shell command to run (only for type: "command") */
+  command?: string;
+  /** Timeout in ms (default 30000) */
+  timeout?: number;
+}
+
+/** Default spawn hooks — re-inject the seed template */
+export const DEFAULT_SPAWN_HOOKS: SpawnHook[] = [{ type: "seed-inject" }];
 
 // ── Watchdog Config ──
 
@@ -105,6 +121,8 @@ export interface WatchdogConfig {
   maxCrashesPerHr: number;
   maxCycleSec: number;
   memoryLimitMb: number;
+  /** Hooks to execute when a worker is spawned/respawned (after TUI ready) */
+  onSpawn: SpawnHook[];
 }
 
 // ── Log Entry ──
