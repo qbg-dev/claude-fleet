@@ -202,6 +202,164 @@ These are checked by the pre-commit hook whenever CLI, doc, completion, or test 
 
 ---
 
+## Maintainability & Explicit Contracts
+
+These rules enforce explicit-over-implicit patterns. They are derived from 13 fix commits (ae73e13..87affa5) that share a common root cause: implicit assumptions that silently fail.
+
+### M1. Single Field, Single Meaning
+
+Every config/state field must have exactly one semantic. `sleep_duration` means "post-cycle sleep interval" — not "max runtime" or "watchdog timeout." If a field is being read with two different interpretations in different code paths, split it into two fields with explicit names.
+
+**Regression source**: `d5cb403` — `sleep_duration` was used as both post-cycle sleep AND max-runtime trigger, causing active workers to be killed mid-work.
+
+### M2. Explicit State Machine for Worker Lifecycle
+
+Worker status transitions must follow a defined state machine. Valid states: `idle` → `active` → `sleeping` → `idle` (perpetual cycle), or `idle` → `active` → `standby` (stopped). The watchdog must only act on explicit states — never infer intent from the absence of a field.
+
+**Regression source**: `594064e` — `fleet stop` set `status="idle"`, which watchdog interpreted as "ready to respawn" instead of "intentionally stopped." Fixed by adding `standby` state.
+
+### M3. Environment Must Be Explicitly Provisioned
+
+Any subprocess (daemon, hook script, bridge child) must receive its full execution context explicitly — PATH, HOME, CWD, env vars. Never rely on shell inheritance. Wrapper scripts must resolve their real location via `readlink -f "$0"`, not `dirname "$0"`.
+
+**Regression sources**: `6ba218a` (launchd PATH), `e4e45fb` (symlink chain), `72b9604` (PROJECT_ROOT in bridge).
+
+### M4. External API Contracts Must Be Verified
+
+When calling external systems (Claude Code CLI, tmux, git, Fleet Mail), the exact command/method name must be verified against that system's documentation. Don't assume — test. Slash commands, flag names, and exit code semantics can change across versions.
+
+**Regression source**: `eedebc9` — code sent `/stop` to Claude Code (doesn't exist), should have been `/exit`.
+
+### M5. All Permission Gates Must Scan All User-Controlled Fields
+
+When enforcing deny-lists or permission checks, every field that could contain user/agent input must be scanned — not just the primary field. If a hook has `content`, `check`, and `script` fields, all three must be validated against the deny-list.
+
+**Regression sources**: `362d3a5` (check command bypass), `67be7b5` (ownership enforcement), `ae73e13` (@-path escape).
+
+### M6. Lifecycle Operations Must Be Atomic
+
+Multi-step lifecycle operations (stop, recycle, nuke) must use explicit state markers that prevent race conditions with the watchdog. A `fleet stop` must set status to a watchdog-immune state (`standby`) *before* killing the pane. A `fleet recycle` must prevent concurrent `fleet start` from creating duplicate panes.
+
+**Regression sources**: `594064e` (stop → immediate respawn), `87affa5` (recycle race → duplicate panes).
+
+### M7. No Speculative Features
+
+Don't implement complex features without at least 2 concrete use cases. If a feature adds config fields, MCP tools, or state management but has no caller, it will be reverted. Complexity must earn its place.
+
+**Regression source**: `0d1d172` — Erlang-style monitors feature added (100+ lines, config fields, debounce logic), then reverted because no use cases materialized.
+
+---
+
+## Critical Test Requirements
+
+These tests cover gaps identified from analyzing the existing test suite and 13 fix commits. Tests marked **(missing)** don't exist yet and should be added. Tests marked **(exists)** are already covered.
+
+### T1. Worker Status State Machine **(partial — needs expansion)**
+
+The watchdog checker has good coverage (`extensions/watchdog/__tests__/worker-checker.test.ts`), but missing:
+- `fleet stop` sets `status="standby"` and watchdog does NOT respawn
+- `fleet recycle` sets `status="recycling"` and only ONE new pane is created (no race with manual `fleet start`)
+- `sleep_duration` is NOT used as max-runtime while worker is active **(exists — line 279)**
+
+### T2. Hook Ownership Enforcement **(missing)**
+
+```
+test: self-tier worker cannot remove system hook
+test: self-tier worker cannot remove creator hook
+test: worker A cannot remove worker B's self hook
+test: complete_hook rejects system-tier hooks
+test: manage_worker_hooks REMOVE validates caller authority
+```
+
+### T3. Hook Deny-List Scanning **(missing)**
+
+```
+test: deny-list scans content field
+test: deny-list scans check field
+test: deny-list scans script field
+test: @-path in script resolves within allowed directory only
+test: @-path with ../../ traversal is rejected
+```
+
+### T4. Path Safety **(missing)**
+
+```
+test: worker name with / is rejected
+test: worker name with .. is rejected
+test: worker name with spaces is rejected
+test: worktree path with -w- in name extracts correctly (no doubling)
+test: symlink resolution — dirname of symlink resolves to target, not link location
+```
+
+### T5. Daemon Environment **(missing)**
+
+```
+test: launchd plist contains PATH with /usr/local/bin and ~/.bun/bin
+test: launchd plist contains HOME set to user home
+test: watchdog can locate tmux binary from plist PATH
+test: watchdog can locate fleet binary from plist PATH
+```
+
+### T6. Pipeline Integrity **(missing)**
+
+```
+test: back-edge without maxIterations is rejected at graph construction
+test: dynamic generator with no fallback warns at compile time
+test: session directory with existing pipeline-state.json is rejected (or renamed)
+test: concurrent bridge calls on same session detect lock contention
+test: deprecated field writes log warning (state.roleResult vs state.ext.roleResult)
+```
+
+### T7. External API Contracts **(missing)**
+
+```
+test: gracefulStop sends /exit (not /stop) to Claude Code pane
+test: send-keys uses -H 0d for Enter (not literal "Enter" string)
+test: fleet commands call addGlobalOpts (scan all cli/commands/*.ts)
+```
+
+### T8. Idempotency **(missing)**
+
+```
+test: fleet setup run twice → no errors, identical state
+test: fleet setup --extensions run twice → no errors
+test: setup-hooks.sh run twice → same hook count
+test: extension install scripts run twice → no "already exists" errors
+```
+
+### T9. Import Boundary **(exists via review.sh, but no unit test)**
+
+```
+test: no file in mcp/ imports from cli/
+test: no file in cli/ imports from mcp/
+test: no file in engine/ imports from cli/ or mcp/
+test: all cross-boundary imports go through shared/
+```
+
+---
+
+## Known Regression Patterns
+
+Patterns extracted from fix commits that have recurred or are likely to recur. Each entry names the original commit, the root cause, and what to watch for.
+
+| ID | Pattern | Original Fix | What Regresses It |
+|----|---------|-------------|-------------------|
+| R1 | **Worktree path doubling** | `c23ba62` | Any code that constructs or parses worktree paths using `-w-` splitting without anchoring to repo name prefix |
+| R2 | **launchd PATH starvation** | `6ba218a` | Any change to plist generation (`install.rs`) that drops or overwrites EnvironmentVariables |
+| R3 | **Symlink dirname trap** | `e4e45fb` | New wrapper scripts using `dirname "$0"` without readlink resolution |
+| R4 | **Stop → immediate respawn** | `594064e` | Any status change that maps to a watchdog-respawnable state (anything other than `standby`, `sleeping`) |
+| R5 | **sleep_duration as runtime limit** | `d5cb403` | Watchdog code reading `sleep_duration` to determine if an *active* worker should be restarted |
+| R6 | **Recycle race (duplicate panes)** | `87affa5` | Recycle implementations that rely on watchdog respawn instead of doing stop+start atomically |
+| R7 | **Hook ownership bypass** | `67be7b5` | New MCP tools or CLI commands that modify hooks without checking ownership tier |
+| R8 | **Check command unscanned** | `362d3a5` | New hook fields (timeout, retry, condition) that accept user strings without deny-list scan |
+| R9 | **@-path directory escape** | `ae73e13` | New file-copy operations accepting user paths without `realpath` prefix validation |
+| R10 | **Wrong slash command** | `eedebc9` | Any tmux send-keys call that sends Claude Code commands without verifying they exist |
+| R11 | **Bash shim deletion** | `f2db425` | Refactoring that removes entry-point scripts referenced by hooks/settings without updating all callers |
+| R12 | **Fork session lookup** | `c6469c0` | Session file lookups that assume `process.cwd()` matches the project slug in `~/.claude/projects/` |
+| R13 | **Speculative feature creep** | `0d1d172` | Complex features merged without 2+ concrete use cases — creates maintenance surface for zero payoff |
+
+---
+
 ## Pre-commit Verification
 
 When the pre-commit hook fires (staged files match `cli/|engine/|CLAUDE.md|README.md|completions/`):
