@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getAttackVectors } from "./args";
-import { buildMailEnvExport } from "./fleet-provisioning";
+import { buildMailEnvExport } from "../../../engine/program/fleet-provision";
 import type { DeepReviewConfig, MaterialResult, SessionContext, RoleDesignerResult } from "./types";
 
 /** Replace all occurrences of a literal string */

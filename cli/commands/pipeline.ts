@@ -55,7 +55,7 @@ export function register(program: Command): void {
   addGlobalOpts(cmd);
 }
 
-async function runPipeline(programName: string, opts: Record<string, any>): Promise<void> {
+export async function runPipeline(programName: string, opts: Record<string, any>): Promise<void> {
   // Find program file
   const programPath = join(FLEET_DIR, "programs", `${programName}.program.ts`);
   if (!existsSync(programPath)) {
