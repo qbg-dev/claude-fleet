@@ -178,5 +178,5 @@ Proposals are committed alongside the review that surfaced them. No separate app
 
 ## Related Conventions
 
-- [README-CONVENTIONS.md](README-CONVENTIONS.md) — 100 rules for writing READMEs. Applied to this project's README.
+- [conventions/README-CONVENTIONS.md](conventions/README-CONVENTIONS.md) — 100 rules for writing READMEs. Applied to this project's README.
 - [qbg-dev/conventions](https://github.com/qbg-dev/conventions) — shared conventions across qbg-dev projects.
