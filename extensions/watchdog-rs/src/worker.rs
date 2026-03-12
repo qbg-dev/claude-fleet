@@ -52,6 +52,7 @@ pub struct WorkerSnapshot {
     pub worktree: Option<String>,
     pub model: String,
     pub permission_mode: String,
+    pub reasoning_effort: Option<String>,
     pub ephemeral: bool,
 
     // From state.json
@@ -126,6 +127,7 @@ impl WorkerSnapshot {
             worktree: config.worktree,
             model: config.model.unwrap_or_else(|| "sonnet".to_string()),
             permission_mode: config.permission_mode.unwrap_or_else(|| "default".to_string()),
+            reasoning_effort: config.reasoning_effort,
             ephemeral: config.ephemeral.unwrap_or(false),
             status: state.status.unwrap_or_else(|| "unknown".to_string()),
             pane_id: state.pane_id,

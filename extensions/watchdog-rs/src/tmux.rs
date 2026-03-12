@@ -208,16 +208,93 @@ pub fn notify_desktop(title: &str, message: &str) {
     let _ = Command::new("osascript").args(["-e", &script]).status();
 }
 
-/// Launch claude in a pane
-pub fn launch_claude(pane_id: &str, worktree: &str, model: &str, permission_mode: &str) -> Result<()> {
+/// Launch claude in a pane with full worker context (env vars, flags, worker dir)
+pub fn launch_claude(
+    pane_id: &str,
+    worktree: &str,
+    model: &str,
+    permission_mode: &str,
+    worker_name: &str,
+    worker_dir: &str,
+    reasoning_effort: &str,
+) -> Result<()> {
+    let perm_flag = if permission_mode == "bypassPermissions" {
+        "--dangerously-skip-permissions".to_string()
+    } else {
+        format!("--permission-mode {permission_mode}")
+    };
+
     let cmd = format!(
-        "cd {} && claude --model {} --permission-mode {}",
-        shell_escape(worktree),
-        model,
-        permission_mode,
+        "cd {worktree} && CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME={name} claude --model {model} --effort {effort} {perm} --add-dir {wdir}",
+        worktree = shell_escape(worktree),
+        name = shell_escape(worker_name),
+        model = model,
+        effort = reasoning_effort,
+        perm = perm_flag,
+        wdir = shell_escape(worker_dir),
     );
     send_keys(pane_id, &cmd)?;
     send_enter(pane_id)?;
+    Ok(())
+}
+
+/// Wait for Claude TUI to be ready, then inject seed template via fleet CLI
+pub fn inject_seed(pane_id: &str, worker_name: &str, worktree: &str) -> Result<()> {
+    // Wait for TUI prompt
+    if let Err(_) = wait_for_prompt(pane_id, Duration::from_secs(90)) {
+        warn!(pane_id, worker_name, "TUI not ready after 90s — skipping seed injection");
+        return Ok(());
+    }
+
+    thread::sleep(Duration::from_secs(2));
+
+    // Generate seed via fleet MCP module (same path as fleet start)
+    let fleet_dir = std::env::var("CLAUDE_FLEET_DIR")
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{home}/.claude-fleet")
+        });
+
+    let seed_script = format!(
+        r#"const {{ generateSeedContent }} = await import('{fleet_dir}/mcp/worker-fleet/index.ts'); process.stdout.write(generateSeedContent());"#,
+        fleet_dir = fleet_dir,
+    );
+
+    let output = Command::new("bun")
+        .args(["-e", &seed_script])
+        .env("WORKER_NAME", worker_name)
+        .env("PROJECT_ROOT", worktree)
+        .env("_FLEET_OPS_DIR", &fleet_dir)
+        .output();
+
+    let seed = match output {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            if s.is_empty() {
+                format!("Watchdog respawn. You are worker {worker_name}. Read mission.md, then start your next cycle.")
+            } else {
+                s
+            }
+        }
+        _ => {
+            warn!(worker_name, "seed generation failed — using fallback");
+            format!("Watchdog respawn. You are worker {worker_name}. Read mission.md, then start your next cycle.")
+        }
+    };
+
+    // Inject seed via tmux buffer
+    send_text(pane_id, &seed)?;
+    thread::sleep(Duration::from_secs(4));
+    send_enter(pane_id)?;
+
+    // Retry enter if prompt still visible
+    thread::sleep(Duration::from_secs(3));
+    if let Some(content) = capture_pane(pane_id, 3) {
+        if content.contains("❯") {
+            send_enter(pane_id)?;
+        }
+    }
+
     Ok(())
 }
 

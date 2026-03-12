@@ -20,22 +20,22 @@ async function stopWorker(name: string, project: string): Promise<void> {
   const paneId = state?.pane_id;
 
   if (!paneId) {
-    warn(`'${name}' has no pane — marking idle`);
-    writeJsonLocked(statePath, { ...state, status: "idle", pane_id: null, pane_target: null });
+    warn(`'${name}' has no pane — marking standby`);
+    writeJsonLocked(statePath, { ...state, status: "standby", pane_id: null, pane_target: null });
     return;
   }
 
   if (!listPaneIds().has(paneId)) {
-    warn(`'${name}' pane ${paneId} is already gone — marking idle`);
-    writeJsonLocked(statePath, { ...state, status: "idle", pane_id: null, pane_target: null });
+    warn(`'${name}' pane ${paneId} is already gone — marking standby`);
+    writeJsonLocked(statePath, { ...state, status: "standby", pane_id: null, pane_target: null });
     return;
   }
 
   info(`Stopping '${name}' (pane ${paneId})`);
   await gracefulStop(paneId);
 
-  writeJsonLocked(statePath, { ...state, status: "idle", pane_id: null, pane_target: null });
-  ok(`Worker '${name}' stopped`);
+  writeJsonLocked(statePath, { ...state, status: "standby", pane_id: null, pane_target: null });
+  ok(`Worker '${name}' stopped (standby — watchdog will not respawn)`);
 }
 
 export function register(parent: Command): void {

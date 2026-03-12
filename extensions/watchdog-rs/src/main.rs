@@ -150,6 +150,8 @@ fn run_core_pass(cfg: &config::Config) {
 
 fn do_relaunch(worker: &WorkerSnapshot) -> anyhow::Result<()> {
     let worktree = worker.worktree.as_deref().unwrap_or(".");
+    let worker_dir = worker.worker_dir.to_str().unwrap_or(".");
+    let reasoning_effort = worker.reasoning_effort.as_deref().unwrap_or("high");
 
     // Kill existing content if pane is alive
     if let Some(ref pane_id) = worker.pane_id {
@@ -172,8 +174,16 @@ fn do_relaunch(worker: &WorkerSnapshot) -> anyhow::Result<()> {
         create_or_fallback(worker)?
     };
 
-    // Launch claude
-    tmux::launch_claude(&new_pane_id, worktree, &worker.model, &worker.permission_mode)?;
+    // Launch claude with full worker context
+    tmux::launch_claude(
+        &new_pane_id,
+        worktree,
+        &worker.model,
+        &worker.permission_mode,
+        &worker.name,
+        worker_dir,
+        reasoning_effort,
+    )?;
 
     // Update state
     worker.write_relaunch_state(&new_pane_id, "watchdog relaunch")?;
@@ -184,6 +194,13 @@ fn do_relaunch(worker: &WorkerSnapshot) -> anyhow::Result<()> {
         relaunch_count = worker.relaunch_count + 1,
         "relaunch complete"
     );
+
+    // Inject seed template (after TUI is ready)
+    if let Err(e) = tmux::inject_seed(&new_pane_id, &worker.name, worktree) {
+        warn!(worker = %worker.name, err = %e, "seed injection failed — worker launched without seed");
+    } else {
+        info!(worker = %worker.name, "seed injected");
+    }
 
     Ok(())
 }
