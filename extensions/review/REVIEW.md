@@ -173,3 +173,10 @@ This document is a living checklist. During any deep review, if Claude identifie
 4. **`scripts/review.sh` check** if it can be automated — add the implementation and bump the item range in the script header comment
 
 Proposals are committed alongside the review that surfaced them. No separate approval process — if a pattern caused a real bug or near-miss, it belongs here.
+
+---
+
+## Related Conventions
+
+- [README-CONVENTIONS.md](README-CONVENTIONS.md) — 100 rules for writing READMEs. Applied to this project's README.
+- [qbg-dev/conventions](https://github.com/qbg-dev/conventions) — shared conventions across qbg-dev projects.
