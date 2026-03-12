@@ -13,7 +13,7 @@ import {
 } from "./config";
 import {
   sessionExists, createSession, windowExists, splitIntoWindow,
-  createWindow, setPaneTitle, sendKeys, sendEnter, capturePane,
+  createWindow, setPaneTitle, sendKeys, sendEnter,
   waitForPrompt, pasteBuffer, getPaneTarget,
 } from "./tmux";
 import { info, ok, warn, fail } from "./fmt";
@@ -138,41 +138,9 @@ export async function launchInTmux(
   if (!ready) warn("TUI timeout after 60s, proceeding anyway");
   await Bun.sleep(2000); // settle
 
-  // ── Generate + inject seed ──
-  let seedContent: string;
-  try {
-    const result = Bun.spawnSync(
-      [Bun.which("bun") || "bun", "-e", `
-        const { generateSeedContent } = await import('${FLEET_DIR}/mcp/worker-fleet/index.ts');
-        process.stdout.write(generateSeedContent());
-      `],
-      {
-        env: { ...process.env, WORKER_NAME: name, PROJECT_ROOT: worktree },
-        stderr: "pipe",
-      },
-    );
-    seedContent = result.exitCode === 0
-      ? result.stdout.toString()
-      : `You are worker ${name}. Read mission.md, then start your next cycle.`;
-  } catch {
-    seedContent = `You are worker ${name}. Read mission.md, then start your next cycle.`;
-  }
-
-  const pasted = pasteBuffer(paneId, seedContent);
-  if (!pasted) {
-    warn("Failed to load seed buffer — worker launched without seed");
-  } else {
-    const settleMs = Math.min(8000, 2000 + Math.floor(seedContent.length / 4096) * 1000);
-    await Bun.sleep(settleMs);
-    sendEnter(paneId);
-
-    await Bun.sleep(3000);
-    const output = capturePane(paneId, 10);
-    if (/command not found|bad pattern|zsh:|bash:/.test(output) && !/❯.*command not found/.test(output)) {
-      warn("Detected garbled seed (shell errors) — seed may have leaked into shell");
-    }
-    if (/❯/.test(output)) sendEnter(paneId);
-  }
+  // ── Seed is injected via SessionStart hook — just send a trigger prompt ──
+  pasteBuffer(paneId, "Start your next cycle.");
+  sendEnter(paneId);
 
   // ── Update state.json ──
   const paneTarget = getPaneTarget(paneId);
