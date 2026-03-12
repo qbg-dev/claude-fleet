@@ -394,6 +394,26 @@ LOOP FOREVER:
 
 > **NEVER `sleep N` to wait between cycles.** If you're idle, just stay idle — the operator or watchdog handles restarts.
 
+## Polling with CronCreate
+
+Use `CronCreate` to poll for events on a schedule (new mail, deploy status, external APIs). Cron jobs run independently of your main loop — they fire even while you're deep in a task.
+
+```
+# Poll inbox every 3 minutes for merge requests
+CronCreate("*/3 * * * *", "Check Fleet Mail inbox for new merge requests",
+  command="MAIL_TOKEN=$(cat ~/.claude/fleet/$PROJECT_NAME/$WORKER_NAME/token) && curl -sf -H 'Authorization: Bearer $MAIL_TOKEN' '${FLEET_MAIL_URL}/api/messages?label=UNREAD' | jq -r '.messages[] | .id + \" \" + .subject'")
+
+# Check deploy health every 5 minutes
+CronCreate("*/5 * * * *", "Health check test server",
+  command="curl -sf https://test.baoyuansmartlife.com/health || echo 'UNHEALTHY'")
+```
+
+**CronCreate does not conflict with the watchdog.** They operate at different layers:
+- **Cron**: lightweight scheduled commands within a live session (polling, health checks, reminders)
+- **Watchdog**: process-level supervisor that restarts dead workers, kills stuck ones, enforces crash-loop limits
+
+The watchdog is a safety net on top — it ensures your process stays alive so your cron jobs keep running.
+
 ## Respawn Configuration
 
 `sleep_duration` is the sole source of truth (set via `update_state()` or `update_worker_config()`):
