@@ -36,7 +36,36 @@ Verify server connectivity, worker accounts, test message delivery, create maili
 ### Phase 8: Verification
 Create 1-2 workers, verify tmux layout, test watchdog respawn, send test mail.
 
-### Phase 8.5: Tmux Tips
+### Phase 8.5: Statusline
+Configure the Claude Code statusline so workers show their identity.
+
+**If `~/.claude/statusline-command.sh` doesn't exist** (fresh install): `fleet setup` already installed it — nothing to do. Confirm with the user that they see the worker name in the statusline (e.g. `🔗 chief-of-staff`).
+
+**If `~/.claude/statusline-command.sh` already exists** (user has a custom statusline): Interview the user:
+1. Show them what the fleet statusline provides: worker identity via worktree detection (`🔗 {name}`), git branch, model, cost tracking, spending totals.
+2. Ask: do they want to replace their script with the fleet version, or merge fleet v2 worker detection into their existing script?
+3. If replace: `ln -sf ~/.claude-fleet/scripts/statusline-command.sh ~/.claude/statusline-command.sh`
+4. If merge: read their existing script, identify where to add the fleet v2 detection block. The essential block is:
+
+```bash
+# FLEET V2 WORKER DETECTION
+_fleet_worker_name=""
+if [ -n "$dir" ] && [ -d "$HOME/.claude/fleet" ]; then
+  _fw_cfg=$(grep -rl "\"$dir\"" "$HOME/.claude/fleet"/*/*/config.json 2>/dev/null | head -1)
+  if [ -n "$_fw_cfg" ]; then
+    _fw_wt=$(jq -r '.worktree // empty' "$_fw_cfg" 2>/dev/null)
+    if [ "$_fw_wt" = "$dir" ]; then
+      _fleet_worker_name=$(basename "$(dirname "$_fw_cfg")")
+    fi
+  fi
+fi
+```
+
+Then use `$_fleet_worker_name` in the output section to show `🔗 {name}`. Help them integrate it.
+
+5. Ensure `~/.claude/settings.json` has `"statusLine": { "type": "command", "command": "bash ~/.claude/statusline-command.sh" }`.
+
+### Phase 8.6: Tmux Tips
 Teach the user about fleet tmux usage:
 - **Prefix key**: Fleet setup adds `Ctrl-Y` as a secondary tmux prefix (`prefix2`). Their existing prefix (usually `Ctrl-B`) still works. `Ctrl-Y` is convenient for one-handed fleet operations.
 - **Key commands**: `C-y d` detach, `C-y w` window list, `C-y n/p` next/prev window, `C-y [0-9]` switch window, `C-y z` zoom pane.

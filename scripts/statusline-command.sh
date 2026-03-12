@@ -267,6 +267,26 @@ if [ -n "$git_branch" ]; then
 fi
 
 # ============================================================================
+# FLEET V2 WORKER DETECTION
+# ============================================================================
+# Fleet v2 uses per-worker dirs at ~/.claude/fleet/{project}/{name}/.
+# Match current dir against config.json worktree paths to find worker name.
+# Uses grep first (fast) then jq only on the match (avoids 40+ jq calls).
+# ============================================================================
+_fleet_worker_name=""
+if [ -n "$dir" ] && [ -d "$HOME/.claude/fleet" ]; then
+	_fw_cfg=$(grep -rl "\"$dir\"" "$HOME/.claude/fleet"/*/*/config.json 2>/dev/null | head -1)
+	if [ -n "$_fw_cfg" ]; then
+		_fw_wt=$(jq -r '.worktree // empty' "$_fw_cfg" 2>/dev/null)
+		if [ "$_fw_wt" = "$dir" ]; then
+			_fleet_worker_name=$(basename "$(dirname "$_fw_cfg")")
+			is_worker=1
+			[ -z "$_worker_name" ] && _worker_name="$_fleet_worker_name"
+		fi
+	fi
+fi
+
+# ============================================================================
 # CURRENT TASK LOOKUP (workers only)
 # ============================================================================
 # Find the in_progress task from filesystem tasks.json.
@@ -288,7 +308,7 @@ if [ -n "$_effective_worker" ]; then
 	' "$_tasks_file" 2>/dev/null | head -1)
 fi
 
-# Determine tree role from unified registry.json
+# Determine tree role from unified registry.json or fleet v2
 _tree_tag=""
 if [ -n "$_reg_worker_name" ]; then
 	if [ -n "$_reg_parent" ]; then
@@ -308,6 +328,9 @@ if [ -n "$_reg_worker_name" ]; then
 		# Registered but orphan — just show name
 		_tree_tag=$(printf "\n🔗 %b%s%b" "\033[1;97m" "$_reg_worker_name" "\033[0m")
 	fi
+elif [ -n "$_fleet_worker_name" ]; then
+	# Fleet v2 worker — show name (no registry hierarchy available)
+	_tree_tag=$(printf "\n🔗 %b%s%b" "\033[1;97m" "$_fleet_worker_name" "\033[0m")
 fi
 
 if [ "$is_worker" = 1 ]; then

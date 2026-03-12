@@ -222,14 +222,20 @@ export function register(parent: Command): void {
 
         // Configure statusline (shows worker identity via fleet v2 worktree detection)
         const statuslineScript = join(fleetDir, "scripts/statusline-command.sh");
+        const statuslineLink = join(HOME, ".claude/statusline-command.sh");
         if (existsSync(statuslineScript)) {
-          const statuslineLink = join(HOME, ".claude/statusline-command.sh");
-          Bun.spawnSync(["ln", "-sf", statuslineScript, statuslineLink]);
-          settings.statusLine = {
-            type: "command",
-            command: `bash ~/.claude/statusline-command.sh`,
-          };
-          ok("Statusline: ~/.claude/statusline-command.sh → fleet script (worker identity via worktree)");
+          if (existsSync(statuslineLink) || settings.statusLine) {
+            // Existing statusline — don't overwrite. Onboarding agent will interview
+            // the user and help merge fleet v2 worker detection into their script.
+            info("Existing statusline detected — skipping (onboarding agent will help merge)");
+          } else {
+            Bun.spawnSync(["ln", "-sf", statuslineScript, statuslineLink]);
+            settings.statusLine = {
+              type: "command",
+              command: `bash ~/.claude/statusline-command.sh`,
+            };
+            ok("Statusline: ~/.claude/statusline-command.sh → fleet script (worker identity via worktree)");
+          }
         }
 
         writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + "\n");
