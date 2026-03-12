@@ -7,12 +7,11 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FLEET_DATA } from "../../cli/lib/paths";
 import type { CompiledWindow, CompiledWorker, ProgramPipelineState } from "./types";
-import { bridgeWaitCommands } from "./fifo";
 
 // ── Tmux helpers (matches existing deep-review/tmux.ts pattern) ──
 
 function tmux(...args: string[]): { ok: boolean; stdout: string } {
-  const result = Bun.spawnSync(["tmux", ...args], { stderr: "pipe" });
+  const result = (Bun.spawnSync as any)(["tmux", ...args], { stderr: "pipe" });
   return { ok: result.exitCode === 0, stdout: result.stdout.toString().trim() };
 }
 
@@ -31,7 +30,6 @@ function getPaneId(target: string, index: number): string {
 export function createTmuxSession(
   state: ProgramPipelineState,
   windows: CompiledWindow[],
-  bridgePhases: Array<{ phaseIndex: number; label: string }>,
 ): string {
   const session = state.tmuxSession;
   const sessionExists = tmux("has-session", "-t", session).ok;
@@ -46,19 +44,7 @@ export function createTmuxSession(
   tmux("new-session", "-d", "-s", session, "-n", "manifest", "-c", state.projectRoot);
   Bun.sleepSync(300);
 
-  // Create bridge windows (FIFO-gated)
-  for (const bp of bridgePhases) {
-    tmux("new-window", "-d", "-t", session, "-n", `bridge-${bp.phaseIndex}`, "-c", state.projectRoot);
-    Bun.sleepSync(100);
-
-    const pane = getPaneId(`${session}:bridge-${bp.phaseIndex}`, 0);
-    if (pane) {
-      const commands = bridgeWaitCommands(state.sessionDir, bp.phaseIndex, bp.label);
-      tmux("send-keys", "-t", pane, commands, "Enter");
-    }
-  }
-
-  // Create agent windows
+  // Create agent windows (no bridge windows needed — hooks launch bridge directly)
   for (const win of windows) {
     tmux("new-window", "-d", "-t", session, "-n", win.name, "-c", state.projectRoot);
     // Create extra panes

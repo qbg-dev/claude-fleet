@@ -2,7 +2,7 @@
  * Program API — public exports.
  *
  * The program engine compiles declarative pipeline definitions into
- * fleet's distributed artifacts (hooks, FIFOs, seeds, tmux layout).
+ * fleet's distributed artifacts (hooks, seeds, tmux layout).
  */
 
 // Types
@@ -16,12 +16,14 @@ export type {
   PhaseLayout,
   ProgramDefaults,
   ProgramMaterial,
+  PipelineHook,
+  ConvergenceSpec,
+  HookEvent,
   CompiledPlan,
   CompiledPhase,
   CompiledWindow,
   CompiledWorker,
   CompiledHook,
-  CompiledFifo,
   ProgramPipelineState,
 } from "./types";
 export { isDynamic, isStaticAgents } from "./types";
@@ -33,10 +35,10 @@ export { compile, compilePhase, savePipelineState, loadPipelineState } from "./c
 export { resolveSeed, resolveSeedToFile, substitute, buildStateVars } from "./seed-resolver";
 
 // Hook generator
-export { generateStopHook, installStopHook } from "./hook-generator";
+export { generateStopHook, installStopHook, installPipelineHooks } from "./hook-generator";
 
-// FIFO
-export { createFifo, createBridgeFifos, createAgentFifos, bridgeWaitCommands, agentWaitCommands, unblockFifo, unblockFifos } from "./fifo";
+// Hooks bridge (dynamic import to claude-hooks)
+export { getHooksIO, getHooksTypes, checkHooksInstalled } from "./hooks-bridge";
 
 // Fleet provisioning
 export { provisionWorkers, cleanupPipelineWorkers, buildMailEnvExport, generateLaunchWrapper, generateCleanupScript } from "./fleet-provision";

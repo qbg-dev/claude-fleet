@@ -24,7 +24,7 @@ export function generateManifest(
   for (let i = 0; i < program.phases.length; i++) {
     const phase = program.phases[i];
     const compiled = compiledPhases[i];
-    const status = i === 0 ? "RUNNING" : compiled?.status === "compiled" ? "READY" : `PENDING → bridge-${i}`;
+    const status = i === 0 ? "RUNNING" : compiled?.status === "compiled" ? "READY" : `PENDING`;
     const dynamic = isDynamic(phase.agents) ? ", DYNAMIC" : "";
 
     phasesSection += `  Phase ${i}: ${phase.name.padEnd(20)} [${status}${dynamic}]\n`;
@@ -45,6 +45,18 @@ export function generateManifest(
         phasesSection += `    ${agent.name} (${model})\n`;
       }
     }
+
+    // Show phase hooks
+    if (phase.hooks && phase.hooks.length > 0) {
+      phasesSection += `    Hooks: ${phase.hooks.map(h => `${h.event}:${h.type}`).join(", ")}\n`;
+    }
+
+    // Show convergence
+    if (phase.convergence) {
+      const max = phase.convergence.maxIterations || 10;
+      phasesSection += `    Convergence: max ${max} iterations\n`;
+    }
+
     phasesSection += "\n";
   }
 
@@ -52,17 +64,22 @@ export function generateManifest(
   let hookChain = "";
   for (let i = 0; i < program.phases.length - 1; i++) {
     const phase = program.phases[i];
-    const nextPhase = program.phases[i + 1];
     const gate = phase.gate || "last agent";
-    hookChain += `  ${gate} Stop → fifo-bridge-${i + 1} → ${nextPhase.name}\n`;
+
+    if (phase.convergence) {
+      const nextIdx = phase.next !== undefined ? phase.next : i + 1;
+      const max = phase.convergence.maxIterations || 10;
+      hookChain += `  ${gate} Stop → convergence check → cycle to Phase ${i} (max ${max}x) or → Phase ${nextIdx}\n`;
+    } else if (phase.next !== undefined) {
+      hookChain += `  ${gate} Stop → bridge → Phase ${phase.next}\n`;
+    } else {
+      const nextPhase = program.phases[i + 1];
+      hookChain += `  ${gate} Stop → bridge → ${nextPhase.name}\n`;
+    }
   }
 
   // Window listing
   let windowList = "  :0 manifest\n";
-  // Bridge windows
-  for (let i = 1; i < program.phases.length; i++) {
-    windowList += `  :bridge-${i}\n`;
-  }
   // Agent windows (estimated from phases)
   const windowNames = new Set<string>();
   for (const phase of program.phases) {

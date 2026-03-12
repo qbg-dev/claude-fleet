@@ -21,7 +21,8 @@ import type {
 } from "./types";
 import { isDynamic } from "./types";
 import { resolveSeedToFile, buildStateVars } from "./seed-resolver";
-import { installStopHook } from "./hook-generator";
+import { installStopHook, installPipelineHooks } from "./hook-generator";
+import { FLEET_DATA } from "../../cli/lib/paths";
 
 const HOME = process.env.HOME || "/tmp";
 
@@ -39,7 +40,6 @@ export function compile(
     windows: [],
     workers: [],
     hooks: [],
-    fifos: [],
     sessionDir: state.sessionDir,
     programPath: state.programPath,
   };
@@ -79,31 +79,33 @@ export function compile(
       plan.workers.push(...compiled.workers);
     }
 
-    // Hook chain: current phase's gate agent → next phase bridge
-    if (i < program.phases.length - 1) {
-      const nextPhaseIndex = i + 1;
-
-      // Create bridge FIFO
-      plan.fifos.push({
-        name: `fifo-bridge-${nextPhaseIndex}`,
-        path: join(state.sessionDir, `fifo-bridge-${nextPhaseIndex}`),
-        type: "bridge",
-        phaseIndex: nextPhaseIndex,
-      });
-
+    // Hook chain: current phase's gate agent -> next phase bridge
+    const nextPhaseIndex = resolveNextPhase(phase, i, program.phases.length);
+    if (nextPhaseIndex !== null) {
       // Install stop hooks on gate agents (only for eager phases)
       if (!isDynamic(phase.agents)) {
         const gateAgents = resolveGateAgents(phase, phase.agents);
         const isGateAll = phase.gate === "all";
 
+        // Build convergence opts if this phase cycles
+        const convergenceOpts = phase.convergence ? {
+          check: phase.convergence.check,
+          maxIterations: phase.convergence.maxIterations || 10,
+          nextPhase: nextPhaseIndex,
+          cyclePhase: typeof phase.next === "number" ? phase.next : i,
+        } : undefined;
+
         for (const gateAgent of gateAgents) {
           installStopHook(
             gateAgent.name,
             state.fleetProject,
-            "", // script generated in-place
+            "",
             state.sessionDir,
             nextPhaseIndex,
-            isGateAll ? { gateCount: gateAgents.length } : undefined,
+            {
+              ...(isGateAll ? { gateCount: gateAgents.length } : {}),
+              ...(convergenceOpts ? { convergence: convergenceOpts } : {}),
+            },
           );
 
           plan.hooks.push({
@@ -119,9 +121,42 @@ export function compile(
         }
       }
     }
+
+    // Install phase-level pipeline hooks (on all agents in this phase, eager only)
+    if (phase.hooks && phase.hooks.length > 0 && !isDynamic(phase.agents)) {
+      for (const agent of phase.agents) {
+        const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
+        // Fire-and-forget async — hooks are written before agents launch
+        installPipelineHooks(workerHooksDir, phase.hooks, state.programName).catch(() => {});
+      }
+    }
+
+    // Install per-agent pipeline hooks (eager only)
+    if (!isDynamic(phase.agents)) {
+      for (const agent of phase.agents) {
+        if (agent.hooks && agent.hooks.length > 0) {
+          const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
+          installPipelineHooks(workerHooksDir, agent.hooks, state.programName).catch(() => {});
+        }
+      }
+    }
   }
 
   return plan;
+}
+
+/**
+ * Resolve the next phase index for a phase.
+ * Returns null if this is the last phase (no transition needed).
+ */
+function resolveNextPhase(phase: Phase, currentIndex: number, totalPhases: number): number | null {
+  if (phase.next !== undefined) {
+    if (typeof phase.next === "number") return phase.next;
+    // String reference — resolve by name (would need phases array, for now use i+1)
+    return currentIndex + 1 < totalPhases ? currentIndex + 1 : null;
+  }
+  // Default: next sequential phase
+  return currentIndex + 1 < totalPhases ? currentIndex + 1 : null;
 }
 
 /**

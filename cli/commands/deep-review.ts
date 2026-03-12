@@ -79,9 +79,9 @@ async function runDeepReview(opts: Record<string, any>): Promise<void> {
   const claudeOps = process.env.CLAUDE_FLEET_DIR || join(HOME, ".claude-fleet");
   const drContextBin = join(claudeOps, "bin", "dr-context");
   if (existsSync(drContextBin)) {
-    const verify = Bun.spawnSync(["codesign", "-v", drContextBin], { stderr: "pipe" });
+    const verify = (Bun.spawnSync as any)(["codesign", "-v", drContextBin], { stderr: "pipe" });
     if (verify.exitCode !== 0) {
-      Bun.spawnSync(["codesign", "-s", "-", drContextBin], { stderr: "pipe" });
+      (Bun.spawnSync as any)(["codesign", "-s", "-", drContextBin], { stderr: "pipe" });
     }
   }
 
@@ -100,14 +100,14 @@ async function runV1DeepReview(opts: Record<string, any>): Promise<void> {
   // Ensure dr-context binary is signed (macOS)
   const drContextBin = join(claudeOps, "bin", "dr-context");
   if (existsSync(drContextBin)) {
-    const verify = Bun.spawnSync(["codesign", "-v", drContextBin], { stderr: "pipe" });
+    const verify = (Bun.spawnSync as any)(["codesign", "-v", drContextBin], { stderr: "pipe" });
     if (verify.exitCode !== 0) {
-      Bun.spawnSync(["codesign", "-s", "-", drContextBin], { stderr: "pipe" });
+      (Bun.spawnSync as any)(["codesign", "-s", "-", drContextBin], { stderr: "pipe" });
     }
   }
 
   // Validate environment
-  const tmuxCheck = Bun.spawnSync(["tmux", "info"], { stderr: "pipe", stdout: "pipe" });
+  const tmuxCheck = (Bun.spawnSync as any)(["tmux", "info"], { stderr: "pipe", stdout: "pipe" });
   if (tmuxCheck.exitCode !== 0) fail("tmux not running");
 
   if (!existsSync(join(templateDir, "worker-seed.md")) || !existsSync(join(templateDir, "coordinator-seed.md"))) {
@@ -166,7 +166,7 @@ async function runV1DeepReview(opts: Record<string, any>): Promise<void> {
   let reviewConfig = "";
   const searchRoots = [projectRoot];
 
-  const mainWorktreeResult = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], { cwd: projectRoot, stderr: "pipe" });
+  const mainWorktreeResult = (Bun.spawnSync as any)(["git", "worktree", "list", "--porcelain"], { cwd: projectRoot, stderr: "pipe" });
   const mainWorktree = mainWorktreeResult.stdout.toString().split("\n")[0]?.replace("worktree ", "").trim();
   if (mainWorktree && mainWorktree !== projectRoot) searchRoots.push(mainWorktree);
 
@@ -208,7 +208,7 @@ async function runV1DeepReview(opts: Record<string, any>): Promise<void> {
     } else {
       let resolvedRef = config.scope;
       if (config.scope === "uncommitted") {
-        const r = Bun.spawnSync(["git", "rev-parse", "--short=8", "HEAD"], { cwd: projectRoot, stderr: "pipe" });
+        const r = (Bun.spawnSync as any)(["git", "rev-parse", "--short=8", "HEAD"], { cwd: projectRoot, stderr: "pipe" });
         resolvedRef = r.stdout.toString().trim() || "wip";
       } else if (config.scope.startsWith("pr:")) {
         resolvedRef = `pr${config.scope.slice(3)}`;
@@ -216,7 +216,7 @@ async function runV1DeepReview(opts: Record<string, any>): Promise<void> {
         resolvedRef = config.scope.split("..").pop() || config.scope;
       }
 
-      const commitMsgResult = Bun.spawnSync(["git", "log", "-1", "--format=%s", resolvedRef], { cwd: projectRoot, stderr: "pipe" });
+      const commitMsgResult = (Bun.spawnSync as any)(["git", "log", "-1", "--format=%s", resolvedRef], { cwd: projectRoot, stderr: "pipe" });
       let commitMsg = commitMsgResult.stdout.toString().trim() || "review";
       commitMsg = commitMsg.replace(/^[a-z]*\([^)]*\):\s*/, "").replace(/^[a-z]*:\s*/, "");
       const firstTwo = commitMsg
@@ -226,7 +226,7 @@ async function runV1DeepReview(opts: Record<string, any>): Promise<void> {
         .split("-")
         .slice(0, 2)
         .join("-");
-      const shortHashResult = Bun.spawnSync(["git", "rev-parse", "--short=8", resolvedRef], { cwd: projectRoot, stderr: "pipe" });
+      const shortHashResult = (Bun.spawnSync as any)(["git", "rev-parse", "--short=8", resolvedRef], { cwd: projectRoot, stderr: "pipe" });
       const shortHash = shortHashResult.stdout.toString().trim().split("\n")[0] || resolvedRef.replace(/[^a-zA-Z0-9]+/g, "-");
       reviewSession = `dr-${worktreeName}-${firstTwo}-${shortHash}`;
     }
@@ -234,10 +234,10 @@ async function runV1DeepReview(opts: Record<string, any>): Promise<void> {
   }
 
   // Kill existing session
-  const hasSession = Bun.spawnSync(["tmux", "has-session", "-t", reviewSession], { stderr: "pipe" });
+  const hasSession = (Bun.spawnSync as any)(["tmux", "has-session", "-t", reviewSession], { stderr: "pipe" });
   if (hasSession.exitCode === 0) {
     console.log(`Killing existing session: ${reviewSession}`);
-    Bun.spawnSync(["tmux", "kill-session", "-t", reviewSession]);
+    (Bun.spawnSync as any)(["tmux", "kill-session", "-t", reviewSession]);
   }
 
   // Create session directory
@@ -320,7 +320,7 @@ async function runV1DeepReview(opts: Record<string, any>): Promise<void> {
   const drContext = join(ctx.claudeOps, "bin", "dr-context");
   if (existsSync(drContext)) {
     console.log(`Generating ${roleResult.totalWorkers} randomized orderings...`);
-    Bun.spawnSync([drContext, "shuffle", material.materialFile, ctx.sessionDir, String(roleResult.totalWorkers)], {
+    (Bun.spawnSync as any)([drContext, "shuffle", material.materialFile, ctx.sessionDir, String(roleResult.totalWorkers)], {
       cwd: ctx.projectRoot,
       stderr: "pipe",
       timeout: 60_000,

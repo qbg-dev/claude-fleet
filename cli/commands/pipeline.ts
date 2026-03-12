@@ -19,7 +19,6 @@ import { compile, savePipelineState } from "../../engine/program/compiler";
 import { generateManifest } from "../../engine/program/manifest";
 import { createTmuxSession, showManifest, launchAgents, launchInPlanningWindow } from "../../engine/program/tmux-layout";
 import { provisionWorkers, generateLaunchWrapper, generateCleanupScript } from "../../engine/program/fleet-provision";
-import { createBridgeFifos } from "../../engine/program/fifo";
 import { installStopHook } from "../../engine/program/hook-generator";
 
 const HOME = process.env.HOME || "/tmp";
@@ -79,7 +78,7 @@ export async function runPipeline(programName: string, opts: Record<string, any>
   const program: Program = programFn(programOpts);
 
   // Validate
-  const tmuxCheck = Bun.spawnSync(["tmux", "info"], { stderr: "pipe", stdout: "pipe" });
+  const tmuxCheck = (Bun.spawnSync as any)(["tmux", "info"], { stderr: "pipe", stdout: "pipe" });
   if (tmuxCheck.exitCode !== 0 && !opts.dryRun) {
     fail("tmux not running — required for pipeline execution");
   }
@@ -205,27 +204,14 @@ export async function runPipeline(programName: string, opts: Record<string, any>
     return;
   }
 
-  // Determine bridge phases (phases > 0 that need bridge windows)
-  const bridgePhases: Array<{ phaseIndex: number; label: string }> = [];
-  for (let i = 1; i < program.phases.length; i++) {
-    const prev = program.phases[i - 1];
-    bridgePhases.push({
-      phaseIndex: i,
-      label: `${prev.name} → ${program.phases[i].name}`,
-    });
-  }
-
-  // Create bridge FIFOs
-  createBridgeFifos(sessionDir, bridgePhases.map(bp => bp.phaseIndex));
-
   // Determine initial phase windows (Phase 0 only)
   const phase0Workers = plan.workers.filter(w => w.phaseIndex === 0);
   const phase0Windows = plan.windows.filter(w =>
     phase0Workers.some(worker => worker.window === w.name)
   );
 
-  // Create tmux session with manifest + bridge windows + Phase 0 windows
-  createTmuxSession(state, phase0Windows, bridgePhases);
+  // Create tmux session with manifest + Phase 0 windows (no bridge windows needed)
+  createTmuxSession(state, phase0Windows);
 
   // Provision Phase 0 workers
   if (phase0Workers.length > 0) {
@@ -237,7 +223,7 @@ export async function runPipeline(programName: string, opts: Record<string, any>
       generateLaunchWrapper(worker, state);
     }
 
-    // Install stop hooks on Phase 0 gate agents (→ Phase 1)
+    // Install stop hooks on Phase 0 gate agents (-> Phase 1)
     if (program.phases.length > 1) {
       const phase0 = program.phases[0];
       if (!phase0.gate || phase0.gate !== "all") {
@@ -276,7 +262,7 @@ export async function runPipeline(programName: string, opts: Record<string, any>
     console.log(`  Reviewing:   ${state.material.diffDesc} (${state.material.diffLines} lines)`);
   }
   console.log("");
-  console.log(`  Phases: ${program.phases.length} (hook-chained, no timeouts)`);
+  console.log(`  Phases: ${program.phases.length} (hook-chained)`);
   for (let i = 0; i < program.phases.length; i++) {
     const phase = program.phases[i];
     const status = i === 0 ? "← running now" : "← auto-launches on completion";
@@ -363,13 +349,13 @@ function buildSessionName(
 
   let resolvedRef = scope;
   if (scope === "uncommitted") {
-    const r = Bun.spawnSync(["git", "rev-parse", "--short=8", "HEAD"], { cwd: projectRoot, stderr: "pipe" });
+    const r = (Bun.spawnSync as any)(["git", "rev-parse", "--short=8", "HEAD"], { cwd: projectRoot, stderr: "pipe" });
     resolvedRef = r.stdout.toString().trim() || "wip";
   } else if (scope.includes("..")) {
     resolvedRef = scope.split("..").pop() || scope;
   }
 
-  const shortResult = Bun.spawnSync(["git", "rev-parse", "--short=8", resolvedRef], { cwd: projectRoot, stderr: "pipe" });
+  const shortResult = (Bun.spawnSync as any)(["git", "rev-parse", "--short=8", resolvedRef], { cwd: projectRoot, stderr: "pipe" });
   const shortHash = shortResult.stdout.toString().trim().split("\n")[0] || resolvedRef.replace(/[^a-zA-Z0-9]+/g, "-");
 
   return `${programName.slice(0, 3)}-${worktreeName}-${shortHash}`.slice(0, 50);

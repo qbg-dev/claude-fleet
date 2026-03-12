@@ -21,10 +21,10 @@ import type {
 import { isDynamic } from "./types";
 import { compilePhase, savePipelineState } from "./compiler";
 import { provisionWorkers, generateLaunchWrapper, generateCleanupScript } from "./fleet-provision";
-import { installStopHook } from "./hook-generator";
+import { installStopHook, installPipelineHooks } from "./hook-generator";
 import { addWindowsToSession, launchAgents, launchInPlanningWindow } from "./tmux-layout";
 import { updateManifest } from "./manifest";
-import { createBridgeFifos } from "./fifo";
+import { FLEET_DATA } from "../../cli/lib/paths";
 
 /**
  * Run a bridge transition for a specific phase.
@@ -51,7 +51,15 @@ async function runBridge(sessionDir: string, phaseIndex: number): Promise<void> 
     throw new Error(`Phase ${phaseIndex} not found in program (${program.phases.length} phases)`);
   }
 
-  console.log(`[bridge] Phase ${phaseIndex}: ${phase.name}`);
+  // Track cycle count for cyclic phases
+  if (!state.cycleCount) state.cycleCount = {};
+  if (state.cycleCount[phaseIndex] !== undefined) {
+    state.cycleCount[phaseIndex]++;
+    console.log(`[bridge] Phase ${phaseIndex}: ${phase.name} (cycle ${state.cycleCount[phaseIndex]})`);
+  } else {
+    state.cycleCount[phaseIndex] = 0;
+    console.log(`[bridge] Phase ${phaseIndex}: ${phase.name}`);
+  }
 
   // 1. Run prelaunch actions
   if (phase.prelaunch) {
@@ -87,7 +95,7 @@ async function runBridge(sessionDir: string, phaseIndex: number): Promise<void> 
     return;
   }
 
-  // 3. Compile phase → workers, windows, seeds
+  // 3. Compile phase -> workers, windows, seeds
   console.log(`[bridge] Compiling ${agents.length} agents...`);
   const compiled = compilePhase(phaseIndex, agents, phase, state);
 
@@ -101,13 +109,18 @@ async function runBridge(sessionDir: string, phaseIndex: number): Promise<void> 
   }
 
   // 6. Install stop hooks (if there's a next phase)
-  if (phaseIndex < program.phases.length - 1) {
-    const nextPhaseIndex = phaseIndex + 1;
+  const nextPhaseIndex = resolveNextPhase(phase, phaseIndex, program.phases.length);
+  if (nextPhaseIndex !== null) {
     const gateAgents = resolveGateAgents(phase, agents);
     const isGateAll = phase.gate === "all";
 
-    // Create bridge FIFO for next phase
-    createBridgeFifos(state.sessionDir, [nextPhaseIndex]);
+    // Build convergence opts if this phase cycles
+    const convergenceOpts = phase.convergence ? {
+      check: phase.convergence.check,
+      maxIterations: phase.convergence.maxIterations || 10,
+      nextPhase: nextPhaseIndex,
+      cyclePhase: typeof phase.next === "number" ? phase.next : phaseIndex,
+    } : undefined;
 
     for (const gateAgent of gateAgents) {
       installStopHook(
@@ -116,8 +129,25 @@ async function runBridge(sessionDir: string, phaseIndex: number): Promise<void> 
         "",
         state.sessionDir,
         nextPhaseIndex,
-        isGateAll ? { gateCount: gateAgents.length } : undefined,
+        {
+          ...(isGateAll ? { gateCount: gateAgents.length } : {}),
+          ...(convergenceOpts ? { convergence: convergenceOpts } : {}),
+        },
       );
+    }
+  }
+
+  // 6b. Install phase-level and per-agent pipeline hooks
+  if (phase.hooks && phase.hooks.length > 0) {
+    for (const agent of agents) {
+      const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
+      await installPipelineHooks(workerHooksDir, phase.hooks, state.programName);
+    }
+  }
+  for (const agent of agents) {
+    if (agent.hooks && agent.hooks.length > 0) {
+      const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
+      await installPipelineHooks(workerHooksDir, agent.hooks, state.programName);
     }
   }
 
@@ -159,6 +189,17 @@ async function runBridge(sessionDir: string, phaseIndex: number): Promise<void> 
 
   console.log(`[bridge] Phase ${phaseIndex} launched: ${agents.length} agents`);
   console.log(`[bridge] Session: ${state.tmuxSession}`);
+}
+
+/**
+ * Resolve the next phase index for a phase.
+ */
+function resolveNextPhase(phase: Phase, currentIndex: number, totalPhases: number): number | null {
+  if (phase.next !== undefined) {
+    if (typeof phase.next === "number") return phase.next;
+    return currentIndex + 1 < totalPhases ? currentIndex + 1 : null;
+  }
+  return currentIndex + 1 < totalPhases ? currentIndex + 1 : null;
 }
 
 /**
@@ -217,7 +258,7 @@ async function runPrelaunchAction(
         if (existsSync(drContext) && state.material) {
           const workerCount = state.roleResult?.totalWorkers || 8;
           console.log(`[bridge]   Generating ${workerCount} randomized orderings...`);
-          Bun.spawnSync(
+          (Bun.spawnSync as any)(
             [drContext, "shuffle", state.material.materialFile, state.sessionDir, String(workerCount)],
             { cwd: state.projectRoot, stderr: "pipe", timeout: 60_000 },
           );

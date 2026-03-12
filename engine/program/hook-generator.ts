@@ -1,28 +1,37 @@
 /**
- * Hook generator — creates parameterized Stop hook scripts from a generic template.
+ * Hook generator — creates Stop hook scripts for phase transitions.
  *
- * Each agent that gates a subsequent phase gets a Stop hook that either:
- *   1. Writes to a FIFO (unblocking the pre-created bridge window), or
- *   2. Falls back to running the bridge directly in a new tmux window.
+ * Stop hooks run `bun bridge.ts` directly as a background process.
+ * No FIFOs, no sidecar files, no bridge windows.
  *
- * For gate:"all" phases, each agent writes a .done marker file. The last
- * agent's hook checks the marker count before unblocking the FIFO.
+ * For gate:"all" phases, each agent writes a .done marker file.
+ * The last agent's hook checks the count before launching bridge.
+ *
+ * For cyclic phases, the hook checks convergence before deciding
+ * whether to cycle back or proceed to the next phase.
  */
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { FLEET_DATA } from "../../cli/lib/paths";
+import type { PipelineHook } from "./types";
+import { getHooksIO } from "./hooks-bridge";
 
-const HOME = process.env.HOME || "/tmp";
+const FLEET_DIR_DEFAULT = join(process.env.HOME || "/tmp", ".claude-fleet");
+
+let _phCounter = 0;
 
 /**
- * Generate a Stop hook script for a single agent → next phase transition.
+ * Generate a Stop hook script for a single agent -> next phase transition.
  * Returns the path to the generated script.
  */
 export function generateStopHook(
   agentName: string,
   phaseIndex: number,
   sessionDir: string,
-  opts?: { gateCount?: number; gateAgent?: string },
+  opts?: {
+    gateCount?: number;
+    convergence?: { check: string; maxIterations: number; nextPhase: number; cyclePhase: number };
+  },
 ): string {
   const hooksDir = join(sessionDir, "hooks", agentName);
   mkdirSync(hooksDir, { recursive: true });
@@ -30,17 +39,13 @@ export function generateStopHook(
   const scriptName = `phase-${phaseIndex}-stop.sh`;
   const scriptPath = join(hooksDir, scriptName);
 
-  // Write sidecar files
-  writeFileSync(join(hooksDir, "session-dir.txt"), sessionDir);
-  writeFileSync(join(hooksDir, "phase-index.txt"), String(phaseIndex));
-
   let script: string;
 
-  if (opts?.gateCount && opts.gateCount > 1) {
-    // gate:"all" — done-marker counting
+  if (opts?.convergence) {
+    script = generateConvergenceStopHook(agentName, phaseIndex, sessionDir, opts.convergence);
+  } else if (opts?.gateCount && opts.gateCount > 1) {
     script = generateGateAllStopHook(agentName, phaseIndex, sessionDir, opts.gateCount);
   } else {
-    // Standard: single agent gates next phase
     script = generateStandardStopHook(agentName, phaseIndex, sessionDir);
   }
 
@@ -49,7 +54,7 @@ export function generateStopHook(
 }
 
 /**
- * Standard Stop hook: unblock bridge FIFO or run bridge directly.
+ * Standard Stop hook: launch bridge directly as background process.
  */
 function generateStandardStopHook(
   agentName: string,
@@ -57,41 +62,19 @@ function generateStandardStopHook(
   sessionDir: string,
 ): string {
   return `#!/usr/bin/env bash
-# Auto-generated: ${agentName} Stop -> Bridge Phase ${phaseIndex}
-# Program API hook — do not edit manually.
+# ${agentName} Stop -> Bridge Phase ${phaseIndex}
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SESSION_DIR="$(cat "$SCRIPT_DIR/session-dir.txt")"
-PHASE="$(cat "$SCRIPT_DIR/phase-index.txt")"
-FIFO="$SESSION_DIR/fifo-bridge-$PHASE"
-
-if [ -p "$FIFO" ]; then
-  echo "go" > "$FIFO"
-  echo "[hook] Bridge-$PHASE FIFO triggered (${agentName} completed)"
-else
-  # Fallback: run bridge directly in tmux
-  FLEET_DIR="\${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
-  echo "[hook] No FIFO at $FIFO, running bridge directly" >&2
-  TMUX_SESSION=""
-  if [ -f "$SESSION_DIR/pipeline-state.json" ]; then
-    TMUX_SESSION="$(python3 -c "import json; print(json.load(open('$SESSION_DIR/pipeline-state.json'))['tmuxSession'])" 2>/dev/null || true)"
-  fi
-  BRIDGE_CMD="bun '$FLEET_DIR/engine/program/bridge.ts' '$SESSION_DIR' '$PHASE' 2>&1 | tee -a '$SESSION_DIR/bridge-$PHASE.log'"
-  if [ -n "$TMUX_SESSION" ] && tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    tmux new-window -d -t "$TMUX_SESSION" -n "bridge-$PHASE" bash -c "$BRIDGE_CMD; echo ''; echo '[bridge] Done. Press Enter to close.'; read" &
-  else
-    nohup bash -c "$BRIDGE_CMD" &
-  fi
-fi
-
-exit 0  # allow stop
+FLEET_DIR="\${CLAUDE_FLEET_DIR:-${FLEET_DIR_DEFAULT}}"
+SESSION_DIR="${sessionDir}"
+nohup bun "$FLEET_DIR/engine/program/bridge.ts" "$SESSION_DIR" "${phaseIndex}" \\
+  >> "$SESSION_DIR/bridge-${phaseIndex}.log" 2>&1 &
+exit 0
 `;
 }
 
 /**
  * Gate-all Stop hook: each agent writes a done marker.
- * The last one checks the count and unblocks the FIFO.
+ * The last one launches the bridge.
  */
 function generateGateAllStopHook(
   agentName: string,
@@ -100,52 +83,51 @@ function generateGateAllStopHook(
   expectedCount: number,
 ): string {
   return `#!/usr/bin/env bash
-# Auto-generated: ${agentName} Stop -> gate-all check for Phase ${phaseIndex}
-# Writes done marker. When all ${expectedCount} agents finish, unblocks bridge.
+# ${agentName} Stop -> gate-all check for Phase ${phaseIndex}
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SESSION_DIR="$(cat "$SCRIPT_DIR/session-dir.txt")"
-PHASE="$(cat "$SCRIPT_DIR/phase-index.txt")"
-EXPECTED=${expectedCount}
-
-# Write done marker for this agent
+SESSION_DIR="${sessionDir}"
 echo "done" > "$SESSION_DIR/${agentName}.done"
-echo "[hook] ${agentName} done marker written"
-
-# Count done markers for this phase
-ACTUAL=$(ls "$SESSION_DIR"/phase-${phaseIndex}-*.done "$SESSION_DIR"/*.done 2>/dev/null | wc -l | tr -d ' ')
-
-echo "[hook] Done markers: $ACTUAL / $EXPECTED"
-
-if [ "$ACTUAL" -ge "$EXPECTED" ]; then
-  echo "[hook] All agents complete. Triggering bridge-$PHASE..."
-  FIFO="$SESSION_DIR/fifo-bridge-$PHASE"
-  if [ -p "$FIFO" ]; then
-    echo "go" > "$FIFO"
-    echo "[hook] Bridge-$PHASE FIFO triggered"
-  else
-    FLEET_DIR="\${CLAUDE_FLEET_DIR:-$HOME/.claude-fleet}"
-    BRIDGE_CMD="bun '$FLEET_DIR/engine/program/bridge.ts' '$SESSION_DIR' '$PHASE' 2>&1 | tee -a '$SESSION_DIR/bridge-$PHASE.log'"
-    TMUX_SESSION=""
-    if [ -f "$SESSION_DIR/pipeline-state.json" ]; then
-      TMUX_SESSION="$(python3 -c "import json; print(json.load(open('$SESSION_DIR/pipeline-state.json'))['tmuxSession'])" 2>/dev/null || true)"
-    fi
-    if [ -n "$TMUX_SESSION" ] && tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-      tmux new-window -d -t "$TMUX_SESSION" -n "bridge-$PHASE" bash -c "$BRIDGE_CMD; echo ''; echo '[bridge] Done.'; read" &
-    else
-      nohup bash -c "$BRIDGE_CMD" &
-    fi
-  fi
+ACTUAL=$(ls "$SESSION_DIR"/*.done 2>/dev/null | wc -l | tr -d ' ')
+if [ "$ACTUAL" -ge ${expectedCount} ]; then
+  FLEET_DIR="\${CLAUDE_FLEET_DIR:-${FLEET_DIR_DEFAULT}}"
+  nohup bun "$FLEET_DIR/engine/program/bridge.ts" "$SESSION_DIR" "${phaseIndex}" \\
+    >> "$SESSION_DIR/bridge-${phaseIndex}.log" 2>&1 &
 fi
+exit 0
+`;
+}
 
-exit 0  # allow stop
+/**
+ * Convergence Stop hook: check convergence condition before deciding
+ * whether to cycle back or proceed to the next phase.
+ */
+function generateConvergenceStopHook(
+  agentName: string,
+  phaseIndex: number,
+  sessionDir: string,
+  convergence: { check: string; maxIterations: number; nextPhase: number; cyclePhase: number },
+): string {
+  return `#!/usr/bin/env bash
+# ${agentName} Stop -> convergence check for Phase ${phaseIndex}
+set -euo pipefail
+SESSION_DIR="${sessionDir}"
+FLEET_DIR="\${CLAUDE_FLEET_DIR:-${FLEET_DIR_DEFAULT}}"
+CYCLE=$(cat "$SESSION_DIR/cycle-${phaseIndex}.count" 2>/dev/null || echo 0)
+echo $((CYCLE + 1)) > "$SESSION_DIR/cycle-${phaseIndex}.count"
+if [ "$CYCLE" -ge ${convergence.maxIterations} ] || (${convergence.check}); then
+  nohup bun "$FLEET_DIR/engine/program/bridge.ts" "$SESSION_DIR" "${convergence.nextPhase}" \\
+    >> "$SESSION_DIR/bridge-${convergence.nextPhase}.log" 2>&1 &
+else
+  nohup bun "$FLEET_DIR/engine/program/bridge.ts" "$SESSION_DIR" "${convergence.cyclePhase}" \\
+    >> "$SESSION_DIR/bridge-${convergence.cyclePhase}.log" 2>&1 &
+fi
+exit 0
 `;
 }
 
 /**
  * Install a generated Stop hook into a fleet worker's hooks directory.
- * This writes hooks.json + the script file into the worker's fleet dir.
+ * Writes hooks.json + the script file into the worker's fleet dir.
  */
 export function installStopHook(
   workerName: string,
@@ -153,29 +135,29 @@ export function installStopHook(
   _hookScriptPath: string,
   sessionDir: string,
   phaseIndex: number,
-  opts?: { gateCount?: number },
+  opts?: {
+    gateCount?: number;
+    convergence?: { check: string; maxIterations: number; nextPhase: number; cyclePhase: number };
+  },
 ): void {
   const workerHooksDir = join(FLEET_DATA, project, workerName, "hooks");
   mkdirSync(workerHooksDir, { recursive: true });
 
-  // Generate or copy the stop hook script
+  // Generate the stop hook script
   const scriptName = `phase-${phaseIndex}-stop.sh`;
   const destScript = join(workerHooksDir, scriptName);
 
-  // Generate the script content directly (rather than copying)
   let scriptContent: string;
-  if (opts?.gateCount && opts.gateCount > 1) {
+  if (opts?.convergence) {
+    scriptContent = generateConvergenceStopHook(workerName, phaseIndex, sessionDir, opts.convergence);
+  } else if (opts?.gateCount && opts.gateCount > 1) {
     scriptContent = generateGateAllStopHook(workerName, phaseIndex, sessionDir, opts.gateCount);
   } else {
     scriptContent = generateStandardStopHook(workerName, phaseIndex, sessionDir);
   }
   writeFileSync(destScript, scriptContent, { mode: 0o755 });
 
-  // Write sidecar files
-  writeFileSync(join(workerHooksDir, "session-dir.txt"), sessionDir);
-  writeFileSync(join(workerHooksDir, "phase-index.txt"), String(phaseIndex));
-
-  // Write hooks.json
+  // Write hooks.json using shared library format
   const hooks = {
     hooks: [{
       id: "dh-1",
@@ -193,4 +175,51 @@ export function installStopHook(
   };
 
   writeFileSync(join(workerHooksDir, "hooks.json"), JSON.stringify(hooks, null, 2));
+}
+
+/**
+ * Install pipeline hooks (phase-level or agent-level) into a worker's hooks dir.
+ * Converts PipelineHook[] into DynamicHook format and writes to hooks.json.
+ */
+export async function installPipelineHooks(
+  hooksDir: string,
+  hooks: PipelineHook[],
+  registeredBy: string,
+): Promise<void> {
+  const { addHookToFile, writeScriptFile } = await getHooksIO();
+
+  for (const hook of hooks) {
+    const id = `ph-${++_phCounter}`;
+    const desc = hook.description || `Pipeline ${hook.event} hook`;
+
+    const dynHook: Record<string, unknown> = {
+      id,
+      event: hook.event,
+      description: desc,
+      blocking: hook.blocking ?? (hook.event === "Stop"),
+      completed: false,
+      added_at: new Date().toISOString(),
+      registered_by: registeredBy,
+      ownership: "creator",
+      status: "active",
+      lifetime: "persistent",
+    };
+
+    if (hook.check) dynHook.check = hook.check;
+
+    if (hook.command) {
+      const filename = writeScriptFile(hooksDir, id, desc, hook.command);
+      dynHook.script_path = filename;
+    }
+
+    if (hook.prompt) {
+      dynHook.content = hook.prompt;
+    }
+
+    if (hook.matcher) {
+      dynHook.condition = { tool: hook.matcher };
+    }
+
+    addHookToFile(hooksDir, dynHook);
+  }
 }

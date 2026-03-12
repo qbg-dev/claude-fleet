@@ -4,8 +4,7 @@
  *
  * A Program is a declarative description of phases, agents, hooks,
  * and bridge actions. The compiler walks it to produce:
- *   - Stop hook scripts (parameterized from a generic template)
- *   - FIFO named pipes for inter-phase gating
+ *   - Stop hook scripts (direct bridge invocation, no FIFOs)
  *   - Seed prompts (from templates or inline)
  *   - Launch wrappers (per agent)
  *   - Fleet worker directories
@@ -13,7 +12,34 @@
  *   - Manifest (human-readable pipeline overview)
  */
 
-// ── Program Declaration ────────────────────────────────────────
+// ── Hook types (re-exported from claude-hooks for convenience) ───
+
+export type HookEvent =
+  | "SessionStart" | "SessionEnd" | "UserPromptSubmit"
+  | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+  | "PermissionRequest" | "Notification" | "Stop"
+  | "SubagentStart" | "SubagentStop" | "TeammateIdle"
+  | "TaskCompleted" | "InstructionsLoaded" | "ConfigChange"
+  | "PreCompact" | "WorktreeCreate" | "WorktreeRemove";
+
+export interface PipelineHook {
+  event: HookEvent;
+  type: "command" | "prompt" | "agent";
+  command?: string;       // for type:"command"
+  prompt?: string;        // for type:"prompt"/"agent"
+  matcher?: string;       // regex for tool names (PreToolUse/PostToolUse)
+  blocking?: boolean;     // gate vs inject
+  check?: string;         // bash command: exit 0=pass, non-zero=block
+  description?: string;
+}
+
+export interface ConvergenceSpec {
+  check: string;              // exit 0 = converged (stop cycling)
+  maxIterations?: number;     // safety valve
+  handler?: string;           // exported function name for complex checks
+}
+
+// ── Program Declaration ────────────────────────────────────
 
 export interface Program {
   name: string;
@@ -44,6 +70,12 @@ export interface Phase {
   layout?: PhaseLayout;
   /** Actions to run during bridge before launching this phase's agents */
   prelaunch?: BridgeAction[];
+  /** Hooks active during this phase (installed on all agents in this phase) */
+  hooks?: PipelineHook[];
+  /** Override default i+1 transition (enables cycles and branching) */
+  next?: number | string;
+  /** For cyclic phases: stop condition */
+  convergence?: ConvergenceSpec;
 }
 
 export interface PhaseLayout {
@@ -58,6 +90,8 @@ export interface AgentSpec {
   seed: SeedSpec;
   window?: string;
   vars?: Record<string, string>;
+  /** Per-agent hooks (e.g. read-only guard on review workers) */
+  hooks?: PipelineHook[];
 }
 
 export type SeedSpec =
@@ -97,8 +131,6 @@ export interface CompiledPlan {
   workers: CompiledWorker[];
   /** All hooks to write */
   hooks: CompiledHook[];
-  /** All FIFOs to create */
-  fifos: CompiledFifo[];
   /** Session directory path */
   sessionDir: string;
   /** Path to the program file (for bridge re-import) */
@@ -152,19 +184,10 @@ export interface CompiledHook {
   targetPhaseIndex: number;
   /** Path to the generated hook script */
   scriptPath: string;
-  /** Session dir sidecar path */
+  /** Session dir path */
   sessionDirPath: string;
   /** For gate:"all" — expected done marker count */
   gateCount?: number;
-}
-
-export interface CompiledFifo {
-  name: string;
-  path: string;
-  /** "bridge" or "agent" — determines the waiting script type */
-  type: "bridge" | "agent";
-  /** Phase index this FIFO gates */
-  phaseIndex: number;
 }
 
 // ── Pipeline State (persisted across phases) ───────────────────
@@ -209,6 +232,9 @@ export interface ProgramPipelineState {
     hasContent: boolean;
     changedFiles: string[];
   };
+
+  /** Tracks iterations for cyclic phases */
+  cycleCount?: Record<number, number>;
 
   // ── Deep-review specific state (carried from legacy PipelineState) ──
   /** Role designer result (populated after Phase 0) */
