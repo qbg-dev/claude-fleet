@@ -405,6 +405,30 @@ export function register(parent: Command): void {
         }
       }
 
+      // 11. Tmux prefix key (optional — recommend prefix Y for fleet operations)
+      info("Tmux prefix key...");
+      const tmuxConf = join(HOME, ".tmux.conf");
+      const tmuxConfContent = existsSync(tmuxConf) ? readFileSync(tmuxConf, "utf-8") : "";
+      const hasCustomPrefix = /set\s+(-g\s+)?prefix\b/.test(tmuxConfContent);
+      const hasPrefixY = /set\s+(-g\s+)?prefix2?\s+C-y/i.test(tmuxConfContent);
+
+      if (hasPrefixY) {
+        ok("Tmux prefix Y already configured");
+      } else if (hasCustomPrefix) {
+        // User has a custom prefix — suggest adding prefix2 (secondary prefix)
+        info("Custom tmux prefix detected — skipping prefix Y (add manually if desired)");
+        console.log(`    Add to ~/.tmux.conf: set -g prefix2 C-y`);
+      } else {
+        // No custom prefix — offer to add prefix Y as secondary
+        info("Recommend: Ctrl-Y as secondary tmux prefix (convenient for fleet ops)");
+        console.log(`    Fleet uses tmux heavily — a second prefix key avoids conflicts with Ctrl-B.`);
+        console.log(`    Adding prefix2 C-y to ~/.tmux.conf (your existing prefix is preserved)...`);
+        const prefixLine = '\n# Added by fleet setup — secondary prefix for fleet operations\nset -g prefix2 C-y\nbind C-y send-prefix -2\n';
+        appendFileSync(tmuxConf, prefixLine);
+        ok("Added prefix2 C-y to ~/.tmux.conf");
+        console.log(`    Reload: tmux source-file ~/.tmux.conf`);
+      }
+
       console.log("");
       ok("Fleet setup complete!");
       console.log("");

@@ -294,13 +294,15 @@ exec claude --model ${config.workerModel} --dangerously-skip-permissions "$(cat 
 cd "${ctx.workDir}"
 ${vFleetEnv ? vFleetEnv + vPrExport : ""}
 
-# Wait for coordinator to finish
-echo "Verifier (${vtype}) waiting for coordinator to complete..."
-while [ ! -f "${ctx.sessionDir}/review.done" ]; do
-  sleep 15
-  echo "  ... still waiting ($(date +%H:%M:%S))"
-done
-echo "Coordinator done. Starting ${vtype} verification."
+# Wait for coordinator completion (FIFO-gated, no polling)
+FIFO="${ctx.sessionDir}/fifo-verifier-${vtype}"
+echo "═══ Verifier (${vtype}) ═══"
+echo "Waiting for coordinator Stop hook..."
+echo "Blocked on: $FIFO"
+echo ""
+mkfifo "$FIFO" 2>/dev/null || true
+cat "$FIFO" > /dev/null
+echo "$(date '+%H:%M:%S') Hook received. Launching ${vtype} verification..."
 
 claude --model ${config.workerModel} --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/verifier-${vtype}-seed.md')"
 

@@ -11,7 +11,7 @@
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { join, basename } from "node:path";
-import type { PipelineState } from "./types";
+import type { PipelineState, DeepReviewConfig, MaterialResult, SessionContext, RoleDesignerResult } from "./types";
 import { parseRolesResult, fallbackResult } from "./roles";
 import { generateImproverSeed, parseImproverResult } from "./review-improver";
 import { runContextPrePass } from "./context";
@@ -121,6 +121,97 @@ exec claude --model ${model} --dangerously-skip-permissions "$(cat '${seedPath}'
   const wrapperPath = join(sessionDir, `run-${workerName}.sh`);
   writeFileSync(wrapperPath, script, { mode: 0o755 });
   return wrapperPath;
+}
+
+// ── Manifest generation ───────────────────────────────────────────
+
+function generateManifest(
+  config: DeepReviewConfig,
+  ctx: SessionContext,
+  roleResult: RoleDesignerResult,
+  material: MaterialResult,
+): void {
+  const numWorkerWindows = Math.ceil(roleResult.totalWorkers / 4);
+  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+
+  // Build focus area summary
+  const focusCounts: Record<string, number> = {};
+  for (const fa of roleResult.focusAreas) {
+    focusCounts[fa] = (focusCounts[fa] || 0) + 1;
+  }
+  const focusSummary = Object.entries(focusCounts)
+    .map(([name, count]) => `    ${name} (×${count})`)
+    .join("\n");
+
+  // Build window list
+  let windowList = `  :planning       Phase 0 agents (role designer, improver)\n`;
+  windowList += `  :coordinator    Coordinator agent (${config.coordModel})\n`;
+  for (let w = 1; w <= numWorkerWindows; w++) {
+    const first = (w - 1) * 4 + 1;
+    const last = Math.min(w * 4, roleResult.totalWorkers);
+    windowList += `  :workers-${w}      Workers ${first}-${last}\n`;
+  }
+  if (config.verify) {
+    windowList += `  :verifiers      chrome / curl / test / script (FIFO-gated)\n`;
+  }
+
+  // Build hooks list
+  let hooksList = `  1. role-designer Stop    → bridge-0 (provisions improver)\n`;
+  hooksList += `  2. improver Stop         → bridge-1 (provisions workers)\n`;
+  if (config.verify) {
+    hooksList += `  3. coordinator Stop      → fifo-verifier-* (unblocks verifiers)\n`;
+    hooksList += `  4-7. verifier-* Stop     → done markers\n`;
+  }
+
+  const manifest = `═══════════════════════════════════════════════════
+  PIPELINE MANIFEST — deep-review
+  Session: ${ctx.reviewSession}
+  Created: ${now}
+═══════════════════════════════════════════════════
+
+MATERIAL
+────────
+  Scope:     ${material.diffDesc}
+  Lines:     ${material.diffLines}
+  Type:      ${material.materialType}
+${config.spec ? `  Spec:      ${config.spec}\n` : ""}
+PHASES
+──────
+  Phase 0: Planning
+    Agents:  role-designer (Opus), review-improver (Opus)
+    Result:  ${roleResult.totalWorkers} workers across ${roleResult.numFocus} roles
+
+  Phase 1: Review
+    Agents:  ${roleResult.totalWorkers} workers (${config.workerModel}), 1 coordinator (${config.coordModel})${!config.noJudge ? ", 1 judge" : ""}
+    Roles:
+${focusSummary}
+${config.verify ? `
+  Phase 2: Verification
+    Agents:  4 verifiers (chrome, curl, test, script)
+    Gating:  FIFO — coordinator Stop hook unblocks verifiers
+` : ""}
+WINDOWS
+───────
+${windowList}
+HOOKS
+─────
+${hooksList}
+FILES
+─────
+  State:    ${ctx.sessionDir}/pipeline-state.json
+  Report:   ${ctx.sessionDir}/report.md
+  Cleanup:  ${ctx.sessionDir}/cleanup-fleet.sh
+  Logs:     ${ctx.sessionDir}/bridge-*.log
+  Manifest: ${ctx.sessionDir}/manifest.txt
+
+ATTACH
+──────
+  tmux switch-client -t ${ctx.reviewSession}
+  tmux a -t ${ctx.reviewSession}
+`;
+
+  writeFileSync(join(ctx.sessionDir, "manifest.txt"), manifest);
+  console.log("[bridge] Manifest generated → manifest.txt");
 }
 
 // ── Phase 0 → Phase 0.5 bridge ────────────────────────────────────
@@ -325,6 +416,16 @@ async function bridgePhase05ToWorkers(sessionDir: string): Promise<void> {
   // Generate launch wrappers
   generateLaunchWrappers(config, ctx, roleResult);
 
+  // Register coordinator Stop hook (triggers verifier FIFOs)
+  if (config.verify && ctx.coordinatorName) {
+    const coordStopScript = join(FLEET_DIR, "scripts/deep-review/coordinator-stop.sh");
+    writeStopHook(ctx.coordinatorName, ctx.fleetProject, coordStopScript, sessionDir);
+    console.log("[bridge] Registered coordinator Stop hook → verifier FIFOs");
+  }
+
+  // Generate manifest
+  generateManifest(config, ctx, roleResult, material);
+
   // Create tmux session windows and launch
   createTmuxSession(config, ctx, roleResult);
   launchWorkers(config, ctx, roleResult);
@@ -357,31 +458,33 @@ import('${provisioningModule}').then(m => m.cleanupReviewFleet('${ctx.sessionHas
   console.log(`[bridge] Workers: ${roleResult.totalWorkers} | Coordinator: ${ctx.coordinatorName}`);
 }
 
-// ── CLI entry point ────────────────────────────────────────────────
+// ── CLI entry point (only when run directly, not when imported) ───
 
-const command = process.argv[2];
-const sessionDir = process.argv[3];
+if (import.meta.main) {
+  const command = process.argv[2];
+  const sessionDir = process.argv[3];
 
-if (!command || !sessionDir) {
-  console.error("Usage: bun pipeline-bridge.ts <phase0-to-05|phase05-to-workers> <session-dir>");
-  process.exit(1);
-}
-
-if (!existsSync(join(sessionDir, "pipeline-state.json"))) {
-  console.error(`Pipeline state not found: ${sessionDir}/pipeline-state.json`);
-  process.exit(1);
-}
-
-try {
-  if (command === "phase0-to-05") {
-    await bridgePhase0ToPhase05(sessionDir);
-  } else if (command === "phase05-to-workers") {
-    await bridgePhase05ToWorkers(sessionDir);
-  } else {
-    console.error(`Unknown command: ${command}`);
+  if (!command || !sessionDir) {
+    console.error("Usage: bun pipeline-bridge.ts <phase0-to-05|phase05-to-workers> <session-dir>");
     process.exit(1);
   }
-} catch (err) {
-  console.error(`[bridge] FATAL: ${err}`);
-  process.exit(1);
+
+  if (!existsSync(join(sessionDir, "pipeline-state.json"))) {
+    console.error(`Pipeline state not found: ${sessionDir}/pipeline-state.json`);
+    process.exit(1);
+  }
+
+  try {
+    if (command === "phase0-to-05") {
+      await bridgePhase0ToPhase05(sessionDir);
+    } else if (command === "phase05-to-workers") {
+      await bridgePhase05ToWorkers(sessionDir);
+    } else {
+      console.error(`Unknown command: ${command}`);
+      process.exit(1);
+    }
+  } catch (err) {
+    console.error(`[bridge] FATAL: ${err}`);
+    process.exit(1);
+  }
 }

@@ -402,10 +402,45 @@ exec claude --model opus --dangerously-skip-permissions "$(cat '${seedPath}')"
   const launchPath = join(sessionDir, `run-${roleDesignerName}.sh`);
   writeFileSync(launchPath, launchScript, { mode: 0o755 });
 
-  // Create tmux session with planning window
+  // Create tmux session with planning window + bridge windows
   console.log(`Creating tmux session: ${reviewSession}`);
   Bun.spawnSync(["tmux", "new-session", "-d", "-s", reviewSession, "-n", "planning", "-c", projectRoot], { stderr: "pipe" });
-  Bun.sleepSync(500);
+  Bun.sleepSync(300);
+
+  // Pre-create bridge windows (FIFO-gated, unblocked by stop hooks)
+  const bridgePhases = [
+    { name: "bridge-0", label: "Phase 0 → 0.5", command: "phase0-to-05" },
+    { name: "bridge-1", label: "Phase 0.5 → Workers", command: "phase05-to-workers" },
+  ];
+  for (const bp of bridgePhases) {
+    const fifoPath = join(sessionDir, `fifo-${bp.name}`);
+    const logPath = join(sessionDir, `${bp.name}.log`);
+    Bun.spawnSync(["tmux", "new-window", "-d", "-t", reviewSession, "-n", bp.name, "-c", projectRoot], { stderr: "pipe" });
+    Bun.sleepSync(100);
+    // Get pane ID for this bridge window
+    const bpResult = Bun.spawnSync(["tmux", "list-panes", "-t", `${reviewSession}:${bp.name}`, "-F", "#{pane_id}"], { stderr: "pipe" });
+    const bpPane = bpResult.stdout.toString().trim().split("\n")[0];
+    if (bpPane) {
+      // Send FIFO-gated bridge wrapper to the pane
+      const wrapper = [
+        `echo "═══ Bridge: ${bp.label} ═══"`,
+        `echo "Waiting for Stop hook to trigger..."`,
+        `echo "Blocked on: ${fifoPath}"`,
+        `echo ""`,
+        `mkfifo '${fifoPath}' 2>/dev/null || true`,
+        `cat '${fifoPath}' > /dev/null`,
+        `echo "$(date '+%H:%M:%S') Hook received. Running bridge..."`,
+        `echo ""`,
+        `bun '${claudeOps}/cli/lib/deep-review/pipeline-bridge.ts' ${bp.command} '${sessionDir}' 2>&1 | tee -a '${logPath}'`,
+        `echo ""`,
+        `echo "$(date '+%H:%M:%S') Bridge complete."`,
+        `echo "Press Enter to close."`,
+        `read`,
+      ].join(" && ");
+      Bun.spawnSync(["tmux", "send-keys", "-t", bpPane, wrapper, "Enter"], { stderr: "pipe" });
+    }
+  }
+  Bun.sleepSync(200);
 
   // Launch Phase 0 in planning window
   console.log("");

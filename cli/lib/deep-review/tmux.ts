@@ -61,6 +61,18 @@ export function createTmuxSession(
     tmux("select-layout", "-t", `${ctx.reviewSession}:verifiers`, "tiled");
   }
 
+  // Create manifest window (window 0) if manifest.txt exists
+  const manifestFile = join(ctx.sessionDir, "manifest.txt");
+  if (existsSync(manifestFile)) {
+    tmux("new-window", "-d", "-t", ctx.reviewSession, "-n", "manifest", "-c", ctx.projectRoot);
+    const manifestPane = getPaneId(`${ctx.reviewSession}:manifest`, 0);
+    if (manifestPane) {
+      tmux("send-keys", "-t", manifestPane, `cat '${manifestFile}'`, "Enter");
+    }
+    // Move manifest to window position 0 (first)
+    tmux("move-window", "-s", `${ctx.reviewSession}:manifest`, "-t", `${ctx.reviewSession}:0`);
+  }
+
   // Short sleep for tmux to settle
   Bun.sleepSync(1000);
 }

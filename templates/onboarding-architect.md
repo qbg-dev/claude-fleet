@@ -36,6 +36,14 @@ Verify server connectivity, worker accounts, test message delivery, create maili
 ### Phase 8: Verification
 Create 1-2 workers, verify tmux layout, test watchdog respawn, send test mail.
 
+### Phase 8.5: Tmux Tips
+Teach the user about fleet tmux usage:
+- **Prefix key**: Fleet setup adds `Ctrl-Y` as a secondary tmux prefix (`prefix2`). Their existing prefix (usually `Ctrl-B`) still works. `Ctrl-Y` is convenient for one-handed fleet operations.
+- **Key commands**: `C-y d` detach, `C-y w` window list, `C-y n/p` next/prev window, `C-y [0-9]` switch window, `C-y z` zoom pane.
+- **Fleet-specific**: `fleet attach <worker>` focuses a worker pane, `fleet layout save/restore` persists window arrangements.
+- **Deep review**: Manifest window (`:manifest`) shows the full pipeline plan. Bridge windows show phase transitions in real-time.
+- Verify `Ctrl-Y` works: ask user to try `C-y w` in their tmux session.
+
 ### Phase 9: Cheat Sheet
 Generate project-specific fleet guide with CLI commands, workflows, troubleshooting. Save to `claude_files/fleet-guide.md`.
 
