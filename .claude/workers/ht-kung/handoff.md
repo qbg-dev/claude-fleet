@@ -1,26 +1,22 @@
-## Cycle 1 Handoff — Inaugural Research Cycle
+## Cycle 1 Handoff (Final Update)
 
 ### Accomplished
-1. **Literature synthesis**: METR (50% PRs wouldn't merge), Anthropic harness patterns, MIRROR reflection, Ambig-SWE, LHAW
-2. **5 hypotheses formulated** (H1-H5), with H5 (self-adversarial spec clarification) confirmed novel
-3. **HongYang delivered**: 6 findings + 5 diagnostic task designs in ~10 minutes
-4. **All 3 students active** with non-overlapping assignments
-5. **Self-wake cron** set up (*/10)
-6. **Observation notebook + ops-reflection** written and committed
+1. **Literature synthesis**: METR, Anthropic harness, MIRROR, Ambig-SWE, LHAW — 6 hypotheses formulated
+2. **HongYang**: 3 deliverables (findings, diagnostic tasks, spec experiment framework). Now running 6 subagents for H5 test.
+3. **Matheus**: Infrastructure complete, exp-003 running (18/120). Critical H6 finding: Docker-graded feedback → 2/2 on django-11820. Assigned controlled experiment.
+4. **Golden**: Still working on failure taxonomy (expected — deeper analytical task).
+5. **7 METR-compatible diagnostic tasks** designed and documented.
+6. **2 experiments in progress**: spec ambiguity (HongYang), feedback quality (Matheus assigned).
 
-### Key Discovery
-Self-adversarial spec clarification (HongYang's Finding 5) is genuinely novel. Both Ambig-SWE (ICLR 2026) and LHAW use external dialogue for spec ambiguity. Nobody has tested internal self-reflection as an alternative. This is our strongest research contribution candidate.
+### Key Discoveries
+- **H5**: Self-adversarial spec clarification is genuinely novel (confirmed vs Ambig-SWE/LHAW)
+- **H6**: Feedback quality (not feedback existence) is the bottleneck on hard tasks. arXiv 2602.07900 was wrong about feedback being marginal — they only tested weak feedback.
 
-### Still Pending
-- **Golden**: Failure taxonomy from METR + SWE-bench inflation literature (still working)
-- **Matheus**: Experiment infrastructure — Claude Agent SDK + Docker runner (still working)
-- **HongYang**: Cycle 2 assigned — implement Spec Ambiguity Self-Resolution Test
-
-### Next Cycle Priority
-1. Read Golden and Matheus reports when they arrive
-2. If infrastructure ready: design first formal experiment (spec ambiguity probe)
-3. Continue web research on internal vs external ambiguity resolution
-4. Update hypotheses based on student findings
+### Next Cycle
+1. Read Golden's failure taxonomy when it arrives
+2. Collect spec ambiguity experiment results from HongYang
+3. Monitor Matheus's feedback quality experiment
+4. If both H5+H6 produce strong results → draft paper outline
 
 ### Blockers
-None. Clean start, good momentum.
+None. All 3 students active with clear assignments.
