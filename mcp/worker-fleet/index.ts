@@ -88,6 +88,9 @@ export { runDiagnostics, lintRegistry, type DiagnosticIssue } from "./diagnostic
 // hooks.ts
 export { _captureHooksSnapshot } from "./hooks";
 
+// tools/hooks.ts
+export { scanScriptAgainstDenyList, checkHookAccess } from "./tools/hooks";
+
 // seed.ts
 export { generateSeedContent } from "./seed";
 

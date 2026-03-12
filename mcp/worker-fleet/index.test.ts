@@ -13,6 +13,7 @@ import {
   _replaceMemorySection, acquireLock, releaseLock, getWorktreeDir, getSessionId,
   getReportTo, canUpdateWorker,
   _captureHooksSnapshot, _timestampFilename, _writeCheckpoint,
+  scanScriptAgainstDenyList, checkHookAccess,
   WORKER_NAME, WORKERS_DIR, REGISTRY_PATH, HARNESS_LOCK_DIR,
   type DiagnosticIssue,
   type RegistryConfig, type RegistryWorkerEntry, type ProjectRegistry,
@@ -1884,6 +1885,150 @@ describe("checkpoint helpers", () => {
       expect(h).toHaveProperty("blocking");
       expect(h).toHaveProperty("completed");
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// T2: Hook ownership enforcement
+// ═══════════════════════════════════════════════════════════════════
+
+describe("checkHookAccess — hook ownership enforcement (T2)", () => {
+  const ts = "2026-03-12T00:00:00.000Z";
+  const systemHook = {
+    id: "dh-sys", event: "Stop", description: "sys", blocking: true,
+    completed: false, ownership: "system" as const, registered_by: "system", added_at: ts,
+  };
+  const creatorHook = {
+    id: "dh-creator", event: "Stop", description: "creator gate", blocking: true,
+    completed: false, ownership: "creator" as const, registered_by: "coordinator", added_at: ts,
+  };
+  const selfHook = {
+    id: "dh-self", event: "Stop", description: "my gate", blocking: true,
+    completed: false, ownership: "self" as const, registered_by: "writer", added_at: ts,
+  };
+
+  test("system hook cannot be removed by any worker", () => {
+    expect(checkHookAccess(systemHook, "remove", "writer")).not.toBeNull();
+    expect(checkHookAccess(systemHook, "remove", "coordinator")).not.toBeNull();
+    expect(checkHookAccess(systemHook, "remove", "system")).not.toBeNull();
+  });
+
+  test("system hook cannot be completed by any worker", () => {
+    expect(checkHookAccess(systemHook, "complete", "writer")).not.toBeNull();
+    expect(checkHookAccess(systemHook, "complete", "coordinator")).not.toBeNull();
+  });
+
+  test("creator hook cannot be removed by a different worker", () => {
+    const reason = checkHookAccess(creatorHook, "remove", "writer");
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("creator");
+  });
+
+  test("creator hook CAN be removed by its creator", () => {
+    expect(checkHookAccess(creatorHook, "remove", "coordinator")).toBeNull();
+  });
+
+  test("creator hook cannot be completed by a different worker (self path)", () => {
+    const reason = checkHookAccess(creatorHook, "complete", "writer");
+    expect(reason).not.toBeNull();
+  });
+
+  test("creator hook CAN be completed by its creator (self path)", () => {
+    expect(checkHookAccess(creatorHook, "complete", "coordinator")).toBeNull();
+  });
+
+  test("self hook can be removed by any worker (no creator restriction)", () => {
+    expect(checkHookAccess(selfHook, "remove", "writer")).toBeNull();
+    expect(checkHookAccess(selfHook, "remove", "coordinator")).toBeNull();
+  });
+
+  test("self hook can be completed by any worker", () => {
+    expect(checkHookAccess(selfHook, "complete", "writer")).toBeNull();
+  });
+
+  test("hook with no ownership field defaults to allowing removal", () => {
+    const noOwnership = { ...selfHook, ownership: undefined as any };
+    expect(checkHookAccess(noOwnership, "remove", "someone")).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// T3: Hook deny-list scanning
+// ═══════════════════════════════════════════════════════════════════
+
+describe("scanScriptAgainstDenyList — deny-list scanning (T3)", () => {
+  const T3_PERMS_DIR = join(TEST_DIR, "t3-perms");
+  const T3_PERMS_FILE = join(T3_PERMS_DIR, "perms.json");
+
+  beforeEach(() => {
+    mkdirSync(T3_PERMS_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    try { rmSync(T3_PERMS_DIR, { recursive: true }); } catch {}
+  });
+
+  function writePerms(denyList: string[]) {
+    writeFileSync(T3_PERMS_FILE, JSON.stringify({ denyList }));
+  }
+
+  test("returns null when no permissions file exists (no restrictions)", () => {
+    const result = scanScriptAgainstDenyList("rm -rf /tmp/foo", "/nonexistent/perms.json");
+    expect(result).toBeNull();
+  });
+
+  test("returns null when denyList is empty", () => {
+    writePerms([]);
+    expect(scanScriptAgainstDenyList("rm -rf /tmp/foo", T3_PERMS_FILE)).toBeNull();
+  });
+
+  test("blocks script field matching Bash deny-list pattern", () => {
+    writePerms(["Bash(rm -rf *)"]);
+    const result = scanScriptAgainstDenyList("rm -rf /important/dir", T3_PERMS_FILE);
+    expect(result).not.toBeNull();
+    expect(result).toContain("blocked by policy");
+  });
+
+  test("blocks check field matching Bash deny-list pattern", () => {
+    writePerms(["Bash(git push * --force)"]);
+    const result = scanScriptAgainstDenyList("git push origin --force", T3_PERMS_FILE);
+    expect(result).not.toBeNull();
+  });
+
+  test("allows script content that does NOT match any deny-list pattern", () => {
+    writePerms(["Bash(rm -rf *)"]);
+    expect(scanScriptAgainstDenyList("echo hello world", T3_PERMS_FILE)).toBeNull();
+  });
+
+  test("ignores non-Bash patterns in deny-list (only Bash patterns apply to scripts)", () => {
+    writePerms(["Edit(src/**)", "Write(config.json)"]);
+    const result = scanScriptAgainstDenyList("rm -rf /danger", T3_PERMS_FILE);
+    expect(result).toBeNull();
+  });
+
+  test("glob wildcard ** matches across path segments in script", () => {
+    writePerms(["Bash(git push ** --force)"]);
+    const result = scanScriptAgainstDenyList("git push origin/main --force", T3_PERMS_FILE);
+    expect(result).not.toBeNull();
+  });
+
+  test("multiline script: blocked pattern on any line is caught", () => {
+    writePerms(["Bash(rm -rf *)"]);
+    const script = "#!/bin/bash\necho start\nrm -rf /tmp/junk\necho done";
+    expect(scanScriptAgainstDenyList(script, T3_PERMS_FILE)).not.toBeNull();
+  });
+
+  test("scanner is conservative: blocked pattern inside a comment still triggers (raw content checked)", () => {
+    writePerms(["Bash(rm -rf *)"]);
+    // The scanner checks raw script content too (conservative), so commented-out patterns are still caught
+    const commentedScript = "#!/bin/bash\n# rm -rf /important\necho safe";
+    expect(scanScriptAgainstDenyList(commentedScript, T3_PERMS_FILE)).not.toBeNull();
+  });
+
+  test("clean script with no blocked patterns is allowed even with active deny-list", () => {
+    writePerms(["Bash(rm -rf *)", "Bash(git push * --force)"]);
+    const cleanScript = "#!/bin/bash\nset -euo pipefail\nbun test\necho done";
+    expect(scanScriptAgainstDenyList(cleanScript, T3_PERMS_FILE)).toBeNull();
   });
 });
 

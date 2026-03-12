@@ -5,8 +5,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { join } from "path";
-import { CLAUDE_FLEET, HOME, PROJECT_ROOT, WORKER_NAME, FLEET_DIR } from "../config";
+import { join, resolve } from "path";
+import { CLAUDE_FLEET, PROJECT_ROOT, WORKER_NAME, FLEET_DIR } from "../config";
 import {
   dynamicHooks, _incrementHookCounter, _persistHooks, _pendingHooksSummary,
   writeScriptFile, _archiveHook, readOtherWorkerHooks,
@@ -17,10 +17,11 @@ import { readRegistry, canUpdateWorker } from "../registry";
 // ── Permission Scanning ──────────────────────────────────────────────
 
 /** Scan a script against the worker's permissions.json denyList.
- *  Returns null if allowed, or a reason string if blocked. */
-function scanScriptAgainstDenyList(scriptContent: string): string | null {
+ *  Returns null if allowed, or a reason string if blocked.
+ *  Pass _permsPath to override the default path (for testing). */
+export function scanScriptAgainstDenyList(scriptContent: string, _permsPath?: string): string | null {
   // Find permissions.json for this worker
-  const permsPath = join(PROJECT_ROOT, ".claude/workers", WORKER_NAME, "permissions.json");
+  const permsPath = _permsPath ?? join(PROJECT_ROOT, ".claude/workers", WORKER_NAME, "permissions.json");
   if (!existsSync(permsPath)) return null; // No permissions = no restrictions
 
   let denyList: string[];
@@ -62,6 +63,26 @@ function scanScriptAgainstDenyList(scriptContent: string): string | null {
     } catch { /* invalid regex — skip */ }
   }
 
+  return null;
+}
+
+// ── Ownership Enforcement ────────────────────────────────────────────
+
+/** Check if a worker can remove or complete a hook.
+ *  Returns null if allowed, or a reason string if blocked. */
+export function checkHookAccess(
+  hook: DynamicHook,
+  operation: "complete" | "remove",
+  callerName: string,
+): string | null {
+  if (hook.ownership === "system") {
+    return `Cannot ${operation} system hook [${hook.id}]. System hooks are irremovable.`;
+  }
+  if (hook.ownership === "creator" && hook.registered_by !== callerName) {
+    return operation === "remove"
+      ? `Cannot remove creator-owned hook [${hook.id}] (owned by ${hook.registered_by}). Only the creator can remove it.`
+      : `Cannot complete hook [${hook.id}] — owned by ${hook.registered_by || "creator"}. Use the check command mechanism or ask the owner.`;
+  }
   return null;
 }
 
@@ -213,8 +234,9 @@ server.registerTool(
     if (!hook) {
       return { content: [{ type: "text" as const, text: `No hook with ID '${id}'.` }], isError: true };
     }
-    if (hook.ownership === "system" || (hook.ownership === "creator" && hook.registered_by !== WORKER_NAME)) {
-      return { content: [{ type: "text" as const, text: `Cannot complete hook [${id}] — owned by ${hook.registered_by || "system"}. Use the check command mechanism or ask the owner.` }], isError: true };
+    const completeBlocked = checkHookAccess(hook, "complete", WORKER_NAME);
+    if (completeBlocked) {
+      return { content: [{ type: "text" as const, text: completeBlocked }], isError: true };
     }
     hook.completed = true;
     hook.completed_at = new Date().toISOString();
@@ -373,11 +395,9 @@ server.registerTool(
     if (!hook) {
       return { content: [{ type: "text" as const, text: `No active hook with ID '${id}'.` }], isError: true };
     }
-    if (hook.ownership === "system") {
-      return { content: [{ type: "text" as const, text: `Cannot remove system hook [${id}]. System hooks are irremovable.` }], isError: true };
-    }
-    if (hook.ownership === "creator" && hook.registered_by !== WORKER_NAME) {
-      return { content: [{ type: "text" as const, text: `Cannot remove creator-owned hook [${id}] (owned by ${hook.registered_by}). Only the creator or mission_authority can remove it.` }], isError: true };
+    const removeBlocked = checkHookAccess(hook, "remove", WORKER_NAME);
+    if (removeBlocked) {
+      return { content: [{ type: "text" as const, text: removeBlocked }], isError: true };
     }
     const archived = _archiveHook(id, "removed");
     return {
@@ -486,9 +506,19 @@ server.registerTool(
       if (params.script) {
         const targetPermsPath = join(PROJECT_ROOT, ".claude/workers", target, "permissions.json");
         if (existsSync(targetPermsPath)) {
-          const scriptContent = params.script.startsWith("@")
-            ? (existsSync(params.script.slice(1)) ? readFileSync(params.script.slice(1), "utf-8") : params.script)
-            : params.script;
+          let scriptContent: string;
+          if (params.script.startsWith("@")) {
+            const srcPath = params.script.slice(1);
+            const resolvedSrc = resolve(srcPath);
+            const projectRootResolved = resolve(PROJECT_ROOT);
+            const fleetDirResolved = resolve(FLEET_DIR);
+            if (!resolvedSrc.startsWith(projectRootResolved) && !resolvedSrc.startsWith(fleetDirResolved)) {
+              return { content: [{ type: "text" as const, text: `Script @-path rejected: must be within project or fleet directory (got: ${srcPath})` }], isError: true };
+            }
+            scriptContent = existsSync(srcPath) ? readFileSync(srcPath, "utf-8") : params.script;
+          } else {
+            scriptContent = params.script;
+          }
           // Reuse scanScriptAgainstDenyList logic with target's permissions
           try {
             const perms = JSON.parse(readFileSync(targetPermsPath, "utf-8"));
@@ -570,8 +600,9 @@ server.registerTool(
       }
       const hook = hooks.find(h => h.id === params.id);
       if (!hook) return { content: [{ type: "text" as const, text: `No hook '${params.id}' on ${target}.` }], isError: true };
-      if (hook.ownership === "system") {
-        return { content: [{ type: "text" as const, text: `Cannot remove system hook [${params.id}] on ${target}.` }], isError: true };
+      const crossRemoveBlocked = checkHookAccess(hook, "remove", WORKER_NAME);
+      if (crossRemoveBlocked) {
+        return { content: [{ type: "text" as const, text: crossRemoveBlocked }], isError: true };
       }
       hook.status = "archived";
       hook.archived_at = new Date().toISOString();
@@ -588,7 +619,7 @@ server.registerTool(
       if (params.id === "all") {
         let count = 0;
         for (const h of hooks) {
-          if (h.blocking && !h.completed && h.status !== "archived") {
+          if (h.blocking && !h.completed && h.status !== "archived" && h.ownership !== "system") {
             h.completed = true;
             h.completed_at = now;
             if (params.result) h.result = params.result;
@@ -596,10 +627,13 @@ server.registerTool(
           }
         }
         writeTargetHooks(hooks);
-        return { content: [{ type: "text" as const, text: `Completed ${count} blocking hook(s) on ${target}.` }] };
+        return { content: [{ type: "text" as const, text: `Completed ${count} blocking hook(s) on ${target}. System hooks preserved.` }] };
       }
       const hook = hooks.find(h => h.id === params.id);
       if (!hook) return { content: [{ type: "text" as const, text: `No hook '${params.id}' on ${target}.` }], isError: true };
+      if (hook.ownership === "system") {
+        return { content: [{ type: "text" as const, text: `Cannot complete system hook [${params.id}] on ${target}. System hooks are irremovable.` }], isError: true };
+      }
       hook.completed = true;
       hook.completed_at = now;
       if (params.result) hook.result = params.result;
