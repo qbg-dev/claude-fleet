@@ -56,6 +56,7 @@ _fleet() {
     'layout:Save/restore tmux window layouts'
     'deep-review:Adversarial code review'
     'dr:Adversarial code review'
+    'pipeline:Launch a program-API pipeline'
     'hook:Manage dynamic hooks'
     'recycle:Restart worker with fresh context'
   )
@@ -153,6 +154,13 @@ _fleet() {
           _arguments \
             '--all[Recycle all workers]' \
             '1:worker:_fleet_workers'
+          ;;
+        pipeline)
+          _arguments \
+            '--dry-run[Show plan without executing]' \
+            '--verify[Run verification passes]' \
+            '--scope[Scope for the pipeline]:scope:' \
+            '1:program:'
           ;;
         ls|list)
           _arguments '--json[JSON output]'

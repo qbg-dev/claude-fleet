@@ -35,6 +35,7 @@ const ALL_COMMANDS = [
   "tui",
   "layout",
   "deep-review",
+  "pipeline",
   "hook",
   "recycle",
 ] as const;
@@ -51,7 +52,7 @@ describe("fleet --help", () => {
     expect(help.stdout).toContain("persistent Claude Code agents");
   });
 
-  test("contains all 23 commands", () => {
+  test("contains all 24 commands", () => {
     for (const cmd of ALL_COMMANDS) {
       expect(help.stdout).toContain(cmd);
     }

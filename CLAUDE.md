@@ -45,6 +45,7 @@ fleet run <name> "<command>"            # run in worktree
 fleet tui [--account <name>]            # Fleet Mail TUI client
 fleet layout <save|restore|list|delete> # tmux layout persistence
 fleet deep-review <scope>               # adversarial code review
+fleet pipeline <program> [opts]         # launch a program-API pipeline
 fleet hook <add|rm|ls|complete>         # manage dynamic hooks
 fleet doctor                            # verify installation
 fleet nuke <name>                       # destroy worker
@@ -145,6 +146,7 @@ Install: `bash extensions/watchdog/install.sh`
 | `cli/commands/tui.ts` | Fleet Mail TUI launcher |
 | `cli/commands/layout.ts` | tmux layout persistence |
 | `cli/commands/deep-review.ts` | Adversarial code review launcher |
+| `cli/commands/pipeline.ts` | Program-API pipeline launcher |
 | `scripts/setup-hooks.sh` | Hook installer |
 | `scripts/lint-hooks.sh` | Hook verifier |
 | `REVIEW.md` | Symlink → `extensions/review/REVIEW.md` |
