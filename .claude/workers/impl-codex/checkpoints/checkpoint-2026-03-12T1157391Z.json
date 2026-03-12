@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-03-12T11:57:39.139Z",
+  "type": "round-stop",
+  "summary": "## Codex Runtime Integration — Complete\n\n### Shipped\n- `fleet create --runtime codex` now provisions full codex worker infrastructure:\n  - `.codex/config.toml` with worker-fleet MCP (`[[mcp_servers]]` entry + FLEET_MAIL_URL)\n  - Trust entry in `~/.codex/config.toml` for the worktree path\n  - `AGENTS.md` with mission + fleet identity + git safety rules + workflow\n  - `.codex/hooks/git-safety-gate.sh` for when codex adds hook API\n- CODEX_RUNTIME: `workspace-write` → `danger-full-access`, `--add-dir` added\n- `launch.ts` + `config.ts` generateLaunchSh: codex-specific launch commands\n- `shared/types.ts`: `runtime?: \"claude\" | \"codex\"` on WorkerConfig\n- `registry.ts`: reads `config.runtime` instead of hardcoding `\"claude\"`\n- `fleet ls`: RUNTIME column added\n- `templates/codex-seed-context.md` + `scripts/codex-git-safety-hook.sh` (tracked)\n\n### 三省吾身\n1. **为人谋而不忠乎**: Shipped all 6 acceptance criteria. No blockers.\n2. **与朋友交而不信乎**: Build verified end-to-end (bun build 337 modules). Codex hooks limitation documented honestly—no hook API in v0.111.0.\n3. **传不习乎**: Key pattern: codex reads project config from `.codex/config.toml` in worktree; trust must be explicitly added to `~/.codex/config.toml`; AGENTS.md is the primary instruction injection path (not symlinked CLAUDE.md).\n\n### Remaining / Next Round\n- None from mission. Pending merger to cherry-pick a8bafa0 + c9958ec to main.\n- Future: when codex exposes hooks in config.toml, wire `install-codex-hooks.sh` into the `[hooks.pre_tool_use]` registration.\n",
+  "git_state": {
+    "branch": "worker/impl-codex",
+    "sha": "c9958ec",
+    "dirty_count": 1,
+    "staged_count": 0
+  },
+  "dynamic_hooks": [
+    {
+      "id": "dh-1",
+      "event": "Stop",
+      "description": "verify TypeScript compiles after changes",
+      "blocking": true,
+      "completed": false,
+      "status": "active",
+      "lifetime": "persistent",
+      "check": "cd /Users/wz/repos/boring-w-impl-codex && bun build cli/index.ts mcp/worker-fleet/index.ts --outdir /tmp/impl-codex-check --target bun 2>&1 | tail -3 | grep -q \"Build succeeded\""
+    }
+  ],
+  "key_facts": [],
+  "transcript_ref": ""
+}
