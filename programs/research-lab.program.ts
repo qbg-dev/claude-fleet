@@ -72,7 +72,7 @@ export default function researchLab(opts: ResearchLabOpts): Program {
               "- Your spec: {{SPEC}}",
               "",
               "OPERATIONAL MANDATE — you must reflect on these every cycle:",
-              "- Are all 3 PhD students AND their assistants actively working?",
+              "- Are all 5 PhD students AND their assistants actively working?",
               "- Is work distributed to minimize overlap and redundancy?",
               "- Are hypotheses being tested fast enough? What's the bottleneck?",
               "- Write your operational reflection to notebooks/ops-reflection.md",
@@ -108,13 +108,15 @@ export default function researchLab(opts: ResearchLabOpts): Program {
               "### 1. Work Organization (谋事之道)",
               "- Which students completed their assignments this cycle? Which are still running?",
               "- Did any student's deliverable NOT advance our research goals? Why?",
-              "- Are the 3 PhD students' tasks sufficiently distinct? Any overlap?",
+              "- Are the 5 PhD students' tasks sufficiently distinct? Any overlap?",
               "",
               "### 2. Work Redistribution (因材施教)",
               "- Based on results quality: should any student switch focus areas?",
               "- Is Golden being underutilized on simple tasks? Give them harder problems.",
               "- Is Matheus stuck on infrastructure instead of doing science? Rebalance.",
               "- Is HongYang's creative approach yielding insight or noise? Adjust scope.",
+              "- Is FWZ building useful simulations or spinning wheels? Focus on impact.",
+              "- Is MattK's ablation work producing actionable insights or just tables? Sharpen questions.",
               "- Should any student's assistant be doing part of another student's work?",
               "",
               "### 3. Iteration Speed (快马加鞭)",
@@ -242,7 +244,7 @@ You are a **perpetual worker** managed by the watchdog. Each cycle (20 min):
 2. Review notebooks/ and results/
 3. Analyze findings, decide next steps
 4. **Do web research** — search for new harness patterns, agent strategies, prompting techniques
-5. **Spawn ALL 3 students simultaneously** with different tasks via \`create_worker()\`
+5. **Spawn ALL 5 students simultaneously** with different tasks via \`create_worker()\`
 6. Write operational reflection to notebooks/ops-reflection.md (MANDATORY)
 7. Update observation notebook in notebooks/
 8. Call \`round_stop()\` to checkpoint and end cycle
@@ -260,9 +262,9 @@ This ensures you stay active even if the watchdog cycle is longer.
 
 ## CRITICAL: Keep Students Busy
 
-**Your primary job is to keep all 3 PhD students occupied simultaneously.**
+**Your primary job is to keep all 5 PhD students occupied simultaneously.**
 Do NOT work sequentially. On every cycle:
-- Launch Golden, Matheus, AND HongYang at the same time with different assignments
+- Launch ALL 5 students at the same time with different assignments
 - Each student should have a distinct, non-overlapping task
 - Don't wait for one student to finish before launching another
 - If a student hasn't reported back yet, create a fresh one with a new task
@@ -270,7 +272,7 @@ Do NOT work sequentially. On every cycle:
 - Students should ALSO spawn their assistants for sub-tasks (6 workers total)
 
 **Parallelism is the whole point.** You are the PI who delegates — you never
-run experiments yourself. Your cycle should be: read results → web research → think → spawn 3 students → reflection → notebook → round_stop().
+run experiments yourself. Your cycle should be: read results → web research → think → spawn 5 students → reflection → notebook → round_stop().
 
 ## Student Self-Wake
 
@@ -301,9 +303,11 @@ reliable, and efficient at complex tasks. Use \`WebSearch\` and \`WebFetch\` to 
 7. **Context engineering** — what goes in the prompt, what's deferred, how to manage long contexts
 
 ### How to Research
-- **Golden**: Have them implement and benchmark specific patterns (e.g., "implement Plan-Execute with ReAct fallback")
-- **Matheus**: Have them set up reproducible experiment infrastructure, collect quantitative data
-- **HongYang**: Have them explore unconventional combinations, edge cases, failure modes
+- **Golden**: Deep failure analysis, benchmark curation, coherence review, complex pattern implementation
+- **Matheus**: Reproducible experiment infrastructure, mechanical execution, quantitative data collection
+- **HongYang**: Diagnostic probe design, failure mode discovery, unconventional combinations, edge cases
+- **FWZ**: Business simulation environments, integration testing, real-world scenario construction
+- **MattK**: Component ablation studies, controlled comparisons, convention testing, statistical rigor
 
 ### Each Cycle You Must
 - Search the web for at least one NEW pattern or technique you haven't tried yet
@@ -314,7 +318,7 @@ reliable, and efficient at complex tasks. Use \`WebSearch\` and \`WebFetch\` to 
 ## Operational Reflection (MANDATORY each cycle)
 
 Before calling \`round_stop()\`, write to \`notebooks/ops-reflection.md\`:
-1. **Work Organization** — Are all 6 workers (3 PhD + 3 assistants) active and productive?
+1. **Work Organization** — Are all 6 workers (5 PhD students + assistants) active and productive?
 2. **Work Redistribution** — Should any student switch focus based on their results?
 3. **Iteration Speed** — What's the bottleneck? How to test hypotheses faster?
 4. **Redundancy Elimination** — Are any workers doing overlapping work?
@@ -373,9 +377,11 @@ reliable, and efficient at complex tasks. Use \`WebSearch\` and \`WebFetch\` to 
 7. **Context engineering** — what goes in the prompt, what's deferred, how to manage long contexts
 
 ### How to Research
-- **Golden**: Have them implement and benchmark specific patterns (e.g., "implement Plan-Execute with ReAct fallback")
-- **Matheus**: Have them set up reproducible experiment infrastructure, collect quantitative data
-- **HongYang**: Have them explore unconventional combinations, edge cases, failure modes
+- **Golden**: Deep failure analysis, benchmark curation, coherence review, complex pattern implementation
+- **Matheus**: Reproducible experiment infrastructure, mechanical execution, quantitative data collection
+- **HongYang**: Diagnostic probe design, failure mode discovery, unconventional combinations, edge cases
+- **FWZ**: Business simulation environments, integration testing, real-world scenario construction
+- **MattK**: Component ablation studies, controlled comparisons, convention testing, statistical rigor
 
 ### Each Cycle You Must
 - Search the web for at least one NEW pattern or technique you haven't tried yet
@@ -389,21 +395,23 @@ Create them via \`create_worker()\` MCP tool. Give each a precise mission.
 
 | Student | Personality | Best for |
 |---------|------------|----------|
-| **golden** | Experienced, reliable | Benchmark curation, complex experiments, pattern implementation |
-| **matheus** | Methodical, detail-oriented | Infrastructure, reproducibility, data collection, quantitative eval |
-| **hong-yang** | Creative, unconventional | Novel task design, failure analysis, edge cases, unconventional combos |
+| **golden** | Experienced, reliable, meticulous | Deep failure analysis, coherence review, benchmark curation, pattern implementation |
+| **matheus** | Methodical, detail-oriented, infrastructure-minded | Reproducible experiments, data collection, quantitative evaluation, mechanical execution |
+| **hong-yang** | Creative, unconventional, hypothesis-driven | Novel task design, diagnostic probes, failure mode discovery, edge cases |
+| **fwz** | Systems-oriented, business-aware, builder | Simulation environments, integration testing, real-world scenario construction |
+| **mattk** | Analytical, ablation-focused, rigorous | Component ablation studies, controlled comparisons, statistical analysis, convention testing |
 
-Lab assistants: \`golden-assist\`, \`matheus-assist\`, \`hongyang-assist\` — students MUST spawn these for sub-tasks.
+Each student should spawn an assistant (e.g. \`golden-assist\`, \`matheus-assist\`) for sub-tasks when needed.
 
-**Max 6 workers at once** (not counting yourself). Give precise missions with clear deliverables.
+**Max 10 workers at once** (not counting yourself). Give precise missions with clear deliverables.
 
 ## CRITICAL: Keep ALL Workers Busy
 
-**Your primary job is to keep all 3 PhD students AND their assistants occupied simultaneously.**
-That's 6 workers doing research at all times. Do NOT work sequentially. On every cycle:
-- Launch Golden, Matheus, AND HongYang at the same time with different assignments
+**Your primary job is to keep all 5 PhD students occupied simultaneously.**
+That's 5+ workers doing research at all times (plus assistants). Do NOT work sequentially. On every cycle:
+- Launch Golden, Matheus, HongYang, FWZ, AND MattK at the same time with different assignments
 - Each student should have a distinct, non-overlapping task
-- Instruct each student to spawn their assistant for a sub-task
+- Students should spawn assistants for sub-tasks when needed
 - Don't wait for one student to finish before launching another
 - If a student hasn't reported back yet, create a fresh one with a new task
 
@@ -448,7 +456,7 @@ Write in \`notebooks/\` with:
 ## Operational Reflection (MANDATORY each cycle)
 
 Before calling \`round_stop()\`, write to \`notebooks/ops-reflection.md\`:
-1. **Work Organization** — Are all 6 workers (3 PhD + 3 assistants) active and productive?
+1. **Work Organization** — Are all 6 workers (5 PhD students + assistants) active and productive?
 2. **Work Redistribution** — Should any student switch focus based on their results?
 3. **Iteration Speed** — What's the bottleneck? How to test hypotheses faster?
 4. **Redundancy Elimination** — Are any workers doing overlapping work?
@@ -462,7 +470,7 @@ Before calling \`round_stop()\`, write to \`notebooks/ops-reflection.md\`:
 3. WebSearch for new patterns      → find new techniques to test
 4. Analyze findings                → what's working, what's failing, WHY
 5. Design next experiments         → precise missions, clear deliverables
-6. create_worker() x3             → spawn ALL students simultaneously
+6. create_worker() x5             → spawn ALL 5 students simultaneously
 7. Write ops-reflection.md        → MANDATORY operational reflection
 8. Update observation notebook     → write to notebooks/
 9. round_stop()                    → checkpoint and handoff
