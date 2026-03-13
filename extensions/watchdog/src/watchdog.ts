@@ -9,11 +9,11 @@
  *   bun run extensions/watchdog/src/watchdog.ts --status     # status table
  */
 
-import { mkdirSync, writeFileSync, existsSync, readdirSync, unlinkSync, rmSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync, rmSync } from "fs";
 import { join } from "path";
-import { resolveConfig, resolveProjectRoot, resolveProjectName, CRASH_DIR, RUNTIME_DIR, FLEET_DATA, FLEET_CLI } from "./config";
+import { resolveConfig, resolveProjectRoot, resolveProjectName, CRASH_DIR, RUNTIME_DIR, FLEET_DATA, FLEET_CLI, STATE_DIR } from "./config";
 import { logInfo, logWarn, logError, setQuiet } from "./logger";
-import { checkWorkerAsync } from "./worker-checker";
+import { checkWorkerAsync, TUI_INDICATORS } from "./worker-checker";
 import { markCrashLoop } from "./crash-tracker";
 import { listPaneInfo, isValidPaneId, sessionExists, windowExists, splitIntoWindow, setPaneTitle, moveToInactive, enforceWindow } from "./pane-manager";
 import { resumeInPane, relaunchInPane, killAgentInPane, gracefulShutdown } from "./process-manager";
@@ -39,6 +39,46 @@ const projectName = resolveProjectName(projectRoot);
 // ── Ensure directories ──
 mkdirSync(CRASH_DIR, { recursive: true });
 mkdirSync(RUNTIME_DIR, { recursive: true });
+
+// ── Per-project PID lock — prevent duplicate watchdog instances ──
+const LOCK_FILE = join(STATE_DIR, `watchdog-${projectName}.pid`);
+
+function acquireLock(): boolean {
+  try {
+    if (existsSync(LOCK_FILE)) {
+      const existingPid = parseInt(readFileSync(LOCK_FILE, "utf-8").trim(), 10);
+      if (!isNaN(existingPid) && existingPid !== process.pid) {
+        // Check if the process is still alive
+        try {
+          process.kill(existingPid, 0); // signal 0 = existence check
+          return false; // another instance is running
+        } catch {
+          // Process is dead — stale lock, take over
+        }
+      }
+    }
+    writeFileSync(LOCK_FILE, String(process.pid));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseLock(): void {
+  try { unlinkSync(LOCK_FILE); } catch {}
+}
+
+if (mode !== "status") {
+  if (!acquireLock()) {
+    const existingPid = readFileSync(LOCK_FILE, "utf-8").trim();
+    console.error(`Another watchdog for '${projectName}' is already running (PID ${existingPid}). Exiting.`);
+    process.exit(0);
+  }
+  // Release lock on exit
+  process.on("exit", releaseLock);
+  process.on("SIGINT", () => { releaseLock(); process.exit(0); });
+  process.on("SIGTERM", () => { releaseLock(); process.exit(0); });
+}
 
 logInfo("START", `Watchdog starting (mode=${mode}, interval=${config.checkInterval}s, stuck=${config.stuckThresholdSec}s)`);
 
@@ -93,16 +133,33 @@ async function runOnce(): Promise<void> {
             logInfo("FLEET-START", `session '${session}' gone, using fleet start`, snap.name);
             launchViaFleet(snap.name);
           } else if (snap.window && windowExists(session, snap.window)) {
-            // Split into existing window
-            const wt = snap.worktree || projectRoot;
-            const newPane = splitIntoWindow(session, snap.window, wt);
-            if (newPane) {
-              setPaneTitle(newPane, snap.name);
-              updateStatePaneId(snap.name, newPane);
-              await relaunchInPane(newPane, snap, projectName, projectRoot);
-              logInfo("RESPAWN-SPLIT", `into window '${snap.window}' (pane ${newPane})`, snap.name);
+            // Dedup guard: check if Claude is already running in any pane in this window
+            const windowPanes = [...paneInfo.values()].filter(
+              p => p.session === session && p.window === snap.window,
+            );
+            const alreadyRunning = windowPanes.some(p => {
+              const content = effects.capturePane(p.paneId, 5);
+              return TUI_INDICATORS.test(content);
+            });
+            if (alreadyRunning) {
+              // Adopt the existing pane instead of creating a duplicate
+              const existing = windowPanes.find(p => TUI_INDICATORS.test(effects.capturePane(p.paneId, 5)));
+              if (existing) {
+                logInfo("ADOPT-PANE", `Claude already running in ${snap.window} (${existing.paneId}), adopting`, snap.name);
+                updateStatePaneId(snap.name, existing.paneId);
+              }
             } else {
-              launchViaFleet(snap.name);
+              // Split into existing window
+              const wt = snap.worktree || projectRoot;
+              const newPane = splitIntoWindow(session, snap.window, wt);
+              if (newPane) {
+                setPaneTitle(newPane, snap.name);
+                updateStatePaneId(snap.name, newPane);
+                await relaunchInPane(newPane, snap, projectName, projectRoot);
+                logInfo("RESPAWN-SPLIT", `into window '${snap.window}' (pane ${newPane})`, snap.name);
+              } else {
+                launchViaFleet(snap.name);
+              }
             }
           } else {
             logInfo("FLEET-START", `window '${snap.window || "?"}' gone, using fleet start`, snap.name);

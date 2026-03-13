@@ -9,7 +9,7 @@ import { checkScrollbackStuck } from "./stuck-detector";
 import { isCrashLooped, incrementCrashCount } from "./crash-tracker";
 
 /** Claude TUI indicators — used for bare-shell detection */
-const TUI_INDICATORS = /bypass permissions|thinking|Osmosing|Booping|Garnishing|Reading|Searching|Editing|Writing|Running|Worked for|esc to interrupt|❯\s*$/m;
+export const TUI_INDICATORS = /bypass permissions|thinking|Osmosing|Booping|Garnishing|Reading|Searching|Editing|Writing|Running|Worked for|esc to interrupt|❯\s*$/m;
 
 /**
  * Parse an ISO 8601 timestamp to epoch seconds.
