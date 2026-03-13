@@ -272,6 +272,7 @@ ${fleetEnv}
 ${customEnv ? customEnv + "\n" : ""}export PROJECT_ROOT="${state.workDir}"
 export HOOKS_DIR="${hooksDir}"
 export CLAUDE_FLEET_DIR="${fleetDir}"
+export CLAUDE_CODE_SKIP_PROJECT_LOCK=1
 exec ${execPrefix}claude --model ${worker.model}${effortFlag}${permFlag}${addDirFlag} "$(cat '${worker.seedPath}')"
 `;
 
