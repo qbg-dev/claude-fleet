@@ -128,7 +128,7 @@ async function runOnce(): Promise<void> {
         case "relaunch": {
           logInfo("RELAUNCH", action.reason, snap.name);
           // Determine relaunch strategy
-          const session = snap.tmuxSession || snap.projectName || "w";
+          const session = snap.tmuxSession || projectName || "w";
           if (!sessionExists(session)) {
             logInfo("FLEET-START", `session '${session}' gone, using fleet start`, snap.name);
             launchViaFleet(snap.name);
@@ -163,6 +163,16 @@ async function runOnce(): Promise<void> {
 
         case "fleet-start": {
           logInfo("FLEET-START", action.reason, snap.name);
+          // Dedup guard: if the worker's window already has a Claude process, adopt it
+          const fSession = snap.tmuxSession || projectName || "w";
+          if (snap.window && sessionExists(fSession) && windowExists(fSession, snap.window)) {
+            const existingPane = windowHasClaudeProcess(fSession, snap.window);
+            if (existingPane) {
+              logInfo("ADOPT-PANE", `Claude process in ${snap.window} (${existingPane}), adopting instead of fleet-start`, snap.name);
+              updateStatePaneId(snap.name, existingPane);
+              break;
+            }
+          }
           launchViaFleet(snap.name);
           updateStateRelaunch(snap.name, action.reason);
           if (action.stagger) await stagger(snap.name);
