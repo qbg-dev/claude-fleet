@@ -113,6 +113,8 @@ interface Artifact {
   kind: "symlink" | "dir" | "file" | "launchd" | "process";
   /** If true, only remove when corresponding flag is NOT set */
   flag?: "keep-data" | "keep-mail";
+  /** If true, only remove with --purge (CLI-critical symlinks) */
+  cliCritical?: boolean;
   /** For process artifacts: process name pattern to match */
   processPattern?: string;
   /** For launchd: plist label */
@@ -151,16 +153,18 @@ function getArtifacts(): Artifact[] {
       launchdLabel: "com.claude-fleet.fleet-relay",
     },
 
-    // Symlinks
+    // Symlinks — CLI-critical ones are preserved unless --purge is used
     {
-      label: "~/.claude-fleet",
+      label: "~/.claude-fleet (fleet CLI — preserving)",
       path: join(HOME, ".claude-fleet"),
       kind: "symlink",
+      cliCritical: true,
     },
     {
-      label: "~/.claude-fleet",
-      path: join(HOME, ".claude-fleet"),
+      label: "~/.local/bin/fleet (fleet binary — preserving)",
+      path: join(HOME, ".local/bin/fleet"),
       kind: "symlink",
+      cliCritical: true,
     },
     {
       label: "~/.claude/ops",
@@ -170,11 +174,6 @@ function getArtifacts(): Artifact[] {
     {
       label: "~/.tmux-agents",
       path: join(HOME, ".tmux-agents"),
-      kind: "symlink",
-    },
-    {
-      label: "~/.local/bin/fleet",
-      path: join(HOME, ".local/bin/fleet"),
       kind: "symlink",
     },
 
@@ -432,14 +431,16 @@ async function confirm(message: string): Promise<boolean> {
   return false;
 }
 
-async function nukeAll(opts: { dryRun?: boolean; yes?: boolean; keepData?: boolean; keepMail?: boolean }): Promise<void> {
+async function nukeAll(opts: { dryRun?: boolean; yes?: boolean; keepData?: boolean; keepMail?: boolean; purge?: boolean }): Promise<void> {
   const dryRun = opts.dryRun ?? false;
   const skipConfirm = opts.yes ?? false;
+  const purge = opts.purge ?? false;
   const keepFlags = new Set<string>();
   if (opts.keepData) keepFlags.add("keep-data");
   if (opts.keepMail) keepFlags.add("keep-mail");
 
-  console.log(chalk.bold.red(dryRun ? "fleet nuke --all (dry run)" : "fleet nuke --all") + " — remove all fleet artifacts\n");
+  const label = purge ? "fleet nuke --all --purge" : "fleet nuke --all";
+  console.log(chalk.bold.red(dryRun ? `${label} (dry run)` : label) + " — remove all fleet artifacts\n");
 
   const artifacts = getArtifacts();
   const settingsInfo = settingsHasFleetEntries();
@@ -448,8 +449,15 @@ async function nukeAll(opts: { dryRun?: boolean; yes?: boolean; keepData?: boole
   const toRemove: Artifact[] = [];
   const skippedByFlag: Artifact[] = [];
   const skippedByGuard: Artifact[] = [];
+  const skippedCli: Artifact[] = [];
 
   for (const a of artifacts) {
+    // CLI-critical symlinks are preserved unless --purge
+    if (a.cliCritical && !purge) {
+      if (artifactExists(a)) skippedCli.push(a);
+      continue;
+    }
+
     // Check flag exclusion
     if (a.flag && keepFlags.has(a.flag)) {
       if (artifactExists(a)) skippedByFlag.push(a);
@@ -472,6 +480,12 @@ async function nukeAll(opts: { dryRun?: boolean; yes?: boolean; keepData?: boole
   // Print summary
   if (toRemove.length === 0 && !hasSettingsWork) {
     info("Nothing to remove — fleet is not installed (or already nuked).");
+    if (skippedCli.length > 0) {
+      console.log("");
+      info("Preserved (CLI installation):");
+      for (const a of skippedCli) console.log(`  ${chalk.dim("-")} ${a.label}`);
+      console.log(`\n  To remove the CLI too: ${chalk.cyan("fleet nuke --all --purge")}`);
+    }
     if (skippedByFlag.length > 0) {
       console.log("");
       info("Preserved by flags:");
@@ -493,6 +507,14 @@ async function nukeAll(opts: { dryRun?: boolean; yes?: boolean; keepData?: boole
   if (hasSettingsWork) {
     if (settingsInfo.hasMcp) console.log(`  ${chalk.red("-")} mcpServers["worker-fleet"] in settings.json`);
     if (settingsInfo.hasHooks) console.log(`  ${chalk.red("-")} Fleet hook entries in settings.json`);
+  }
+
+  if (skippedCli.length > 0) {
+    console.log("");
+    console.log(chalk.bold("Preserved (CLI installation):"));
+    for (const a of skippedCli) {
+      console.log(`  ${chalk.dim("-")} ${a.label}`);
+    }
   }
 
   if (skippedByFlag.length > 0) {
@@ -550,10 +572,18 @@ async function nukeAll(opts: { dryRun?: boolean; yes?: boolean; keepData?: boole
   console.log("");
   if (dryRun) {
     info("Dry run complete — no changes made.");
-    console.log(`\n  Run ${chalk.cyan("fleet nuke --all")} (without --dry-run) to execute.`);
+    console.log(`\n  Run ${chalk.cyan(purge ? "fleet nuke --all --purge" : "fleet nuke --all")} (without --dry-run) to execute.`);
   } else {
     ok(chalk.bold("Fleet artifacts removed."));
-    console.log(`\n  Re-install: ${chalk.cyan("fleet setup")}`);
+    if (!purge && skippedCli.length > 0) {
+      console.log(`\n  CLI preserved — you can still run ${chalk.cyan("fleet setup")} to re-install.`);
+      console.log(`  To remove everything including the CLI: ${chalk.cyan("fleet nuke --all --purge")}`);
+    } else if (purge) {
+      console.log(`\n  CLI removed. To re-install from the repo:`);
+      console.log(`    ${chalk.cyan("cd <boring-repo> && bash install.sh")}`);
+    } else {
+      console.log(`\n  Re-install: ${chalk.cyan("fleet setup")}`);
+    }
   }
 }
 
@@ -566,13 +596,14 @@ export function register(parent: Command): void {
     .command("nuke [name]")
     .description("Destroy a worker or all fleet artifacts (--all)")
     .option("-a, --all", "Remove ALL fleet-installed artifacts (clean slate)")
+    .option("--purge", "Also remove CLI symlinks (~/.claude-fleet, ~/.local/bin/fleet)")
     .option("--dry-run", "Show what would be removed without doing it")
     .option("-y, --yes", "Skip confirmation prompt")
     .option("--keep-data", "Preserve ~/.claude/fleet/ (--all only)")
     .option("--keep-mail", "Preserve Fleet Mail data (--all only)");
   addGlobalOpts(sub)
     .action(async (name: string | undefined, opts: {
-      all?: boolean; dryRun?: boolean; yes?: boolean; keepData?: boolean; keepMail?: boolean;
+      all?: boolean; purge?: boolean; dryRun?: boolean; yes?: boolean; keepData?: boolean; keepMail?: boolean;
     }, cmd: Command) => {
       if (opts.all) {
         await nukeAll(opts);

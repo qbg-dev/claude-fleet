@@ -51,3 +51,15 @@ export function table(headers: string[], rows: string[][]): void {
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
+
+/** Suggest running fleet onboard if not yet onboarded */
+export function hintOnboard(project: string): void {
+  const { existsSync } = require("node:fs");
+  const { join } = require("node:path");
+  const HOME = process.env.HOME || "/tmp";
+  const fleetJsonPath = join(HOME, ".claude/fleet", project, "fleet.json");
+  if (!existsSync(fleetJsonPath)) {
+    console.log("");
+    info(`Tip: Run ${chalk.bold("fleet onboard")} first for guided fleet setup and configuration.`);
+  }
+}

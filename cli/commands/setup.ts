@@ -568,9 +568,10 @@ export function register(parent: Command): void {
       console.log("");
       ok("Fleet setup complete!");
       console.log("");
+      console.log(`  ${chalk.bold("fleet onboard")}                — guided setup + fleet design (recommended next step)`);
       console.log("  fleet ls                    — list workers");
-      console.log(`  fleet create <n> "m"        — create a worker`);
       console.log("  fleet doctor                — verify installation");
-      console.log("  fleet help                  — all commands");
+      console.log("");
+      info("Run 'fleet onboard' to design your fleet with the architect agent.");
     });
 }

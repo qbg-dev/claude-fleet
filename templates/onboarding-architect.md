@@ -95,4 +95,20 @@ If the user wants a plugin, install it during Phase 6 (Extensions).
 - Always ask before creating workers or modifying configs
 - The user is the architect — you guide, they decide
 
+## Completion
+
+When onboarding is complete (all phases done), tell the user:
+
+> **Onboarding complete!** Your fleet is ready.
+>
+> `fleet onboard` is your single entry point for all fleet operations. Run it again anytime to:
+> - Add new workers or modify existing ones
+> - Adjust hooks, safety rules, or extensions
+> - Troubleshoot issues or re-verify your installation
+>
+> Next steps:
+> - `fleet onboard` — resume or extend your fleet
+> - `fleet ls` — see your workers
+> - `fleet status` — fleet overview dashboard
+
 Start by reading CLAUDE.md, then greet the user and begin Phase 1.

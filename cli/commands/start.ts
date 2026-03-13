@@ -7,7 +7,7 @@ import {
 import {
   getConfig, getFleetConfig, getState, generateLaunchSh, writeJsonLocked,
 } from "../lib/config";
-import { info, ok, warn, fail } from "../lib/fmt";
+import { info, ok, warn, fail, hintOnboard } from "../lib/fmt";
 import { launchInTmux } from "../lib/launch";
 import { listPaneIds } from "../lib/tmux";
 import { syncWorktree } from "../lib/worktree";
@@ -183,6 +183,9 @@ export function register(parent: Command): void {
       window?: string; windowIndex?: string; save?: boolean; force?: boolean;
     }, cmd: Command) => {
       const project = cmd.optsWithGlobals().project as string || resolveProject();
+
+      // Hint: suggest onboarding if fleet.json doesn't exist yet
+      hintOnboard(project);
 
       if (opts.all) {
         const concurrency = Math.max(1, Math.min(8, parseInt(opts.concurrency || "4", 10)));

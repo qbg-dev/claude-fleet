@@ -14,6 +14,11 @@ import { addGlobalOpts } from "../index";
 
 const WINDOW_NAME = "fleet-onboard";
 
+/** Detect if we're inside a tmux pane already */
+function currentTmuxPane(): string | null {
+  return process.env.TMUX_PANE || null;
+}
+
 /**
  * The seed is intentionally lean — it tells the agent WHERE to find
  * authoritative docs (CLAUDE.md, README.md, templates) rather than
@@ -166,6 +171,45 @@ export function register(parent: Command): void {
         mkdirSync(FLEET_DATA, { recursive: true });
       }
 
+      // If we're already inside a tmux pane, launch directly here
+      const callingPane = currentTmuxPane();
+      if (callingPane) {
+        info(`Detected TMUX_PANE=${callingPane} — launching in current pane`);
+        setPaneTitle(callingPane, "fleet-architect");
+
+        // Build the claude command
+        let launchCmd = `claude --model "${opts.model}" --effort "${opts.effort}"`;
+        launchCmd += ` --dangerously-skip-permissions`;
+        launchCmd += ` --add-dir "${FLEET_DIR}"`;
+        launchCmd += ` --add-dir "${FLEET_DATA}"`;
+
+        // Write seed to temp file for -p flag (avoids tmux paste complexity when in-pane)
+        const seed = buildSeed();
+        const seedFile = `/tmp/fleet-onboard-seed-${process.pid}.txt`;
+        writeFileSync(seedFile, seed);
+
+        launchCmd += ` -p "$(cat ${seedFile})"`;
+
+        // Exec directly — replaces the current fleet process with claude
+        info("Handing off to Claude...");
+        console.log("");
+        const result = Bun.spawnSync(["bash", "-c", launchCmd], {
+          cwd: process.cwd(),
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        });
+
+        // Clean up seed file
+        try { Bun.spawnSync(["rm", "-f", seedFile]); } catch {}
+
+        ok("Fleet architect session ended.");
+        info("To continue onboarding or make changes: fleet onboard");
+        process.exit(result.exitCode || 0);
+        return;
+      }
+
+      // Not in tmux — create a session/window as before
       let paneId: string;
       if (!sessionExists(session)) {
         paneId = createSession(session, WINDOW_NAME, process.cwd());
@@ -215,6 +259,6 @@ export function register(parent: Command): void {
 
       ok(`Fleet architect launched in ${session}:${WINDOW_NAME} (pane ${paneId})`);
       info("Switch to it with: fleet attach fleet-onboard");
-      info("After onboarding completes, run 'fleet doctor' to verify your installation.");
+      info("To continue onboarding or make changes: fleet onboard");
     });
 }

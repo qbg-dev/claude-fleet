@@ -8,7 +8,7 @@ import {
 import {
   getDefaults, getFleetConfig, getSystemHooks, generateLaunchSh, writeJsonLocked,
 } from "../lib/config";
-import { info, ok, warn, fail } from "../lib/fmt";
+import { info, ok, warn, fail, hintOnboard } from "../lib/fmt";
 import { launchInTmux } from "../lib/launch";
 import { syncWorktree } from "../lib/worktree";
 import { addGlobalOpts } from "../index";
@@ -32,6 +32,10 @@ export async function runCreate(
   globalOpts: Record<string, unknown>,
 ): Promise<void> {
   if (!NAME_RE.test(name)) fail(`Name must be kebab-case: ${name}`);
+
+  // Hint: suggest onboarding if fleet.json doesn't exist yet
+  const projectForHint = (globalOpts.project as string) || resolveProject();
+  hintOnboard(projectForHint);
 
   // Support @filename syntax: read mission from file
   if (mission.startsWith("@")) {
