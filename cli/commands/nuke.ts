@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, lstatSync, readdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import chalk from "chalk";
-import { FLEET_DIR, FLEET_DATA, workerDir, resolveProject, resolveProjectRoot } from "../lib/paths";
+import { FLEET_DIR, FLEET_DATA, FLEET_MAIL_URL, FLEET_MAIL_TOKEN, workerDir, resolveProject, resolveProjectRoot } from "../lib/paths";
 import { getState, getConfig } from "../lib/config";
 import { ok, info, warn, fail } from "../lib/fmt";
 import { listPaneIds, killPane } from "../lib/tmux";
@@ -92,6 +92,23 @@ async function nukeWorker(name: string, project: string, opts: { yes?: boolean }
     rmSync(missionLink, { force: true });
     ok(`Removed mission symlink ${missionLink}`);
     removed.push(`mission symlink`);
+  }
+
+  // 5. Delete Fleet Mail account
+  const mailUrl = FLEET_MAIL_URL;
+  const mailToken = FLEET_MAIL_TOKEN;
+  if (mailUrl && mailToken) {
+    const accountName = `${name}@${project}`;
+    try {
+      const resp = await fetch(
+        `${mailUrl}/api/admin/accounts/${encodeURIComponent(accountName)}`,
+        { method: "DELETE", headers: { Authorization: `Bearer ${mailToken}` }, signal: AbortSignal.timeout(5000) },
+      );
+      if (resp.ok) {
+        ok(`Deleted Fleet Mail account ${accountName}`);
+        removed.push(`mail account ${accountName}`);
+      }
+    } catch { /* best effort */ }
   }
 
   // Summary
