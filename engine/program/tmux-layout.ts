@@ -97,6 +97,36 @@ export function addWindowsToSession(
   Bun.sleepSync(300);
 }
 
+// ── Pane appending (back-edge cycles) ─────────────────────────────
+
+/**
+ * Append new panes to an existing window for back-edge cycle agents.
+ * Keeps all existing panes (with running Claude sessions) intact.
+ * Returns the starting pane index for the new panes.
+ */
+export function appendPanesToWindow(
+  session: string,
+  windowName: string,
+  newPaneCount: number,
+  projectRoot: string,
+): number {
+  const target = `${session}:${windowName}`;
+  const { stdout } = tmux("list-panes", "-t", target, "-F", "#{pane_id}");
+  const existingCount = stdout.split("\n").filter(Boolean).length;
+
+  for (let i = 0; i < newPaneCount; i++) {
+    tmux("split-window", "-d", "-t", target, "-c", projectRoot);
+  }
+
+  if (existingCount + newPaneCount > 1) {
+    tmux("select-layout", "-t", target, "tiled");
+  }
+
+  Bun.sleepSync(300);
+  console.log(`  Appended ${newPaneCount} panes to ${windowName} (${existingCount} existing → ${existingCount + newPaneCount} total)`);
+  return existingCount;
+}
+
 // ── Agent launching ──────────────────────────────────────────────
 
 /**

@@ -25,7 +25,7 @@ import { isDynamic } from "./types";
 import { compilePhase, installGraphStopHook, savePipelineState } from "./compiler";
 import { provisionWorkers, generateLaunchWrapper, generateCleanupScript } from "./fleet-provision";
 import { installPipelineHooks, installToolRestrictionHooks } from "./hook-generator";
-import { addWindowsToSession, launchAgents, launchInPlanningWindow } from "./tmux-layout";
+import { addWindowsToSession, launchAgents, launchInPlanningWindow, appendPanesToWindow } from "./tmux-layout";
 import { updateManifest } from "./manifest";
 import { FLEET_DATA } from "../../cli/lib/paths";
 import { phasesToGraph, outgoingEdges, buildNodeIndexMap, END_SENTINEL } from "./graph";
@@ -170,17 +170,28 @@ async function runBridge(sessionDir: string, nodeName: string, depth = 0): Promi
   }
 
   // 8. Adjust tmux layout
-  addWindowsToSession(state.tmuxSession, compiled.windows, state.projectRoot);
+  const isBackEdgeCycle = (state.cycleCount?.[cycleKey] || 0) > 0;
+
+  if (isBackEdgeCycle) {
+    // Back-edge cycle: append NEW panes to existing windows, keep old agents alive
+    const windowOffsets = new Map<string, number>();
+    for (const win of compiled.windows) {
+      const offset = appendPanesToWindow(
+        state.tmuxSession, win.name, win.paneCount, state.projectRoot,
+      );
+      windowOffsets.set(win.name, offset);
+    }
+    // Shift worker pane indices so they target the newly appended panes
+    for (const worker of compiled.workers) {
+      const offset = windowOffsets.get(worker.window) || 0;
+      worker.paneIndex += offset;
+    }
+  } else {
+    addWindowsToSession(state.tmuxSession, compiled.windows, state.projectRoot);
+  }
 
   // 9. Launch agents
-  const isPlanningPhase = compiled.workers.length <= 2 &&
-    compiled.workers.every(w => w.window === "planning" || w.window === nodeName);
-
-  if (isPlanningPhase && compiled.workers.length === 1) {
-    launchInPlanningWindow(compiled.workers[0], state.tmuxSession, state, 1);
-  } else {
-    launchAgents(compiled.workers, state.tmuxSession, state);
-  }
+  launchAgents(compiled.workers, state.tmuxSession, state);
 
   // 10. Update manifest
   updateManifest(state, phaseIndex, compiled.phase.agentNames);
