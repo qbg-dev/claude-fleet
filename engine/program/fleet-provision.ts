@@ -266,6 +266,9 @@ export function generateLaunchWrapper(
   const workerDir = join(FLEET_DATA, state.fleetProject, worker.name);
   const addDirFlag = ` --add-dir "${workerDir}"`;
 
+  // Use tmux paste-buffer to inject the seed prompt after Claude starts.
+  // Passing long prompts as CLI args in interactive mode can hang Claude
+  // due to argument buffering issues. tmux paste is reliable for any size.
   const script = `#!/usr/bin/env bash
 cd "${state.workDir}"
 ${fleetEnv}
@@ -273,7 +276,24 @@ ${customEnv ? customEnv + "\n" : ""}export PROJECT_ROOT="${state.workDir}"
 export HOOKS_DIR="${hooksDir}"
 export CLAUDE_FLEET_DIR="${fleetDir}"
 export CLAUDE_CODE_SKIP_PROJECT_LOCK=1
-exec ${execPrefix}claude --model ${worker.model}${effortFlag}${permFlag}${addDirFlag} "$(cat '${worker.seedPath}')"
+
+# Launch Claude, then inject seed via tmux paste (more reliable than CLI arg)
+SEED_FILE='${worker.seedPath}'
+PANE_ID="\${TMUX_PANE:-}"
+
+if [ -n "\$PANE_ID" ] && [ -f "\$SEED_FILE" ]; then
+  ${execPrefix}claude --model ${worker.model}${effortFlag}${permFlag}${addDirFlag} &
+  CLAUDE_PID=\$!
+  sleep 5
+  tmux load-buffer "\$SEED_FILE"
+  tmux paste-buffer -t "\$PANE_ID"
+  sleep 1
+  tmux send-keys -t "\$PANE_ID" Enter
+  wait \$CLAUDE_PID
+else
+  # Fallback: CLI arg (works for non-tmux or missing seed)
+  exec ${execPrefix}claude --model ${worker.model}${effortFlag}${permFlag}${addDirFlag} "\$(cat '\${SEED_FILE}')"
+fi
 `;
 
   writeFileSync(worker.wrapperPath, script, { mode: 0o755 });
