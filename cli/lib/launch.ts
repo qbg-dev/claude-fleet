@@ -14,7 +14,7 @@ import {
 import {
   sessionExists, createSession, windowExists, splitIntoWindow,
   createWindow, setPaneTitle, sendKeys, sendEnter, capturePane,
-  waitForPrompt, pasteBuffer, getPaneTarget,
+  waitForPrompt, pasteBuffer, getPaneTarget, windowHasClaudeProcess,
 } from "./tmux";
 import { info, ok, warn, fail } from "./fmt";
 
@@ -75,103 +75,114 @@ export async function launchInTmux(
   // ── Create or find tmux pane ──
   let paneId: string;
   let createdSession = false;
+  let adopted = false;
 
   if (!sessionExists(session)) {
     paneId = createSession(session, window, worktree);
     createdSession = true;
   } else if (windowExists(session, window)) {
-    paneId = splitIntoWindow(session, window, worktree);
+    // Dedup guard: if Claude is already running in this window, adopt that pane
+    const existingPane = windowHasClaudeProcess(session, window);
+    if (existingPane) {
+      info(`Claude already running in ${window} (${existingPane}), adopting`);
+      paneId = existingPane;
+      adopted = true;
+    } else {
+      paneId = splitIntoWindow(session, window, worktree);
+    }
   } else {
     paneId = createWindow(session, window, worktree, windowIndex);
   }
 
   setPaneTitle(paneId, name);
 
-  // Auto-restore saved layout if available
-  try {
-    const { readJson: readJsonImport } = await import("../../shared/io");
-    const fleetJsonPath = join(FLEET_DATA, project, "fleet.json");
-    const fleetJson = readJsonImport(fleetJsonPath) as any;
-    if (fleetJson?.layouts?.[window]) {
-      Bun.spawnSync(
-        ["tmux", "select-layout", "-t", `${session}:${window}`, fleetJson.layouts[window]],
-        { stderr: "pipe" }
+  if (!adopted) {
+    // Auto-restore saved layout if available
+    try {
+      const { readJson: readJsonImport } = await import("../../shared/io");
+      const fleetJsonPath = join(FLEET_DATA, project, "fleet.json");
+      const fleetJson = readJsonImport(fleetJsonPath) as any;
+      if (fleetJson?.layouts?.[window]) {
+        Bun.spawnSync(
+          ["tmux", "select-layout", "-t", `${session}:${window}`, fleetJson.layouts[window]],
+          { stderr: "pipe" }
+        );
+      }
+    } catch {} // non-fatal
+
+    if (createdSession) {
+      sendKeys(paneId, `cd "${worktree}"`);
+      sendEnter(paneId);
+    }
+
+    // ── Build agent command ──
+    const { model, reasoning_effort: effort, permission_mode: perm } = config!;
+    let cmd: string;
+
+    if (runtime === "codex") {
+      cmd = `WORKER_NAME="${name}" WORKER_RUNTIME=codex codex -m "${model}"`;
+      if (perm === "bypassPermissions") {
+        cmd += " --dangerously-bypass-approvals-and-sandbox";
+      } else {
+        cmd += " -s workspace-write -a on-request";
+      }
+      cmd += ` -c model_reasoning_effort=${effort}`;
+      cmd += " --no-alt-screen";
+      cmd += ` --add-dir "${dir}"`;
+    } else {
+      cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${name}" claude --model "${model}" --effort "${effort}"`;
+      if (perm === "bypassPermissions") {
+        cmd += " --dangerously-skip-permissions";
+      } else {
+        cmd += ` --permission-mode "${perm}"`;
+      }
+      cmd += ` --add-dir "${dir}"`;
+    }
+
+    sendKeys(paneId, cmd);
+    sendEnter(paneId);
+
+    // ── Wait for TUI ──
+    info("Waiting for TUI...");
+    const ready = await waitForPrompt(paneId);
+    if (!ready) warn("TUI timeout after 60s, proceeding anyway");
+    await Bun.sleep(2000); // settle
+
+    // ── Generate + inject seed ──
+    let seedContent: string;
+    try {
+      const result = Bun.spawnSync(
+        [Bun.which("bun") || "bun", "-e", `
+          const { generateSeedContent } = await import('${FLEET_DIR}/mcp/worker-fleet/index.ts');
+          process.stdout.write(generateSeedContent());
+        `],
+        {
+          env: { ...process.env, WORKER_NAME: name, PROJECT_ROOT: worktree },
+          stderr: "pipe",
+        },
       );
+      seedContent = result.exitCode === 0
+        ? result.stdout.toString()
+        : `You are worker ${name}. Read mission.md, then start your next cycle.`;
+    } catch {
+      seedContent = `You are worker ${name}. Read mission.md, then start your next cycle.`;
     }
-  } catch {} // non-fatal
 
-  if (createdSession) {
-    sendKeys(paneId, `cd "${worktree}"`);
-    sendEnter(paneId);
-  }
-
-  // ── Build agent command ──
-  const { model, reasoning_effort: effort, permission_mode: perm } = config!;
-  let cmd: string;
-
-  if (runtime === "codex") {
-    cmd = `WORKER_NAME="${name}" WORKER_RUNTIME=codex codex -m "${model}"`;
-    if (perm === "bypassPermissions") {
-      cmd += " --dangerously-bypass-approvals-and-sandbox";
+    const pasted = pasteBuffer(paneId, seedContent);
+    if (!pasted) {
+      warn("Failed to load seed buffer — worker launched without seed");
     } else {
-      cmd += " -s workspace-write -a on-request";
+      const settleMs = Math.min(8000, 2000 + Math.floor(seedContent.length / 4096) * 1000);
+      await Bun.sleep(settleMs);
+      sendEnter(paneId);
+
+      await Bun.sleep(3000);
+      const output = capturePane(paneId, 10);
+      if (/command not found|bad pattern|zsh:|bash:/.test(output) && !/❯.*command not found/.test(output)) {
+        warn("Detected garbled seed (shell errors) — seed may have leaked into shell");
+      }
+      if (/❯/.test(output)) sendEnter(paneId);
     }
-    cmd += ` -c model_reasoning_effort=${effort}`;
-    cmd += " --no-alt-screen";
-    cmd += ` --add-dir "${dir}"`;
-  } else {
-    cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${name}" claude --model "${model}" --effort "${effort}"`;
-    if (perm === "bypassPermissions") {
-      cmd += " --dangerously-skip-permissions";
-    } else {
-      cmd += ` --permission-mode "${perm}"`;
-    }
-    cmd += ` --add-dir "${dir}"`;
-  }
-
-  sendKeys(paneId, cmd);
-  sendEnter(paneId);
-
-  // ── Wait for TUI ──
-  info("Waiting for TUI...");
-  const ready = await waitForPrompt(paneId);
-  if (!ready) warn("TUI timeout after 60s, proceeding anyway");
-  await Bun.sleep(2000); // settle
-
-  // ── Generate + inject seed ──
-  let seedContent: string;
-  try {
-    const result = Bun.spawnSync(
-      [Bun.which("bun") || "bun", "-e", `
-        const { generateSeedContent } = await import('${FLEET_DIR}/mcp/worker-fleet/index.ts');
-        process.stdout.write(generateSeedContent());
-      `],
-      {
-        env: { ...process.env, WORKER_NAME: name, PROJECT_ROOT: worktree },
-        stderr: "pipe",
-      },
-    );
-    seedContent = result.exitCode === 0
-      ? result.stdout.toString()
-      : `You are worker ${name}. Read mission.md, then start your next cycle.`;
-  } catch {
-    seedContent = `You are worker ${name}. Read mission.md, then start your next cycle.`;
-  }
-
-  const pasted = pasteBuffer(paneId, seedContent);
-  if (!pasted) {
-    warn("Failed to load seed buffer — worker launched without seed");
-  } else {
-    const settleMs = Math.min(8000, 2000 + Math.floor(seedContent.length / 4096) * 1000);
-    await Bun.sleep(settleMs);
-    sendEnter(paneId);
-
-    await Bun.sleep(3000);
-    const output = capturePane(paneId, 10);
-    if (/command not found|bad pattern|zsh:|bash:/.test(output) && !/❯.*command not found/.test(output)) {
-      warn("Detected garbled seed (shell errors) — seed may have leaked into shell");
-    }
-    if (/❯/.test(output)) sendEnter(paneId);
   }
 
   // ── Update state.json ──
@@ -192,8 +203,8 @@ export async function launchInTmux(
     tmux_session: session,
     session_id: "",
     past_sessions: pastSessions,
-    last_relaunch: { at: now, reason: "fleet-start" },
-    relaunch_count: (oldState?.relaunch_count || 0) + 1,
+    last_relaunch: { at: now, reason: adopted ? "adopted" : "fleet-start" },
+    relaunch_count: (oldState?.relaunch_count || 0) + (adopted ? 0 : 1),
     cycles_completed: oldState?.cycles_completed || 0,
     last_cycle_at: oldState?.last_cycle_at || null,
     custom: oldState?.custom || {},
@@ -201,7 +212,7 @@ export async function launchInTmux(
 
   updateRegistry(name, project, paneId, paneTarget, session);
 
-  ok(`Worker '${name}' launched in pane ${paneId} (session: ${session}, window: ${window})`);
+  ok(`Worker '${name}' ${adopted ? "adopted" : "launched in"} pane ${paneId} (session: ${session}, window: ${window})`);
   return paneId;
 }
 

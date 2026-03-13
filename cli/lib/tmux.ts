@@ -216,6 +216,22 @@ export function pasteBuffer(paneId: string, content: string): boolean {
   }
 }
 
+/** Check if any pane in a window is running a Claude process (by command name) */
+export function windowHasClaudeProcess(session: string, window: string): string | null {
+  const { ok, stdout } = run([
+    "list-panes", "-t", `${session}:${window}`, "-F", "#{pane_id}\t#{pane_current_command}",
+  ]);
+  if (!ok) return null;
+  for (const line of stdout.split("\n")) {
+    const [paneId, cmd] = line.split("\t");
+    // Claude shows as version number (e.g. "2.1.74") or "claude" in pane_current_command
+    if (paneId && cmd && (/^\d+\.\d+/.test(cmd) || cmd.includes("claude"))) {
+      return paneId;
+    }
+  }
+  return null;
+}
+
 /** Send /exit to a pane and wait for Claude to exit */
 export async function gracefulStop(paneId: string, timeoutMs = 30_000): Promise<boolean> {
   sendKeys(paneId, "/exit");
