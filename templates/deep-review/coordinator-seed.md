@@ -38,7 +38,7 @@ Poll `mail_inbox()` every 30s for messages with subject matching "PASS N COMPLET
 
 ### Phase 2: Aggregate
 
-Read all `{{SESSION_DIR}}/findings-pass-{1..{{NUM_PASSES}}}.json`. Validate each: `bash {{VALIDATOR}} {{SESSION_DIR}}/findings-pass-N.json worker` — skip invalid files.
+Read all `{{SESSION_DIR}}/findings-pass-{1..NUM_PASSES}.json` (where NUM_PASSES={{NUM_PASSES}}). Validate each: `bash {{VALIDATOR}} {{SESSION_DIR}}/findings-pass-N.json worker` — skip invalid files.
 
 Check `{{SESSION_DIR}}/comms/` for inter-worker messages. Build unified findings list, noting each worker's specialization (specialized findings in their area carry more weight).
 
