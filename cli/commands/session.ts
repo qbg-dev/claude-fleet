@@ -108,10 +108,10 @@ export function register(parent: Command): void {
       if (!existsSync(tokenPath)) return fail("No Fleet Mail token — run: fleet register");
       const token = readFileSync(tokenPath, "utf-8").trim();
 
-      // Upload as blob
+      // Upload session file via dedicated endpoint
       const fileData = readFileSync(transcriptPath);
-      const resp = await fetch(`${FLEET_MAIL_URL}/api/blobs`, {
-        method: "POST",
+      const resp = await fetch(`${FLEET_MAIL_URL}/api/accounts/me/session`, {
+        method: "PUT",
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/octet-stream",
@@ -124,20 +124,7 @@ export function register(parent: Command): void {
         return fail(`Upload failed (${resp.status}): ${err}`);
       }
 
-      const data = await resp.json() as { hash: string };
-
-      // Update account bio with sync metadata
-      await fetch(`${FLEET_MAIL_URL}/api/accounts/me`, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          bio: `session_blob:${data.hash},synced_at:${new Date().toISOString()},size:${fileSize}`,
-        }),
-      });
-
+      const data = await resp.json() as { hash: string; synced_at: string };
       ok(`Synced ${(fileSize / 1024).toFixed(1)}KB → blob:${data.hash.slice(0, 12)}...`);
     });
 
