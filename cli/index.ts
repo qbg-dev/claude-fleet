@@ -60,6 +60,10 @@ import { register as registerCompletion } from "./commands/completion";
 import { register as registerUpdate } from "./commands/update";
 import { register as registerLaunch } from "./commands/launch";
 import { register as registerDeploy } from "./commands/deploy";
+import { register as registerGet } from "./commands/get";
+import { register as registerState } from "./commands/state";
+import { register as registerCheckpoint } from "./commands/checkpoint";
+import { register as registerRoundStop } from "./commands/round-stop";
 
 registerSetup(program);
 registerCreate(program);
@@ -89,5 +93,9 @@ registerCompletion(program);
 registerUpdate(program);
 registerLaunch(program);
 registerDeploy(program);
+registerGet(program);
+registerState(program);
+registerCheckpoint(program);
+registerRoundStop(program);
 
 program.parse();

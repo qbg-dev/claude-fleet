@@ -34,13 +34,17 @@ fleet stop <name> [--all]               # graceful stop
 fleet ls [--json]                       # list with liveness
 fleet status                            # fleet overview dashboard
 fleet completion                        # output shell completion script
+fleet get <name>                        # show worker mission + info
 fleet config <name> [key] [value]       # get/set config
 fleet defaults [key] [value]            # global defaults
 fleet fork <parent> <child> "<mission>" # fork from existing
 fleet recycle [name]                    # restart with fresh context
 fleet log <name>                        # tail output
 fleet attach <name>                     # attach tmux pane
-fleet mail <name>                       # check inbox
+fleet mail inbox [--label X]            # read own inbox
+fleet mail send <to> "<subj>" "<body>"  # send message
+fleet mail read <id>                    # read full message
+fleet mail check <name>                 # check another worker's inbox
 fleet mail-server [connect|start]       # Fleet Mail
 fleet mcp [register|status]             # MCP server
 fleet run <name> "<command>"            # run in worktree
@@ -48,6 +52,10 @@ fleet tui [--account <name>]            # Fleet Mail TUI client
 fleet layout <save|restore|list|delete> # tmux layout persistence
 fleet deep-review <scope>               # adversarial code review
 fleet pipeline <program> [opts]         # launch a program-API pipeline
+fleet state get [name]                  # read worker state ("all" for dashboard)
+fleet state set <key> <value>           # persist state across recycles
+fleet checkpoint "<summary>"            # lightweight mid-work snapshot
+fleet round-stop "<message>"            # full cycle end: checkpoint + handoff + notify
 fleet hook <add|rm|ls|complete>         # manage dynamic hooks
 fleet launch                            # launch fleet from .fleet/manifest.yaml
 fleet deploy <host> <repo-url>          # deploy fleet to remote machine via SSH

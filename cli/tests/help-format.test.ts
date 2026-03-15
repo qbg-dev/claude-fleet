@@ -42,6 +42,10 @@ const ALL_COMMANDS = [
   "update",
   "launch",
   "deploy",
+  "get",
+  "state",
+  "checkpoint",
+  "round-stop",
 ] as const;
 
 describe("fleet --help", () => {
