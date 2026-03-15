@@ -125,13 +125,13 @@ function runnerSeed(host: string, local: boolean, dockerCmd: string): string {
   return `You are a benchmark executor for the Ranger migration task.
 
 ## Project
-\`${PROJECT_ROOT}\` — a benchmark where an agent must migrate a StarRocks analytics platform from view-based tenant isolation to Apache Ranger row-level security. The task involves configuring StarRocks FE, setting up Ranger from scratch (service definition, groups, users, policies), writing a provisioning script, and onboarding a new tenant.
+\`${PROJECT_ROOT}\` — a benchmark where an agent must migrate a StarRocks analytics platform from view-based tenant isolation to Apache Ranger row-level security.
 
 ## Rules
 - Do NOT look at \`${TASK_DIR}/solution/\` or \`${TASK_DIR}/tests/\` — you are testing the agent
 - Build a fresh Docker container each round
-- The agent (Sonnet) reads ONLY instruction.md and solves inside the container
-- After the agent finishes (or times out at 30 min), run the test suite to grade
+- Spawn the solving agent via Claude Agent SDK (NOT the CLI)
+- After the agent finishes (or times out), run the test suite to grade
 
 ## Task
 
@@ -160,35 +160,92 @@ for i in $(seq 1 240); do
 done
 \`\`\`
 
-### Step 4: Read the instruction (what the agent sees)
-\`\`\`bash
-cat ${TASK_DIR}/instruction.md
-\`\`\`
+### Step 4: Write and run the Agent SDK script
+Write a TypeScript file that uses the Claude Agent SDK to spawn a solving agent. The agent gets the instruction and executes commands in the Docker container via bash.
 
-### Step 5: Run Sonnet agent
-Launch a Claude Code agent (Sonnet) to solve the task inside the container. The agent should:
-- Read the instruction.md content
-- Execute commands via \`${dockerCmd} exec tb3-harden-r$ROUND ...\`
-- Have a 30-minute timeout
-
-Use Claude Code CLI:
 \`\`\`bash
+ROUND=$(cat "{{SESSION_DIR}}/round.txt" 2>/dev/null || echo 1)
 INSTRUCTION=$(cat ${TASK_DIR}/instruction.md)
-timeout 1800 claude -p "You are solving a benchmark task inside a Docker container.
 
-Execute all commands with: ${dockerCmd} exec tb3-harden-r\${ROUND} <command>
+cat > /tmp/tb3-agent-runner.ts << 'AGENTEOF'
+import { query } from "@anthropic-ai/claude-code";
+import * as fs from "fs";
+
+const round = process.env.ROUND || "1";
+const instruction = process.env.INSTRUCTION || "";
+const dockerExec = "${dockerCmd} exec tb3-harden-r" + round;
+const sessionDir = process.env.SESSION_DIR || "/tmp";
+
+const startTime = Date.now();
+const messages: string[] = [];
+
+async function main() {
+  console.log(\`Spawning Sonnet agent for round \${round}...\`);
+  console.log(\`Docker exec prefix: \${dockerExec}\`);
+
+  for await (const message of query({
+    prompt: \`You are solving a benchmark task inside a Docker container on a remote host.
+
+IMPORTANT: Execute ALL commands using this prefix:
+\${dockerExec} bash -c '<your command here>'
+
+For multi-line scripts, write them to a file first:
+\${dockerExec} bash -c 'cat > /tmp/script.sh << "EOF"
+<script content>
+EOF'
+\${dockerExec} bash /tmp/script.sh
 
 Here is the task:
 
-$INSTRUCTION
+\${instruction}
 
-Solve it step by step. Remember all commands must run inside the container." \\
-  --model claude-sonnet-4-20250514 \\
-  --output-format json 2>&1 | tee "{{SESSION_DIR}}/agent-transcript-r\${ROUND}.json"
+Solve it step by step. Every command must run inside the container via the docker exec prefix above.\`,
+    options: {
+      model: "claude-sonnet-4-20250514",
+      permissionMode: "bypassPermissions",
+      allowedTools: ["Bash", "Read", "Write", "Edit"],
+      maxTurns: 100,
+      effort: "high",
+    }
+  })) {
+    if (message.type === "assistant" && message.message?.content) {
+      for (const block of message.message.content as any[]) {
+        if ("text" in block) {
+          messages.push(block.text);
+          console.log("Agent:", block.text.slice(0, 200));
+        } else if ("name" in block) {
+          console.log(\`[Tool] \${block.name}\`);
+        }
+      }
+    }
+    if (message.type === "result") {
+      const elapsed = Math.round((Date.now() - startTime) / 60000);
+      console.log(\`\\nAgent finished: \${message.subtype}, \${elapsed} min, \${message.num_turns} turns, $\${message.total_cost_usd}\`);
+
+      // Save transcript
+      fs.writeFileSync(
+        \`\${sessionDir}/agent-transcript-r\${round}.json\`,
+        JSON.stringify({ subtype: message.subtype, turns: message.num_turns, cost: message.total_cost_usd, elapsed_min: elapsed, messages }, null, 2)
+      );
+    }
+  }
+}
+
+main().catch(err => {
+  console.error("Agent SDK error:", err);
+  process.exit(1);
+});
+AGENTEOF
+
+# Run the Agent SDK script with env vars
+ROUND=$ROUND INSTRUCTION="$INSTRUCTION" SESSION_DIR="{{SESSION_DIR}}" \\
+  timeout 2400 bun /tmp/tb3-agent-runner.ts 2>&1 | tee "{{SESSION_DIR}}/agent-sdk-log-r$ROUND.txt"
+echo "Agent SDK script exited with code $?"
 \`\`\`
 
-### Step 6: Run test suite
+### Step 5: Run test suite
 \`\`\`bash
+ROUND=$(cat "{{SESSION_DIR}}/round.txt" 2>/dev/null || echo 1)
 ${dockerCmd} exec tb3-harden-r$ROUND mkdir -p /tests /logs/verifier
 ${dockerCmd} cp ${TASK_DIR}/tests/test_state.py tb3-harden-r$ROUND:/tests/test_state.py
 ${dockerCmd} cp ${TASK_DIR}/tests/test.sh tb3-harden-r$ROUND:/tests/test.sh
@@ -198,13 +255,13 @@ echo "$TEST_OUTPUT"
 REWARD=$(${dockerCmd} exec tb3-harden-r$ROUND bash -c '/tests/test.sh && cat /logs/verifier/reward.txt' 2>&1)
 \`\`\`
 
-### Step 7: Write consolidated results
+### Step 6: Write consolidated results
 Parse the pytest output and write to \`{{SESSION_DIR}}/round-results.json\`:
 \`\`\`json
 {
   "round": 1,
   "timestamp": "2026-03-15T12:00:00Z",
-  "agent": "sonnet",
+  "agent": "sonnet-sdk",
   "container": "tb3-harden-r1",
   "reward": "1" or "0",
   "tests": {
@@ -235,7 +292,7 @@ Parse the pytest output and write to \`{{SESSION_DIR}}/round-results.json\`:
 
 For each failed test, include the test name and the failure reason from pytest output.
 
-### Step 8: Print summary
+### Step 7: Print summary
 Print a pass/fail table:
 \`\`\`
 Round 1 Results:
