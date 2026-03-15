@@ -1,7 +1,7 @@
 <fleet>
 ## Fleet CLI
 
-Source of truth for all worker operations. For full reference: `fleet --help` or `USE FLEET`.
+Source of truth for all worker operations. For full reference: `fleet --help`.
 
 ### Core Commands
 

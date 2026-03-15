@@ -33,7 +33,7 @@ export function loadSeedContext(branch: string, missionAuthority: string, worker
     return content;
   } catch {
     // Fallback if template missing — minimal reminder
-    return `Use \`mcp__worker-fleet__*\` MCP tools. Call \`mail_inbox()\` first. Report to ${missionAuthority}.`;
+    return `Use \`fleet\` CLI commands. Call \`fleet mail inbox\` first. Report to ${missionAuthority}.`;
   }
 }
 
@@ -57,7 +57,7 @@ export function generateSeedContent(handoff?: string, workerName?: string): stri
     const reg = readRegistry();
     const entry = reg[effectiveName] as RegistryWorkerEntry | undefined;
     if (entry?.custom && Object.keys(entry.custom).length > 0) {
-      stateBlock = `\n\n## Persisted State\n\`\`\`json\n${JSON.stringify(entry.custom, null, 2)}\n\`\`\`\nThese values were saved by your previous instance via \`update_state()\`. Use them to resume context.`;
+      stateBlock = `\n\n## Persisted State\n\`\`\`json\n${JSON.stringify(entry.custom, null, 2)}\n\`\`\`\nThese values were saved by your previous instance via \`fleet state set\`. Use them to resume context.`;
     }
     // Load proposal instructions if proposal_required is set
     if (entry?.custom?.proposal_required) {
@@ -155,7 +155,7 @@ Worker config: ${workerDir}/
 ${handoffBlock}
 Read these files NOW in this order:
 1. ${existsSync(join(workerDir, "mission.md")) ? workerDir : fleetWorkerDir}/mission.md — your mission and goals (you own this file — update it as your mission evolves)
-2. Call \`mail_inbox()\` — check for messages before anything else
+2. Call \`fleet mail inbox\` — check for messages before anything else
 3. Check \`.claude/scripts/${effectiveName}/\` for existing scripts
 
 **Code > Memory**: Encode domain knowledge as hooks, scripts, and automation—not memory notes. Hooks fire automatically; memory requires you to remember to read it. If you do something twice, automate it.
