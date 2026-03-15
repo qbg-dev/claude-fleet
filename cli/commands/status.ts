@@ -5,12 +5,13 @@ import chalk from "chalk";
 import { FLEET_DATA, FLEET_MAIL_URL } from "../lib/paths";
 import { getConfig, getState } from "../lib/config";
 import { listPaneIds } from "../lib/tmux";
+import { shouldDefaultJson } from "../lib/fmt";
 import { addGlobalOpts } from "../index";
 
 export async function runStatus(globalOpts: Record<string, unknown>): Promise<void> {
   const HOME = process.env.HOME || "/tmp";
   const panes = listPaneIds();
-  const json = globalOpts.json as boolean;
+  const json = shouldDefaultJson();
 
   // Discover projects + workers
   let projects: string[] = [];

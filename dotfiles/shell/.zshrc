@@ -15,6 +15,7 @@ export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
 # ===== Environment variables =====
+export HUMAN=1  # Fleet CLI: pretty output for humans, clean output for agents
 export EDITOR="nvim"
 export VISUAL="nvim"
 export DOCKER_ARCH=arm64

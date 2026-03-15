@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync, accessSync, constants 
 import { join } from "node:path";
 import chalk from "chalk";
 import { FLEET_DIR, FLEET_DATA, FLEET_MAIL_URL, FLEET_MAIL_TOKEN } from "../lib/paths";
+import { shouldDefaultJson } from "../lib/fmt";
 import { addGlobalOpts } from "../index";
 
 const HOME = process.env.HOME || "/tmp";
@@ -610,7 +611,7 @@ function formatCheckResult(r: CheckResult): void {
 // ─── Main ─────────────────────────────────────────────────────────────────
 
 async function runDoctor(globalOpts: Record<string, unknown>): Promise<void> {
-  const json = globalOpts.json as boolean;
+  const json = shouldDefaultJson();
   const fix = globalOpts.fix as boolean;
   const project = (globalOpts.project as string) || null;
 

@@ -1,21 +1,75 @@
 /**
  * Output formatting: colors, tables, status indicators.
  * Respects NO_COLOR (https://no-color.org/) and FORCE_COLOR env vars.
+ *
+ * Mode detection: HUMAN=1 env → pretty output (emoji, chalk colors, ASCII tables).
+ * No HUMAN env (agent shells) → clean output (plain prefixes, JSON tables).
+ * CLI flags --human / --json override env detection.
  */
 import chalk from "chalk";
 
 // chalk auto-respects NO_COLOR and FORCE_COLOR, no extra wiring needed.
 
-export const ok = (msg: string) => console.log(`${chalk.green("✓")} ${msg}`);
-export const info = (msg: string) => console.log(`${chalk.cyan("→")} ${msg}`);
-export const warn = (msg: string) => console.log(`${chalk.yellow("⚠")} ${msg}`);
+// ── Mode state (set by preAction hook in index.ts) ──────────────
+
+let _humanMode: boolean | null = null;
+let _jsonMode: boolean | null = null;
+
+export function setOutputMode(opts: { human?: boolean; json?: boolean }): void {
+  if (opts.human !== undefined) _humanMode = opts.human;
+  if (opts.json !== undefined) _jsonMode = opts.json;
+}
+
+export function isHumanMode(): boolean {
+  if (_humanMode !== null) return _humanMode;
+  return !!process.env.HUMAN;
+}
+
+/** Data commands should default to JSON when not in human mode */
+export function shouldDefaultJson(): boolean {
+  if (_jsonMode === true) return true;
+  if (_humanMode === true) return false;
+  return !process.env.HUMAN; // agent mode = JSON by default
+}
+
+// ── Mode-aware output functions ─────────────────────────────────
+
+export const ok = (msg: string) => {
+  if (isHumanMode()) {
+    console.log(`${chalk.green("\u2713")} ${msg}`);
+  } else {
+    console.log(`OK: ${stripAnsi(msg)}`);
+  }
+};
+
+export const info = (msg: string) => {
+  if (isHumanMode()) {
+    console.log(`${chalk.cyan("\u2192")} ${msg}`);
+  } else {
+    console.log(`INFO: ${stripAnsi(msg)}`);
+  }
+};
+
+export const warn = (msg: string) => {
+  if (isHumanMode()) {
+    console.log(`${chalk.yellow("\u26A0")} ${msg}`);
+  } else {
+    console.error(`WARN: ${stripAnsi(msg)}`);
+  }
+};
+
 export const fail = (msg: string): never => {
-  console.error(`${chalk.red("ERROR:")} ${msg}`);
+  if (isHumanMode()) {
+    console.error(`${chalk.red("ERROR:")} ${msg}`);
+  } else {
+    console.error(`ERROR: ${stripAnsi(msg)}`);
+  }
   process.exit(1);
 };
 
 /** Colorize worker status */
 export function statusColor(status: string): string {
+  if (!isHumanMode()) return status;
   switch (status) {
     case "active":   return chalk.green(status);
     case "sleeping": return chalk.yellow(status);
@@ -27,6 +81,17 @@ export function statusColor(status: string): string {
 
 /** Print a table with headers and rows */
 export function table(headers: string[], rows: string[][]): void {
+  if (!isHumanMode()) {
+    // JSON array of objects for agent consumption
+    const objects = rows.map(row => {
+      const obj: Record<string, string> = {};
+      headers.forEach((h, i) => { obj[h.toLowerCase()] = stripAnsi(row[i] || ""); });
+      return obj;
+    });
+    console.log(JSON.stringify(objects, null, 2));
+    return;
+  }
+
   // Calculate column widths
   const widths = headers.map((h, i) =>
     Math.max(h.length, ...rows.map((r) => stripAnsi(r[i] || "").length))
@@ -34,7 +99,7 @@ export function table(headers: string[], rows: string[][]): void {
 
   // Print header
   console.log(headers.map((h, i) => chalk.bold(h.padEnd(widths[i]))).join("  "));
-  console.log(widths.map((w) => "─".repeat(w)).join("  "));
+  console.log(widths.map((w) => "\u2500".repeat(w)).join("  "));
 
   // Print rows
   for (const row of rows) {
@@ -48,7 +113,7 @@ export function table(headers: string[], rows: string[][]): void {
 }
 
 /** Strip ANSI escape codes for width calculation */
-function stripAnsi(s: string): string {
+export function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 

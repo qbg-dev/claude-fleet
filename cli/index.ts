@@ -6,13 +6,21 @@
  * Manages persistent worker agents across git worktrees.
  */
 import { Command, Option } from "commander";
+import { setOutputMode } from "./lib/fmt";
 
 const program = new Command()
   .name("fleet")
   .description("Fleet — persistent Claude Code agents in tmux")
   .version("2.0.0", "-v, --version")
   .option("-p, --project <name>", "Override project detection")
-  .option("--json", "JSON output for supported commands");
+  .option("--json", "JSON output for supported commands")
+  .option("--human", "Human-friendly output (default when HUMAN=1)");
+
+// Set output mode before any command runs
+program.hook("preAction", (thisCommand) => {
+  const opts = thisCommand.optsWithGlobals();
+  setOutputMode({ human: opts.human, json: opts.json });
+});
 
 /**
  * Add hidden copies of global options to a subcommand so they're
@@ -22,7 +30,8 @@ const program = new Command()
 export function addGlobalOpts(cmd: Command): Command {
   return cmd
     .addOption(new Option("-p, --project <name>").hideHelp())
-    .addOption(new Option("--json").hideHelp());
+    .addOption(new Option("--json").hideHelp())
+    .addOption(new Option("--human").hideHelp());
 }
 
 // Default action (no subcommand) → show status dashboard

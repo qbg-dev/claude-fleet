@@ -4,7 +4,7 @@ import { join, dirname, basename } from "node:path";
 import chalk from "chalk";
 import { FLEET_DIR, FLEET_DATA, FLEET_MAIL_URL, FLEET_MAIL_TOKEN, workerDir, resolveProject, resolveProjectRoot } from "../lib/paths";
 import { getState, getConfig } from "../lib/config";
-import { ok, info, warn, fail } from "../lib/fmt";
+import { ok, info, warn, fail, isHumanMode } from "../lib/fmt";
 import { listPaneIds, killPane } from "../lib/tmux";
 import { addGlobalOpts } from "../index";
 
@@ -18,6 +18,10 @@ async function nukeWorker(name: string, project: string, opts: { yes?: boolean }
   const dir = workerDir(project, name);
 
   if (!existsSync(dir)) fail(`Worker '${name}' not found in project '${project}'`);
+
+  if (!isHumanMode() && !opts.yes) {
+    fail("Destructive operation requires --yes in non-interactive mode");
+  }
 
   console.log(chalk.bold.red(`fleet nuke ${name}`) + ` — removing worker from project '${project}'\n`);
 
@@ -44,37 +48,50 @@ async function nukeWorker(name: string, project: string, opts: { yes?: boolean }
     if (paneId) info(`Pane ${paneId} already gone`);
   }
 
-  // 2. Remove git worktree
+  // 2. Remove git worktree (with safety checks)
   const config = getConfig(project, name);
   const worktreeDir = config?.worktree;
   if (worktreeDir && existsSync(worktreeDir)) {
-    // Find the main project root (strip worktree suffix)
-    const projectRoot = resolveProjectRoot(worktreeDir);
-    // Use git worktree remove from the parent repo
-    const parentRoot = dirname(worktreeDir);
-    // Try finding the actual main repo — worktree dirs sit alongside it
-    const projectBasename = basename(worktreeDir).replace(/-w-.*$/, "");
-    const mainRoot = join(parentRoot, projectBasename);
-    const gitRoot = existsSync(join(mainRoot, ".git")) ? mainRoot : projectRoot;
-
-    const result = Bun.spawnSync(
-      ["git", "-C", gitRoot, "worktree", "remove", worktreeDir, "--force"],
-      { stderr: "pipe" },
-    );
-    if (result.exitCode === 0) {
-      ok(`Removed worktree ${worktreeDir}`);
-      removed.push(`worktree ${worktreeDir}`);
+    // SAFETY: Check if this is a main repo (has .git/ directory), not a worktree (.git file)
+    const dotGitPath = join(worktreeDir, ".git");
+    const isMainRepo = existsSync(dotGitPath) && lstatSync(dotGitPath).isDirectory();
+    if (isMainRepo) {
+      warn(`${worktreeDir} is a main git repo (not a worktree) — refusing to delete`);
+      warn(`Fix this worker's config.worktree to point to an actual worktree, or delete manually`);
     } else {
-      // Fallback: just remove the directory
-      warn(`git worktree remove failed — removing directory directly`);
-      rmSync(worktreeDir, { recursive: true, force: true });
-      ok(`Removed worktree directory ${worktreeDir}`);
-      removed.push(`worktree dir ${worktreeDir}`);
-    }
+      // Find the main project root (strip worktree suffix)
+      const projectRoot = resolveProjectRoot(worktreeDir);
+      const parentRoot = dirname(worktreeDir);
+      const projectBasename = basename(worktreeDir).replace(/-w-.*$/, "");
+      const mainRoot = join(parentRoot, projectBasename);
+      const gitRoot = existsSync(join(mainRoot, ".git")) ? mainRoot : projectRoot;
 
-    // Clean up the branch too
-    const branch = config?.branch || `worker/${name}`;
-    Bun.spawnSync(["git", "-C", gitRoot, "branch", "-D", branch], { stderr: "pipe" });
+      const result = Bun.spawnSync(
+        ["git", "-C", gitRoot, "worktree", "remove", worktreeDir, "--force"],
+        { stderr: "pipe" },
+      );
+      if (result.exitCode === 0) {
+        ok(`Removed worktree ${worktreeDir}`);
+        removed.push(`worktree ${worktreeDir}`);
+      } else {
+        // SAFETY: Only rmSync if this looks like a worktree (.git is a file, not a directory)
+        const dotGit = join(worktreeDir, ".git");
+        const isWorktree = existsSync(dotGit) && lstatSync(dotGit).isFile();
+        if (isWorktree) {
+          warn(`git worktree remove failed — removing worktree directory directly`);
+          rmSync(worktreeDir, { recursive: true, force: true });
+          ok(`Removed worktree directory ${worktreeDir}`);
+          removed.push(`worktree dir ${worktreeDir}`);
+        } else {
+          warn(`git worktree remove failed and ${worktreeDir} doesn't look like a worktree — skipping deletion`);
+          warn(`Delete manually if intended: rm -rf ${worktreeDir}`);
+        }
+      }
+
+      // Clean up the branch too
+      const branch = config?.branch || `worker/${name}`;
+      Bun.spawnSync(["git", "-C", gitRoot, "branch", "-D", branch], { stderr: "pipe" });
+    }
   } else if (worktreeDir) {
     info(`Worktree ${worktreeDir} already gone`);
   }
@@ -553,6 +570,9 @@ async function nukeAll(opts: { dryRun?: boolean; yes?: boolean; keepData?: boole
   console.log("");
 
   // Confirm
+  if (!dryRun && !skipConfirm && !isHumanMode()) {
+    fail("Destructive operation requires --yes in non-interactive mode");
+  }
   if (!dryRun && !skipConfirm) {
     const yes = await confirm(chalk.yellow("This is destructive. Proceed?"));
     if (!yes) {
