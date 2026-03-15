@@ -67,7 +67,7 @@ export default function greenfieldHarden(opts: GreenfieldHardenOpts): Program {
         {
           name: "case-runner",
           role: "executor",
-          model: "sonnet[1m]",
+          model: "sonnet",
           seed: { inline: runnerSeed(cases) },
           window: "attempt",
         },
