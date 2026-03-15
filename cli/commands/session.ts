@@ -140,6 +140,32 @@ export function register(parent: Command): void {
 
       ok(`Synced ${(fileSize / 1024).toFixed(1)}KB → blob:${data.hash.slice(0, 12)}...`);
     });
+
+  // ── fleet session clean ─────────────────────────────────────────
+  const clean = session
+    .command("clean")
+    .description("Remove dead session entries (pane no longer exists)");
+  addGlobalOpts(clean)
+    .action(async () => {
+      const sessions = listSessionIdentities();
+      let cleaned = 0;
+      for (const s of sessions) {
+        if (!isSessionAlive(s)) {
+          const dir = sessionDir(s.sessionId);
+          try {
+            const { rmSync } = require("fs");
+            rmSync(dir, { recursive: true });
+            cleaned++;
+            info(`Cleaned: ${s.customName} (${s.sessionId.slice(0, 8)}...)`);
+          } catch {}
+        }
+      }
+      if (cleaned === 0) {
+        ok("No dead sessions to clean");
+      } else {
+        ok(`Cleaned ${cleaned} dead session(s)`);
+      }
+    });
 }
 
 /** Check if a session's tmux pane is still alive. */

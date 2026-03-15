@@ -146,7 +146,7 @@ function detectCustomName(): string {
   return "session";
 }
 
-/** Find other live sessions in the same directory. */
+/** Find other live sessions in the same directory (checks tmux pane liveness). */
 function findSiblingSessions(dirSlug: string, excludeSessionId: string): SessionIdentity[] {
   try {
     const dirs = readdirSync(sessionsDir());
@@ -155,7 +155,19 @@ function findSiblingSessions(dirSlug: string, excludeSessionId: string): Session
       .map(d => {
         try {
           const id = JSON.parse(readFileSync(join(sessionsDir(), d, "identity.json"), "utf-8")) as SessionIdentity;
-          return id.dirSlug === dirSlug ? id : null;
+          if (id.dirSlug !== dirSlug) return null;
+          // Check if pane is alive
+          if (id.paneId) {
+            try {
+              const { execSync } = require("child_process");
+              execSync(`tmux display-message -t '${id.paneId}' -p ''`, {
+                encoding: "utf-8", timeout: 2000, stdio: "pipe",
+              });
+            } catch {
+              return null; // Pane dead — skip
+            }
+          }
+          return id;
         } catch { return null; }
       })
       .filter((id): id is SessionIdentity => id !== null);
