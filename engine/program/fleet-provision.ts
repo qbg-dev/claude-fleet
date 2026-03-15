@@ -238,7 +238,7 @@ export function buildMailEnvExport(
 /**
  * Build the exec line for a worker based on its runtime.
  * - "claude" (default): claude --model MODEL --dangerously-skip-permissions "$(cat SEED)"
- * - "codex": codex --full-auto -q -m MODEL "$(cat SEED)"
+ * - "codex": codex exec --full-auto -c model="MODEL" "$(cat SEED)"
  * - "custom": use customLauncher string as the exec line
  */
 function buildExecLine(worker: CompiledWorker): string {
@@ -247,7 +247,7 @@ function buildExecLine(worker: CompiledWorker): string {
   switch (runtime) {
     case "codex": {
       const model = worker.model || "gpt-5.4";
-      return `exec codex --full-auto -q -m ${model} "$(cat '${worker.seedPath}')"`;
+      return `exec codex exec --full-auto --skip-git-repo-check -c model='"${model}"' "$(cat '${worker.seedPath}')"`;
     }
     case "custom": {
       if (!worker.customLauncher) {

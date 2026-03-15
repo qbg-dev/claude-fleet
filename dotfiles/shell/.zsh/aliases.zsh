@@ -3,11 +3,9 @@
 # ===== Claude CLI =====
 cd_='claude --dangerously-skip-permissions'
 alias c='claude'
-alias cdo="$cd_ --model opus --effort high"
-alias cds="$cd_ --model sonnet"
+alias cdo="$cd_ --model 'opus[1m]' --effort high"
+alias cds="$cd_ --model 'sonnet[1m]'"
 alias cdh="$cd_ --model haiku"
-alias cdo1m="$cd_ --model 'opus[1m]'"
-alias cds1m="$cd_ --model 'sonnet[1m]'"
 alias cdoc='cdo --chrome'
 alias cdsc='cds --chrome'
 alias cdhc='cdh --chrome'
