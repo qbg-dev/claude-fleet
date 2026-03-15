@@ -2,12 +2,28 @@
   "_comment": "Canonical hook registry. setup-hooks.sh reads this to install into ~/.claude/settings.json. lint-hooks.sh reads this to verify installation.",
   "hooks": [
     {
+      "id": "session-auto-register",
+      "event": "UserPromptSubmit",
+      "path": "~/.claude-fleet/hooks/publishers/session-auto-register.sh",
+      "required": true,
+      "category": "core",
+      "description": "[PUBLISH] Auto-registers any Claude session with Fleet Mail on first prompt (session-first identity)"
+    },
+    {
+      "id": "session-file-sync",
+      "event": "UserPromptSubmit",
+      "path": "~/.claude-fleet/hooks/publishers/session-file-sync.sh",
+      "required": false,
+      "category": "core",
+      "description": "[PUBLISH] Syncs session transcript to Fleet Mail server every 5 minutes"
+    },
+    {
       "id": "worker-session-register",
       "event": "UserPromptSubmit",
       "path": "~/.claude-fleet/hooks/publishers/worker-session-register.sh",
       "required": true,
       "category": "core",
-      "description": "[PUBLISH] Registers worker's tmux pane and session in fleet registry on each prompt"
+      "description": "[PUBLISH] Registers worker's tmux pane and session in fleet registry on each prompt (legacy)"
     },
     {
       "id": "snippet-injector",

@@ -84,8 +84,7 @@ Available inside every worker session via `mcp__worker-fleet__*`. Call `fleet_he
 
 ## Hooks
 
-45 hooks across 18 Claude Code events. Installed by `setup-hooks.sh` from `hooks/manifest.json`.
-
+47 hooks across 18 Claude Code events. Installed by `setup-hooks.sh` from `hooks/manifest.json`.
 
 Three ownership tiers: system (irremovable) > creator (worker can't remove) > self (worker manages).
 
