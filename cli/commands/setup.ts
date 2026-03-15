@@ -206,20 +206,30 @@ export function register(parent: Command): void {
         };
 
         // Register claude-hooks MCP server (standalone hook management)
-        // Works globally for ALL Claude Code instances — provides add_hook, complete_hook, remove_hook, list_hooks
+        // Must use `claude mcp add -s user` — settings.json mcpServers are NOT loaded by Claude Code.
+        // User-scope MCPs go in ~/.claude.json and work for ALL Claude Code instances.
         if (opts.globalHooks !== false) {
           const claudeHooksDir = process.env.CLAUDE_HOOKS_DIR || join(HOME, ".claude-hooks");
           const claudeHooksMcp = join(claudeHooksDir, "mcp/index.ts");
-          if (existsSync(claudeHooksMcp)) {
-            settings.mcpServers["claude-hooks"] = {
-              command: bunPath,
-              args: ["run", claudeHooksMcp],
-              env: {
-                HOOKS_DIR: join(HOME, ".claude/hooks"),
-                HOOKS_IDENTITY: "operator",
-              },
-            };
-            ok("claude-hooks MCP registered globally (works for all Claude Code instances)");
+          const claudeHooksMcpResolved = existsSync(claudeHooksMcp)
+            ? Bun.spawnSync(["realpath", claudeHooksMcp]).stdout.toString().trim() || claudeHooksMcp
+            : null;
+          if (claudeHooksMcpResolved) {
+            const hooksDir = join(HOME, ".claude/hooks");
+            const result = Bun.spawnSync([
+              "claude", "mcp", "add", "-s", "user",
+              "claude-hooks",
+              "-e", `HOOKS_DIR=${hooksDir}`,
+              "-e", "HOOKS_IDENTITY=operator",
+              "--", bunPath, "run", claudeHooksMcpResolved,
+            ], { stdout: "pipe", stderr: "pipe" });
+            if (result.exitCode === 0) {
+              ok("claude-hooks MCP registered globally (user scope, works for all Claude Code instances)");
+            } else {
+              const stderr = result.stderr.toString().trim();
+              warn(`claude-hooks MCP registration failed: ${stderr}`);
+              console.log(`    Try manually: claude mcp add -s user claude-hooks -e HOOKS_DIR=${hooksDir} -e HOOKS_IDENTITY=operator -- ${bunPath} run ${claudeHooksMcpResolved}`);
+            }
           } else {
             info("claude-hooks not found — skipping (optional, install at ~/.claude-hooks)");
           }
