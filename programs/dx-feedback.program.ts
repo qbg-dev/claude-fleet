@@ -1,5 +1,5 @@
 /**
- * DX Guard Program — lightweight pre-push developer experience check.
+ * DX Feedback Program — lightweight pre-push developer experience check.
  *
  * Single phase, 1 agent (Sonnet). Analyzes the diff for DX impact
  * against REVIEW.md (28+ rules), README-CONVENTIONS.md (100 rules),
@@ -9,33 +9,33 @@
  * Designed to complete in 1-3 minutes.
  *
  * Usage:
- *   fleet pipeline dx-guard --scope HEAD
- *   fleet pipeline dx-guard --scope HEAD~3..HEAD
- *   fleet pipeline dx-guard --dry-run
+ *   fleet pipeline dx-feedback --scope HEAD
+ *   fleet pipeline dx-feedback --scope HEAD~3..HEAD
+ *   fleet pipeline dx-feedback --dry-run
  */
 import type { Program } from "../engine/program/types";
 
-export interface DxGuardOpts {
+export interface DxFeedbackOpts {
   scope: string;
   projectRoot?: string;
   spec?: string;
   force?: boolean;
 }
 
-export default function dxGuard(opts: DxGuardOpts): Program {
+export default function dxFeedback(opts: DxFeedbackOpts): Program {
   return {
-    name: "dx-guard",
-    description: "Pre-push DX quality guard: conventions + review rules",
+    name: "dx-feedback",
+    description: "Pre-push DX feedback: conventions + review rules",
     phases: [
       {
-        name: "guard",
+        name: "analyze",
         description: "Analyze diff for DX impact against conventions and review rules",
         agents: [{
-          name: "dx-guard",
+          name: "dx-analyst",
           role: "analyst",
           model: "sonnet",
-          seed: { template: "dx-guard/guard-seed.md" },
-          window: "guard",
+          seed: { template: "dx-feedback/analyst-seed.md" },
+          window: "analyze",
         }],
       },
     ],
