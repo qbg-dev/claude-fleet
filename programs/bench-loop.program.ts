@@ -375,8 +375,34 @@ ROUND=$(cat "{{SESSION_DIR}}/round.txt" 2>/dev/null || echo 1)
 echo "Starting round $ROUND"
 \`\`\`
 
-## Output
-Write \`{{SESSION_DIR}}/round-results.json\`:
+## Output — CRITICAL: Read grade.json, NEVER grep logs
+Write \`{{SESSION_DIR}}/round-results.json\` based on **actual grade.json files**, NOT stdout/log grep.
+
+### How to collect results (MANDATORY process):
+\`\`\`bash
+# For each case, find the LATEST run directory and read grade.json
+for case_dir in ${remoteBenchDir}/results/case_*/; do
+  CASE=$(basename "$case_dir")
+  LATEST_RUN=$(ls -t "$case_dir" | head -1)
+  for cp in 1 2 3; do
+    GRADE="$case_dir/$LATEST_RUN/cp$cp/grade.json"
+    if [ -f "$GRADE" ]; then
+      python3 -c "import json; d=json.load(open('$GRADE')); print(f'$CASE CP$cp: {\"PASS\" if d[\"passed\"] else \"FAIL\"} ({d[\"passed_count\"]}/{d[\"total_count\"]})')"
+    else
+      echo "$CASE CP$cp: MISSING (count as FAIL)"
+    fi
+  done
+done
+\`\`\`
+
+### NEVER do this:
+- Do NOT \`grep "Grade" /tmp/result_*.log\` — logs may contain results from prior runs
+- Do NOT assume a case passed because the log says "Run complete"
+- Do NOT count regression check passes as checkpoint passes
+
+### A case passes ONLY if ALL its checkpoint grade.json files show \`"passed": true\`.
+If any CP grade.json is missing or shows \`"passed": false\`, the case FAILS.
+
 \`\`\`json
 {
   "round": 1,
@@ -386,8 +412,8 @@ Write \`{{SESSION_DIR}}/round-results.json\`:
   "runtime": "${runtime}",
   "model": "${model}",
   "cases": {
-    "case_name": { "pass": true, "skipped": false, "details": "..." },
-    "case_name": { "pass": false, "skipped": false, "error": "...", "category": "capability|infra|verifier_bug" }
+    "case_name": { "pass": true, "skipped": false, "details": "CP1: 3/3, CP2: 2/2, CP3: 3/3" },
+    "case_name": { "pass": false, "skipped": false, "error": "CP3 FAIL: 0/3 — inspection report not created", "category": "capability|infra|verifier_bug" }
   },
   "summary": { "total": 0, "passed": 0, "failed": 0, "skipped": 0 }
 }

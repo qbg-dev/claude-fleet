@@ -355,7 +355,7 @@ if [ -n "\$PANE_ID" ] && [ -f "\$SEED_FILE" ]; then
   tmux load-buffer "\$SEED_FILE"
   tmux paste-buffer -t "\$PANE_ID"
   sleep 1
-  tmux send-keys -t "\$PANE_ID" Enter
+  tmux send-keys -t "\$PANE_ID" -H 0d
   wait \$CLAUDE_PID
 else
   # Fallback: CLI arg (works for non-tmux or missing seed)

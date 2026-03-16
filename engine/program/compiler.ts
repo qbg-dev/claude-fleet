@@ -349,6 +349,8 @@ fi
   // Edge evaluation — check conditions in priority order
   for (let i = 0; i < edges.length; i++) {
     const edge = edges[i];
+    // Resolve {{SESSION_DIR}} template vars to $SESSION_DIR in edge conditions
+    const edgeCondition = edge.condition?.replace(/\{\{SESSION_DIR\}\}/g, "$SESSION_DIR");
     const target = edge.to;
     const targetIdx = target === END_SENTINEL ? -1 : nodeIndexMap[target];
 
@@ -359,8 +361,8 @@ fi
 # Edge ${i}: ${edge.label || `${fromNode} -> ${target}`} (max ${edge.maxIterations} iterations)
 CYCLE=$(cat ${counterFile} 2>/dev/null || echo 0)
 `;
-      if (edge.condition) {
-        script += `if [ "$CYCLE" -lt ${edge.maxIterations} ] && (${edge.condition}); then
+      if (edgeCondition) {
+        script += `if [ "$CYCLE" -lt ${edge.maxIterations} ] && (${edgeCondition}); then
   echo $((CYCLE + 1)) > ${counterFile}
 `;
       } else {
@@ -378,11 +380,11 @@ CYCLE=$(cat ${counterFile} 2>/dev/null || echo 0)
 fi
 `;
       }
-    } else if (edge.condition) {
+    } else if (edgeCondition) {
       // Conditional edge
       script += `
 # Edge ${i}: ${edge.label || `${fromNode} -> ${target}`} (conditional)
-if (${edge.condition}); then
+if (${edgeCondition}); then
 `;
       if (target === END_SENTINEL) {
         script += `  exit 0\nfi\n`;
