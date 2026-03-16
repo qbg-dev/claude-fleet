@@ -259,6 +259,7 @@ export function compileGraph(
           edges,
           nodeIndexMap,
           isGateAll ? gateAgents.length : undefined,
+          state.sessionHash,
         );
 
         // Pick the default (unconditional or highest-priority) target for CompiledHook
@@ -271,7 +272,7 @@ export function compileGraph(
           targetNodeName: defaultTarget.to,
           scriptPath: join(
             HOME, ".claude/fleet", state.fleetProject,
-            gateAgent.name, "hooks", `node-${nodeName}-stop.sh`,
+            `${gateAgent.name}-${state.sessionHash}`, "hooks", `node-${nodeName}-stop.sh`,
           ),
           sessionDirPath: state.sessionDir,
           gateCount: isGateAll ? gateAgents.length : undefined,
@@ -282,19 +283,19 @@ export function compileGraph(
     // Install pipeline hooks (phase-level + per-agent)
     if (node.hooks && node.hooks.length > 0 && !isDynamic(node.agents)) {
       for (const agent of node.agents as AgentSpec[]) {
-        const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
+        const workerHooksDir = join(FLEET_DATA, state.fleetProject, `${agent.name}-${state.sessionHash}`, "hooks");
         installPipelineHooks(workerHooksDir, node.hooks, g.name).catch(() => {});
       }
     }
     if (!isDynamic(node.agents)) {
       for (const agent of node.agents as AgentSpec[]) {
         if (agent.hooks && agent.hooks.length > 0) {
-          const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
+          const workerHooksDir = join(FLEET_DATA, state.fleetProject, `${agent.name}-${state.sessionHash}`, "hooks");
           installPipelineHooks(workerHooksDir, agent.hooks, g.name).catch(() => {});
         }
         // Install tool restriction hooks from allowedTools/deniedTools
         if (agent.allowedTools?.length || agent.deniedTools?.length) {
-          const workerHooksDir = join(FLEET_DATA, state.fleetProject, agent.name, "hooks");
+          const workerHooksDir = join(FLEET_DATA, state.fleetProject, `${agent.name}-${state.sessionHash}`, "hooks");
           installToolRestrictionHooks(workerHooksDir, agent.allowedTools, agent.deniedTools).catch(() => {});
         }
       }
@@ -317,9 +318,10 @@ export function installGraphStopHook(
   edges: ProgramEdge[],
   nodeIndexMap: Record<string, number>,
   gateCount?: number,
+  sessionHash?: string,
 ): void {
   const { mkdirSync, writeFileSync: wfs } = require("node:fs") as typeof import("node:fs");
-  const workerHooksDir = join(FLEET_DATA, project, workerName, "hooks");
+  const workerHooksDir = join(FLEET_DATA, project, sessionHash ? `${workerName}-${sessionHash}` : workerName, "hooks");
   mkdirSync(workerHooksDir, { recursive: true });
 
   const scriptName = `node-${fromNode}-stop.sh`;

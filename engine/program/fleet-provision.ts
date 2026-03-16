@@ -287,7 +287,7 @@ export function generateLaunchWrapper(
   state: ProgramPipelineState,
 ): string {
   const fleetEnv = buildMailEnvExport(worker.name, state.fleetProject);
-  const hooksDir = join(FLEET_DATA, state.fleetProject, worker.name, "hooks");
+  const hooksDir = join(FLEET_DATA, state.fleetProject, `${worker.name}-${state.sessionHash}`, "hooks");
   const fleetDir = process.env.CLAUDE_FLEET_DIR || join(process.env.HOME || "/tmp", ".claude-fleet");
 
   // BUG 4 fix: export worker.env entries
@@ -309,7 +309,7 @@ export function generateLaunchWrapper(
   const effortFlag = ` --effort "${effort}"`;
 
   // --add-dir for fleet worker directory (mission, config, hooks, token)
-  const workerDir = join(FLEET_DATA, state.fleetProject, worker.name);
+  const workerDir = join(FLEET_DATA, state.fleetProject, `${worker.name}-${state.sessionHash}`);
   const addDirFlag = ` --add-dir "${workerDir}"`;
 
   // Create results directory for this worker (results convention)
