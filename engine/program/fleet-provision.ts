@@ -333,6 +333,9 @@ export HOOKS_DIR="${hooksDir}"
 export CLAUDE_FLEET_DIR="${fleetDir}"
 export CLAUDE_CODE_SKIP_PROJECT_LOCK=1
 export RESULTS_DIR="${resultsDir}"
+export CLAUDECODE=1
+# Inherit proxy for China network (cn/Xray)
+[ -n "\${HTTPS_PROXY:-}" ] || export HTTPS_PROXY="\${https_proxy:-}"
 
 # Launch Claude, then inject seed via tmux paste (more reliable than CLI arg)
 SEED_FILE='${worker.seedPath}'
