@@ -336,8 +336,12 @@ export CLAUDE_FLEET_DIR="${fleetDir}"
 export CLAUDE_CODE_SKIP_PROJECT_LOCK=1
 export RESULTS_DIR="${resultsDir}"
 export CLAUDECODE=1
-# Inherit proxy for China network (cn/Xray)
-[ -n "\${HTTPS_PROXY:-}" ] || export HTTPS_PROXY="\${https_proxy:-}"
+# Proxy for China network (cn/Xray) — check parent env, then localhost
+if [ -z "\${HTTPS_PROXY:-}" ]; then
+  if curl -s --connect-timeout 1 http://localhost:10809 >/dev/null 2>&1 || ss -tln 2>/dev/null | grep -q ':10809'; then
+    export HTTPS_PROXY="http://localhost:10809"
+  fi
+fi
 # Inherit OAuth token for headless/headful auth
 [ -n "\${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || {
   TOKEN_FILE="${process.env.HOME}/.claude/sensitive/oauth-tokens.md"
