@@ -11,13 +11,60 @@
  */
 
 import type { Command } from "commander";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { FLEET_MAIL_URL, workerDir, resolveProject } from "../lib/paths";
+import { spawnSync } from "node:child_process";
+import { FLEET_MAIL_URL, FLEET_DATA, workerDir, resolveProject } from "../lib/paths";
 import { fail, ok, info } from "../lib/fmt";
 import { addGlobalOpts } from "../index";
 import { mailRequest, resolveRecipient, cleanDisplayName } from "../lib/mail-client";
-import { sanitizeName } from "../../shared/identity";
+import { sanitizeName, resolveIdentity } from "../../shared/identity";
+
+// ── Tmux push notification (best-effort, self-contained) ──────────────
+
+/** Push a tmux overlay + paste to the recipient's pane if they have one. */
+function tmuxPushNotify(recipientMailName: string, subject: string, body: string): void {
+  try {
+    const project = resolveProject();
+    const fleetDir = join(FLEET_DATA, project);
+    if (!existsSync(fleetDir)) return;
+
+    // Find worker whose directory name is contained in the recipient mail name
+    const workerNames = readdirSync(fleetDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+      .map(d => d.name);
+
+    let targetWorker: string | null = null;
+    for (const name of workerNames) {
+      if (recipientMailName.includes(name)) { targetWorker = name; break; }
+    }
+    if (!targetWorker) return;
+
+    // Read worker's state to get pane_id
+    const statePath = join(fleetDir, targetWorker, "state.json");
+    if (!existsSync(statePath)) return;
+    const state = JSON.parse(readFileSync(statePath, "utf-8"));
+    const paneId: string | null = state.pane_id || null;
+    if (!paneId) return;
+
+    // Verify pane is alive
+    const alive = spawnSync("tmux", ["display-message", "-t", paneId, "-p", "#{pane_id}"], {
+      encoding: "utf-8", timeout: 3000,
+    });
+    if (alive.status !== 0 || alive.stdout.trim() !== paneId) return;
+
+    // Resolve sender name
+    const identity = resolveIdentity();
+    const senderLabel = identity?.type === "legacy" ? identity.workerName
+      : identity?.type === "session" ? identity.identity.customName || "cli"
+      : "cli";
+
+    // Fire overlay banner (visible in any TUI state)
+    const preview = `[mail from ${senderLabel}] ${subject}`;
+    const displayText = preview.length > 80 ? preview.slice(0, 77) + "..." : preview;
+    spawnSync("tmux", ["display-message", "-t", paneId, "-d", "5000", `📬 ${displayText}`], { timeout: 3000 });
+  } catch {} // best-effort — message already in Fleet Mail
+}
 
 export function register(parent: Command): void {
   const mail = parent
@@ -46,6 +93,9 @@ export function register(parent: Command): void {
         subject,
         body: messageBody,
       }) as { id: string };
+
+      // Push tmux overlay to recipient (best-effort)
+      tmuxPushNotify(recipient, subject, messageBody);
 
       ok(`Sent to ${cleanDisplayName(recipient)}: "${subject}" (id: ${data.id})`);
     });
