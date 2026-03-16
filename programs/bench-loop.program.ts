@@ -73,7 +73,7 @@ export default function benchLoop(opts: BenchLoopOpts): Program {
   const benchDir = opts.benchDir;
   const benchmark = opts.benchmark || require("path").basename(benchDir);
   const runtime = opts.runtime || "claude";
-  const model = opts.model || "sonnet[1m]";
+  const model = opts.model || "opus[1m]";
   const conventionsDir = opts.conventionsDir || "/Users/wz/Desktop/qbg/conventions";
   const tokenFile = opts.tokenFile || TOKEN_FILE_DEFAULT;
   const tokens = readOAuthTokens(tokenFile);

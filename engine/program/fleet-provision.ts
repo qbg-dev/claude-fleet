@@ -355,7 +355,7 @@ SEED_FILE='${worker.seedPath}'
 PANE_ID="\${TMUX_PANE:-}"
 
 if [ -n "\$PANE_ID" ] && [ -f "\$SEED_FILE" ]; then
-  ${execPrefix}claude --model ${worker.model}${effortFlag}${permFlag}${addDirFlag} &
+  ${execPrefix}claude --model '${worker.model}'${effortFlag}${permFlag}${addDirFlag} &
   CLAUDE_PID=\$!
   sleep 5
   tmux load-buffer "\$SEED_FILE"
@@ -365,7 +365,7 @@ if [ -n "\$PANE_ID" ] && [ -f "\$SEED_FILE" ]; then
   wait \$CLAUDE_PID
 else
   # Fallback: CLI arg (works for non-tmux or missing seed)
-  exec ${execPrefix}claude --model ${worker.model}${effortFlag}${permFlag}${addDirFlag} "\$(cat '\${SEED_FILE}')"
+  exec ${execPrefix}claude --model '${worker.model}'${effortFlag}${permFlag}${addDirFlag} "\$(cat '\${SEED_FILE}')"
 fi
 `;
 
