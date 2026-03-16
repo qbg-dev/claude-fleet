@@ -336,6 +336,13 @@ export RESULTS_DIR="${resultsDir}"
 export CLAUDECODE=1
 # Inherit proxy for China network (cn/Xray)
 [ -n "\${HTTPS_PROXY:-}" ] || export HTTPS_PROXY="\${https_proxy:-}"
+# Inherit OAuth token for headless/headful auth
+[ -n "\${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || {
+  TOKEN_FILE="${process.env.HOME}/.claude/sensitive/oauth-tokens.md"
+  if [ -f "\$TOKEN_FILE" ]; then
+    export CLAUDE_CODE_OAUTH_TOKEN="\$(grep 'sk-ant-oat01' "\$TOKEN_FILE" | sed -n '2p' | tr -d ' ')"
+  fi
+}
 
 # Launch Claude, then inject seed via tmux paste (more reliable than CLI arg)
 SEED_FILE='${worker.seedPath}'
