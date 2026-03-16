@@ -11,7 +11,7 @@
  */
 
 import type { Command } from "commander";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { FLEET_MAIL_URL, FLEET_DATA, workerDir, resolveProject } from "../lib/paths";
@@ -25,18 +25,45 @@ import { sanitizeName, resolveIdentity } from "../../shared/identity";
 /** Push a tmux overlay + paste to the recipient's pane if they have one. */
 function tmuxPushNotify(recipientMailName: string, subject: string, body: string): void {
   try {
-    const project = resolveProject();
-    const fleetDir = join(FLEET_DATA, project);
-    if (!existsSync(fleetDir)) return;
+    // Extract project from mail name (e.g. "sql-audit@Wechat" → "Wechat")
+    // Fall back to resolveProject() (cwd-based) if no @ suffix
+    const atIdx = recipientMailName.indexOf("@");
+    const project = atIdx >= 0 ? recipientMailName.slice(atIdx + 1) : resolveProject();
+    const workerName = atIdx >= 0 ? recipientMailName.slice(0, atIdx) : recipientMailName;
 
-    // Find worker whose directory name is contained in the recipient mail name
-    const workerNames = readdirSync(fleetDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
-      .map(d => d.name);
-
+    // Search all project dirs if the extracted project doesn't have this worker
+    let fleetDir = join(FLEET_DATA, project);
     let targetWorker: string | null = null;
-    for (const name of workerNames) {
-      if (recipientMailName.includes(name)) { targetWorker = name; break; }
+
+    if (existsSync(fleetDir)) {
+      const workerNames = readdirSync(fleetDir, { withFileTypes: true })
+        .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+        .map(d => d.name);
+      for (const name of workerNames) {
+        if (workerName === name || recipientMailName.includes(name)) { targetWorker = name; break; }
+      }
+    }
+
+    // Fallback: scan all project dirs for a matching worker name
+    if (!targetWorker) {
+      const projectDirs = readdirSync(FLEET_DATA, { withFileTypes: true })
+        .filter(d => d.isDirectory() && !d.name.startsWith("."));
+      for (const pd of projectDirs) {
+        const candidateDir = join(FLEET_DATA, pd.name);
+        try {
+          const workers = readdirSync(candidateDir, { withFileTypes: true })
+            .filter(d => d.isDirectory() && !d.name.startsWith(".") && !d.name.startsWith("_"))
+            .map(d => d.name);
+          for (const name of workers) {
+            if (recipientMailName.includes(name)) {
+              targetWorker = name;
+              fleetDir = candidateDir;
+              break;
+            }
+          }
+        } catch {}
+        if (targetWorker) break;
+      }
     }
     if (!targetWorker) return;
 
@@ -59,10 +86,36 @@ function tmuxPushNotify(recipientMailName: string, subject: string, body: string
       : identity?.type === "session" ? identity.identity.customName || "cli"
       : "cli";
 
-    // Fire overlay banner (visible in any TUI state)
+    // Fire overlay banner (visible in any TUI state, but transient)
     const preview = `[mail from ${senderLabel}] ${subject}`;
     const displayText = preview.length > 80 ? preview.slice(0, 77) + "..." : preview;
     spawnSync("tmux", ["display-message", "-t", paneId, "-d", "5000", `📬 ${displayText}`], { timeout: 3000 });
+
+    // Also paste the message into the pane's input (persistent delivery, matches MCP behavior).
+    // Only paste if pane is idle (at Claude REPL prompt) — don't corrupt in-progress responses.
+    const capture = spawnSync("tmux", ["capture-pane", "-t", paneId, "-p"], { encoding: "utf-8", timeout: 3000 });
+    const lastLine = (capture.stdout || "").trim().split("\n").filter((l: string) => l.trim()).pop() || "";
+    const BUSY = ["(running)"];
+    const IDLE = ["bypass permissions", "plan mode on", "ctrl-g to edit", "Context left"];
+    const isIdle = !BUSY.some(p => lastLine.includes(p)) && IDLE.some(p => lastLine.includes(p));
+
+    if (isIdle) {
+      const pasteText = `[mail from ${senderLabel}] ${subject}: ${body}`;
+      const bufName = `cli-push-${Date.now()}`;
+      const tmpDir = join(process.env.HOME || "/tmp", ".claude-fleet/tmp");
+      if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
+      const tmpFile = join(tmpDir, `${bufName}.txt`);
+      try {
+        writeFileSync(tmpFile, pasteText);
+        spawnSync("tmux", ["load-buffer", "-b", bufName, tmpFile], { timeout: 5000 });
+        spawnSync("tmux", ["paste-buffer", "-b", bufName, "-t", paneId, "-d"], { timeout: 5000 });
+        Bun.sleepSync(500);
+        spawnSync("tmux", ["send-keys", "-t", paneId, "-H", "0d"], { timeout: 5000 });
+      } finally {
+        try { rmSync(tmpFile); } catch {}
+        try { spawnSync("tmux", ["delete-buffer", "-b", bufName], { timeout: 2000 }); } catch {}
+      }
+    }
   } catch {} // best-effort — message already in Fleet Mail
 }
 
