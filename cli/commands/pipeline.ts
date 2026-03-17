@@ -105,7 +105,9 @@ export async function runPipeline(programName: string, opts: Record<string, any>
   // Create session directory
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
-  const sessionId = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
+  // Include session name in ID to prevent collisions when launching multiple pipelines simultaneously
+  const timePart = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
+  const sessionId = sessionName ? `${timePart}-${sessionName}` : timePart;
   const sessionDir = join(projectRoot, ".claude", "state", programName, `session-${sessionId}`);
   mkdirSync(sessionDir, { recursive: true });
   mkdirSync(join(sessionDir, "comms"), { recursive: true });
