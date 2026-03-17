@@ -171,8 +171,8 @@ echo ""
 echo "=== Template: Hook count consistency ==="
 
 if [ -f "$CLAUDE_MD" ] && [ -f "$MANIFEST" ]; then
-  DOC_HOOK_COUNT=$(grep -oE '[0-9]+ hooks across' "$CLAUDE_MD" | grep -oE '^[0-9]+' | head -1)
-  DOC_EVENT_COUNT=$(grep -oE 'across [0-9]+' "$CLAUDE_MD" | grep -oE '[0-9]+' | head -1)
+  DOC_HOOK_COUNT=$(grep -oE '[0-9]+ hooks across' "$CLAUDE_MD" 2>/dev/null | grep -oE '^[0-9]+' | head -1 || true)
+  DOC_EVENT_COUNT=$(grep -oE 'across [0-9]+' "$CLAUDE_MD" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
 
   # Count hooks in manifest (each entry is a hook)
   ACTUAL_HOOKS=$(grep -c '"event":' "$MANIFEST" || echo 0)
