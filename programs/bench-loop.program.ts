@@ -21,7 +21,7 @@
  *
  * Usage:
  *   # Greenfield on EC2 (t3.xlarge already running at 18.236.183.103):
- *   fleet pipeline bench-loop --set benchDir=/Users/wz/Desktop/qbg/greenfield-bench --set host=18.236.183.103
+ *   fleet pipeline bench-loop --set benchDir=/Users/wz/zPersonalProjects/qbg/greenfield-bench --set host=18.236.183.103
  *
  *   # With Codex SDK:
  *   fleet pipeline bench-loop --set benchDir=/path/to/bench --set host=1.2.3.4 --set runtime=codex
@@ -45,7 +45,7 @@ export interface BenchLoopOpts {
   benchmark?: string;       // display name (auto-detected from benchDir basename if omitted)
   runtime?: string;         // "claude" | "codex" (default: "claude")
   model?: string;           // executor model (default: "sonnet")
-  conventionsDir?: string;  // path to conventions repo (default: /Users/wz/Desktop/qbg/conventions)
+  conventionsDir?: string;  // path to conventions repo (default: /Users/wz/zPersonalProjects/qbg/conventions)
   tokenFile?: string;       // OAuth tokens file
   host?: string;            // EC2/Hetzner IP for Docker (REQUIRED — no local Docker)
   sshUser?: string;         // SSH user (default: "ec2-user" for EC2, "root" for Hetzner)
@@ -74,7 +74,7 @@ export default function benchLoop(opts: BenchLoopOpts): Program {
   const benchmark = opts.benchmark || require("path").basename(benchDir);
   const runtime = opts.runtime || "claude";
   const model = opts.model || "opus[1m]";
-  const conventionsDir = opts.conventionsDir || "/Users/wz/Desktop/qbg/conventions";
+  const conventionsDir = opts.conventionsDir || "/Users/wz/zPersonalProjects/qbg/conventions";
   const tokenFile = opts.tokenFile || TOKEN_FILE_DEFAULT;
   const tokens = readOAuthTokens(tokenFile);
   const host = opts.host;
