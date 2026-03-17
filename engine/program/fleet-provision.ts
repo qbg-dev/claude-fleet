@@ -248,40 +248,6 @@ export function buildMailEnvExport(
 }
 
 /**
- * Build the exec line for a worker based on its runtime.
- * - "claude" (default): claude --model MODEL --dangerously-skip-permissions "$(cat SEED)"
- * - "codex": codex exec --full-auto -c model="MODEL" "$(cat SEED)"
- * - "sdk": bun run sdk-WORKER.ts (Claude Agent SDK programmatic)
- * - "custom": use customLauncher string as the exec line
- */
-function buildExecLine(worker: CompiledWorker, state?: ProgramPipelineState): string {
-  const runtime = worker.runtime || "claude";
-
-  switch (runtime) {
-    case "codex": {
-      const model = worker.model || "gpt-5.4";
-      return `exec codex exec --full-auto --skip-git-repo-check -c model='"${model}"' "$(cat '${worker.seedPath}')"`;
-    }
-    case "sdk": {
-      // SDK runtime — run the generated TypeScript launcher
-      const sdkPath = state
-        ? join(state.sessionDir, `sdk-${worker.name}.ts`)
-        : worker.wrapperPath.replace(/run-/, "sdk-").replace(/\.sh$/, ".ts");
-      return `exec bun run "${sdkPath}"`;
-    }
-    case "custom": {
-      if (!worker.customLauncher) {
-        throw new Error(`Worker ${worker.name} has runtime "custom" but no customLauncher`);
-      }
-      return `exec ${worker.customLauncher}`;
-    }
-    case "claude":
-    default:
-      return `exec claude --model ${worker.model} --dangerously-skip-permissions "$(cat '${worker.seedPath}')"`;
-  }
-}
-
-/**
  * Generate a launch wrapper script for a compiled worker.
  */
 export function generateLaunchWrapper(
@@ -361,8 +327,14 @@ if [ -n "\$PANE_ID" ] && [ -f "\$SEED_FILE" ]; then
   sleep 5
   tmux load-buffer "\$SEED_FILE"
   tmux paste-buffer -t "\$PANE_ID"
-  sleep 1
-  tmux send-keys -t "\$PANE_ID" -H 0d
+  # Retry Enter key with jitter — Claude may not be ready after paste
+  for ATTEMPT in 1 2 3; do
+    JITTER=\$((RANDOM % 4 + 2))  # 2-5 seconds
+    sleep \$JITTER
+    tmux send-keys -t "\$PANE_ID" -H 0d
+    # If Claude process died, stop retrying
+    if ! kill -0 \$CLAUDE_PID 2>/dev/null; then break; fi
+  done
   wait \$CLAUDE_PID
 else
   # Fallback: CLI arg (works for non-tmux or missing seed)

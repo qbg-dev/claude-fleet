@@ -45,6 +45,16 @@ async function runBridge(sessionDir: string, nodeName: string, depth = 0): Promi
   const stateRaw = readFileSync(join(sessionDir, "pipeline-state.json"), "utf-8");
   const state: ProgramPipelineState = JSON.parse(stateRaw);
 
+  // Migrate deprecated top-level fields to ext (backward compat with old pipeline-state.json)
+  if (!state.ext) state.ext = {};
+  const raw = state as unknown as Record<string, unknown>;
+  for (const key of ["roleResult", "reviewConfig", "spec", "workerNames", "coordinatorName", "judgeName", "verifierNames"]) {
+    if (raw[key] !== undefined && state.ext[key] === undefined) {
+      state.ext[key] = raw[key];
+      delete raw[key];
+    }
+  }
+
   // Import the program file
   const programModule = await import(state.programPath);
   const programFn = programModule.default;
@@ -206,8 +216,8 @@ async function runBridge(sessionDir: string, nodeName: string, depth = 0): Promi
     compiled: true,
   };
 
-  if (!state.workerNames) state.workerNames = [];
-  state.workerNames.push(...workerNames);
+  if (!state.ext.workerNames) state.ext.workerNames = [];
+  (state.ext.workerNames as string[]).push(...workerNames);
 
   generateCleanupScript(state);
   savePipelineState(state);
@@ -312,7 +322,7 @@ async function runPrelaunchAction(
         const fleetDir = process.env.CLAUDE_FLEET_DIR || join(process.env.HOME || "/tmp", ".claude-fleet");
         const drContext = join(fleetDir, "bin", "dr-context");
         if (existsSync(drContext) && state.material) {
-          const roleResult = (state.ext?.roleResult as any) || state.roleResult;
+          const roleResult = state.ext?.roleResult as any;
           const workerCount = roleResult?.totalWorkers || 8;
           console.log(`[bridge]   Generating ${workerCount} randomized orderings...`);
           (Bun.spawnSync as any)(

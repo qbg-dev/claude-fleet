@@ -71,8 +71,10 @@ export async function runPipeline(programName: string, opts: Record<string, any>
   const projectRoot = process.env.PROJECT_ROOT || resolveProjectRoot();
   const fleetProject = resolveProject(projectRoot);
 
-  // Build program-specific options
-  const programOpts = buildProgramOpts(programName, opts, projectRoot);
+  // Build program-specific options (prefer program's parseOpts if exported)
+  const programOpts = typeof programModule.parseOpts === "function"
+    ? (programModule.parseOpts as Function)(opts, projectRoot)
+    : buildProgramOpts(programName, opts, projectRoot);
 
   // Merge --set key=value pairs into programOpts (overrides built-in opts)
   if (opts.set && Array.isArray(opts.set)) {
@@ -144,9 +146,11 @@ export async function runPipeline(programName: string, opts: Record<string, any>
     compiledPhases: [],
     templateDir: join(FLEET_DIR, "templates"),
     validatorPath: join(FLEET_DIR, "scripts", "validate-findings.sh"),
-    ext: {},
-    reviewConfig,
-    spec: programOpts.spec || program.material?.spec || "",
+    ext: {
+      reviewConfig,
+      spec: programOpts.spec || program.material?.spec || "",
+      launchingPane: process.env.TMUX_PANE || "",
+    },
   };
 
   // Collect material (for deep-review)

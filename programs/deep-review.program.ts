@@ -28,6 +28,37 @@ export interface DeepReviewOpts {
   workerModel: string;
   coordModel: string;
   notifyTarget: string;
+  force: boolean;
+}
+
+/**
+ * Parse raw CLI opts into typed DeepReviewOpts.
+ * Called by pipeline.ts if this export exists, replacing hardcoded buildProgramOpts.
+ */
+export function parseOpts(opts: Record<string, any>, _projectRoot: string): DeepReviewOpts {
+  const scope = opts.scope || "HEAD";
+  const isCodebase = scope === "codebase";
+  const defaultSpec = isCodebase
+    ? "Perform a comprehensive quality review of this codebase. Look for bugs, security issues, architectural problems, error handling gaps, and opportunities for improvement."
+    : "Review this material thoroughly for issues, gaps, and improvements.";
+
+  return {
+    scope,
+    contentFiles: opts.content ? opts.content.split(",").map((s: string) => s.trim()) : [],
+    spec: opts.spec || defaultSpec,
+    passesPerFocus: parseInt(opts.passes, 10) || 2,
+    focusAreas: opts.focus ? opts.focus.split(",").map((s: string) => s.trim()) : [],
+    maxWorkers: opts.maxWorkers ? parseInt(opts.maxWorkers, 10) : null,
+    verify: !!opts.verify,
+    verifyRoles: opts.verifyRoles || "",
+    noJudge: opts.judge === false,
+    noContext: opts.context === false,
+    noImproveReview: opts.improveReview === false,
+    workerModel: process.env.DEEP_REVIEW_WORKER_MODEL || "sonnet",
+    coordModel: process.env.DEEP_REVIEW_COORD_MODEL || "sonnet",
+    notifyTarget: opts.notify || "",
+    force: !!opts.force,
+  };
 }
 
 /**
@@ -118,7 +149,10 @@ export function generateReviewWorkers(
   state: ProgramPipelineState,
   defaults: ProgramDefaults,
 ): AgentSpec[] {
-  const roleResult = state.roleResult;
+  const roleResult = state.ext?.roleResult as {
+    useDynamicRoles: boolean; focusAreas: string[]; numFocus: number;
+    totalWorkers: number; passesPerFocus: number; roleNames: string;
+  } | undefined;
 
   if (!roleResult || !roleResult.useDynamicRoles) {
     console.log("[generator] No dynamic roles, using default workers");
@@ -162,7 +196,7 @@ export function generateReviewWorkers(
         SPECIALIZATION: focus,
         ROLE_ID: focus,
         ATTACK_VECTORS: attackVectors,
-        SPEC: state.spec || "",
+        SPEC: (state.ext?.spec as string) || "",
         MATERIAL_FILE: join(state.sessionDir, `material-pass-${i + 1}.txt`),
         OUTPUT_FILE: join(state.sessionDir, `findings-pass-${i + 1}.json`),
         DONE_FILE: join(state.sessionDir, `pass-${i + 1}.done`),
@@ -171,6 +205,7 @@ export function generateReviewWorkers(
   }
 
   // Coordinator
+  const reportFile = join(state.sessionDir, "report.md");
   agents.push({
     name: "coordinator",
     role: "coordinator",
@@ -182,13 +217,27 @@ export function generateReviewWorkers(
       NUM_PASSES: String(roleResult.totalWorkers),
       PASSES_PER_FOCUS: String(roleResult.passesPerFocus),
       NUM_FOCUS: String(roleResult.numFocus),
-      FOCUS_LIST: roleResult.focusAreas.filter((v, i, a) => a.indexOf(v) === i).join(","),
-      REPORT_FILE: join(state.sessionDir, "report.md"),
+      FOCUS_LIST: roleResult.focusAreas.filter((v: string, i: number, a: string[]) => a.indexOf(v) === i).join(","),
+      REPORT_FILE: reportFile,
       NOTIFY_TARGET: (state.opts as any).notifyTarget || "",
       REVIEW_SESSION: state.tmuxSession,
       DIFF_DESC: state.material?.diffDesc || "",
       MATERIAL_TYPES: state.material?.materialTypesStr || "",
     },
+    hooks: [{
+      event: "Stop",
+      type: "command",
+      command: buildCoordinatorStopScript({
+        sessionDir: state.sessionDir,
+        tmuxSession: state.tmuxSession,
+        reportFile,
+        launchingPane: (state.ext?.launchingPane as string) || "",
+        notifyTarget: (state.opts as any).notifyTarget || "",
+        cleanupScript: join(state.sessionDir, "cleanup.sh"),
+      }),
+      blocking: false,
+      description: "System: notify launcher, schedule cleanup in 20min",
+    }],
   });
 
   // Judge (if enabled)
@@ -264,10 +313,8 @@ export function parse_role_designer_output(state: ProgramPipelineState): void {
       roleNames: roleNameParts.join(", "),
     };
 
-    // Write to ext (canonical) + legacy field (compat)
     if (!state.ext) state.ext = {};
     state.ext.roleResult = result;
-    state.roleResult = result;
 
     console.log(`[parse] Roles: ${result.roleNames}`);
     console.log(`[parse] Total workers: ${result.totalWorkers}`);
@@ -290,15 +337,14 @@ export function parse_review_improver_output(state: ProgramPipelineState): void 
   const improved = readFileSync(outputFile, "utf-8").trim();
   if (improved && improved.length >= 50) {
     // Save original for comparison
-    if (state.reviewConfig) {
+    const origReview = state.ext?.reviewConfig as string;
+    if (origReview) {
       const { writeFileSync: wf } = require("node:fs");
-      wf(join(state.sessionDir, "review-md-original.md"), state.reviewConfig);
+      wf(join(state.sessionDir, "review-md-original.md"), origReview);
     }
 
-    // Write to ext (canonical) + legacy field (compat)
     if (!state.ext) state.ext = {};
     state.ext.reviewConfig = improved;
-    state.reviewConfig = improved;
     console.log("[parse] REVIEW.md improved and applied");
   }
 }
@@ -350,6 +396,62 @@ function defaultWorkers(opts: DeepReviewOpts): AgentSpec[] {
   });
 
   return agents;
+}
+
+/**
+ * Build a bash script for the coordinator's Stop hook.
+ * Handles: notification, tmux send-keys to launcher, done marker, 20-min cleanup timer.
+ */
+function buildCoordinatorStopScript(opts: {
+  sessionDir: string;
+  tmuxSession: string;
+  reportFile: string;
+  launchingPane: string;
+  notifyTarget: string;
+  cleanupScript: string;
+}): string {
+  const fleetDir = process.env.CLAUDE_FLEET_DIR || join(process.env.HOME || "/tmp", ".claude-fleet");
+  // The hook system expects a single-line command; use a heredoc via bash -c
+  // or write a script file and reference it. Since PipelineHook.command is
+  // executed as `bash -c "$command"`, we write a multi-line script.
+  return [
+    `#!/usr/bin/env bash`,
+    `set -euo pipefail`,
+    `REPORT_FILE="${opts.reportFile}"`,
+    `SESSION_DIR="${opts.sessionDir}"`,
+    `TMUX_SESSION="${opts.tmuxSession}"`,
+    `FLEET_DIR="${fleetDir}"`,
+    `FINDINGS=$(grep -c '###' "$REPORT_FILE" 2>/dev/null || echo 0)`,
+    ``,
+    `# 1. Done marker`,
+    `echo "complete" > "$SESSION_DIR/review.done"`,
+    ``,
+    `# 2. Desktop notification`,
+    `"$FLEET_DIR/bin/notify" "Deep review complete: $FINDINGS findings" "Deep Review" "file://$REPORT_FILE" 2>/dev/null || true`,
+    ``,
+    `# 3. Notify launching worker's tmux pane`,
+    opts.launchingPane ? [
+      `tmux send-keys -t "${opts.launchingPane}" "" C-c 2>/dev/null || true`,
+      `tmux send-keys -t "${opts.launchingPane}" "echo '--- DEEP REVIEW COMPLETE ($FINDINGS findings) ---'" Enter 2>/dev/null || true`,
+      `tmux send-keys -t "${opts.launchingPane}" "echo 'Report: $REPORT_FILE'" Enter 2>/dev/null || true`,
+      `tmux send-keys -t "${opts.launchingPane}" "echo 'Read it now. Workers cleaned up in 20min.'" Enter 2>/dev/null || true`,
+    ].join("\n") : "# No launching pane to notify",
+    ``,
+    `# 4. Fleet Mail notification`,
+    opts.notifyTarget ? [
+      `if [ -n "\${FLEET_MAIL_URL:-}" ] && [ -n "\${FLEET_MAIL_TOKEN:-}" ]; then`,
+      `  curl -s -X POST "\${FLEET_MAIL_URL}/api/messages" \\`,
+      `    -H "Authorization: Bearer \${FLEET_MAIL_TOKEN}" \\`,
+      `    -H "Content-Type: application/json" \\`,
+      `    -d "{\\"to\\":\\"${opts.notifyTarget}\\",\\"subject\\":\\"REVIEW DONE\\",\\"body\\":\\"Report: $REPORT_FILE | Findings: $FINDINGS | Read now, cleanup in 20min.\\"}" > /dev/null 2>&1 || true`,
+      `fi`,
+    ].join("\n") : "# No notify target",
+    ``,
+    `# 5. Schedule tmux session kill + fleet cleanup in 20 minutes`,
+    `nohup bash -c 'sleep 1200 && tmux kill-session -t "${opts.tmuxSession}" 2>/dev/null; bash "${opts.cleanupScript}" 2>/dev/null' \\`,
+    `  > "$SESSION_DIR/auto-cleanup.log" 2>&1 &`,
+    `disown`,
+  ].join("\n");
 }
 
 function verifierAgents(opts: DeepReviewOpts): AgentSpec[] {

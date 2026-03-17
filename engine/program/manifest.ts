@@ -111,7 +111,7 @@ ${state.material ? `MATERIAL
   Scope:     ${state.material.diffDesc || state.material.materialType}
   Lines:     ${state.material.diffLines}
   Type:      ${state.material.materialType}
-${state.spec ? `  Spec:      ${state.spec}\n` : ""}
+${state.ext?.spec ? `  Spec:      ${state.ext.spec}\n` : ""}
 ` : ""}NODES (${sorted.length})
 ──────${sorted.length >= 10 ? "─" : ""}
 ${nodesSection}

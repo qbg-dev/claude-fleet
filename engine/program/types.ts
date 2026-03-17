@@ -345,31 +345,8 @@ export interface ProgramPipelineState {
   /** Tracks iterations for cyclic phases */
   cycleCount?: Record<number, number>;
 
-  /** Program-specific extension state. Programs should use this instead of top-level fields. */
+  /** Program-specific extension state. Programs store all custom fields here. */
   ext: Record<string, unknown>;
-
-  // ── Deep-review specific (DEPRECATED — use ext) ──
-  /** @deprecated Use ext.roleResult */
-  roleResult?: {
-    useDynamicRoles: boolean;
-    focusAreas: string[];
-    numFocus: number;
-    totalWorkers: number;
-    passesPerFocus: number;
-    roleNames: string;
-  };
-  /** @deprecated Use ext.reviewConfig */
-  reviewConfig?: string;
-  /** @deprecated Use ext.spec */
-  spec?: string;
-  /** @deprecated Use ext.workerNames */
-  workerNames?: string[];
-  /** @deprecated Use ext.coordinatorName */
-  coordinatorName?: string;
-  /** @deprecated Use ext.judgeName */
-  judgeName?: string;
-  /** @deprecated Use ext.verifierNames */
-  verifierNames?: string[];
 }
 
 // ── Helper type guards ─────────────────────────────────────────

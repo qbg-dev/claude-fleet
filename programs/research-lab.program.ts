@@ -39,6 +39,30 @@ export interface ResearchLabOpts {
 }
 
 /**
+ * Parse raw CLI opts into typed ResearchLabOpts.
+ * Called by pipeline.ts if this export exists.
+ */
+export function parseOpts(opts: Record<string, any>, _projectRoot: string): ResearchLabOpts {
+  return {
+    scope: opts.scope || "HEAD",
+    contentFiles: opts.content ? opts.content.split(",").map((s: string) => s.trim()) : [],
+    spec: opts.spec || "Analyze this material thoroughly for issues, patterns, and insights.",
+    passesPerFocus: 1,
+    focusAreas: [],
+    maxWorkers: opts.maxWorkers ? parseInt(opts.maxWorkers, 10) : null,
+    verify: false,
+    verifyRoles: "",
+    noJudge: true,
+    noContext: opts.context === false,
+    noImproveReview: true,
+    workerModel: process.env.DEEP_REVIEW_WORKER_MODEL || "sonnet",
+    coordModel: process.env.DEEP_REVIEW_COORD_MODEL || "sonnet",
+    notifyTarget: opts.notify || "",
+    force: !!opts.force,
+  };
+}
+
+/**
  * The program declaration — a single perpetual PI node with a self-edge.
  *
  * The PI is the only worker declared in the graph. Everything else (students,
@@ -519,7 +543,6 @@ export function parse_ht_kung_output(state: ProgramPipelineState): void {
 
     if (!state.ext) state.ext = {};
     state.ext.roleResult = result;
-    state.roleResult = result;
 
     console.log(`[research-lab] Research plan: ${assignments.length} student assignments`);
   } catch (err) {

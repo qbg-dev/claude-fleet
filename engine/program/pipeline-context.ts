@@ -36,8 +36,9 @@ export function generatePipelineContext(
   // 1. Overview
   const desc = graph.description || state.programName;
   lines.push(`You are **${agent.name}** (role: ${agent.role}) in the **${graph.name}** pipeline.`);
-  if (state.spec || (state.ext?.spec as string)) {
-    lines.push(`Goal: "${(state.ext?.spec as string) || state.spec || ""}"`);
+  const spec = state.ext?.spec as string;
+  if (spec) {
+    lines.push(`Goal: "${spec}"`);
   } else if (graph.description) {
     lines.push(`Goal: "${desc}"`);
   }

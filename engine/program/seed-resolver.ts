@@ -189,23 +189,23 @@ export function buildStateVars(state: ProgramPipelineState): Record<string, stri
     vars.MATERIAL_TYPES = state.material.materialTypesStr;
   }
 
-  // Check ext first, fall back to deprecated top-level fields
-  const spec = (state.ext?.spec as string) || state.spec;
+  const spec = state.ext?.spec as string;
   if (spec) {
     vars.REVIEW_SPEC = spec;
   }
 
-  const reviewConfig = (state.ext?.reviewConfig as string) || state.reviewConfig;
+  const reviewConfig = state.ext?.reviewConfig as string;
   if (reviewConfig) {
     vars.REVIEW_CONFIG = reviewConfig;
   }
 
-  const coordinatorName = (state.ext?.coordinatorName as string) || state.coordinatorName;
+  const coordinatorName = state.ext?.coordinatorName as string;
   if (coordinatorName) {
     vars.COORDINATOR_NAME = coordinatorName;
   }
 
-  const roleResult = (state.ext?.roleResult as typeof state.roleResult) || state.roleResult;
+  type RoleResult = { useDynamicRoles: boolean; focusAreas: string[]; numFocus: number; totalWorkers: number; passesPerFocus: number; roleNames: string };
+  const roleResult = state.ext?.roleResult as RoleResult | undefined;
   if (roleResult) {
     vars.NUM_PASSES = String(roleResult.totalWorkers);
     vars.NUM_FOCUS = String(roleResult.numFocus);

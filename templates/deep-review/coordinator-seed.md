@@ -155,13 +155,12 @@ Write to: `{{REPORT_FILE}}`
 
 Display the report summary in your output.
 
-### Phase 10: Notify completion
+### Phase 10: Finalize
 
 1. Progress: if `update_state` available, call `update_state(key="status", value="complete")`
 2. Done marker: `echo "complete" > {{SESSION_DIR}}/review.done`
-3. Desktop: `notify "Deep review complete: $(grep -c '###' {{REPORT_FILE}} 2>/dev/null || echo 0) findings in {{REPORT_FILE}}" "Deep Review" "file://{{REPORT_FILE}}"`
-4. Fleet Mail (if `{{NOTIFY_TARGET}}` non-empty):
-   `mail_send(to="{{NOTIFY_TARGET}}", subject="REVIEW DONE", body="Report: {{REPORT_FILE}} | Fixed: N | Content: N | Design: N | Suggestions: N")`
+
+**Note:** Desktop notification, Fleet Mail, tmux notification to the launching worker, and scheduled cleanup (20 minutes) are handled automatically by the system Stop hook. You do NOT need to run `notify` or `mail_send`.
 
 ### Phase 10.5: Worktree cleanup
 
