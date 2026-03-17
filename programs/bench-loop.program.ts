@@ -73,7 +73,11 @@ export default function benchLoop(opts: BenchLoopOpts): Program {
   const benchDir = opts.benchDir;
   const benchmark = opts.benchmark || require("path").basename(benchDir);
   const runtime = opts.runtime || "claude";
-  const model = opts.model || "opus[1m]";
+  // Hard benchmarks get opus by default; simpler ones use sonnet to save cost
+  const isHardBenchmark = ["torchft-cifar10", "eval-tb3-torchft", "ranger-provisioning-service", "eval-tb3-ranger"].some(
+    name => benchmark.includes(name) || (opts.benchDir || "").includes(name)
+  );
+  const model = opts.model || (isHardBenchmark ? "opus[1m]" : "sonnet[1m]");
   const conventionsDir = opts.conventionsDir || "/Users/wz/zPersonalProjects/qbg/conventions";
   const tokenFile = opts.tokenFile || TOKEN_FILE_DEFAULT;
   const tokens = readOAuthTokens(tokenFile);
@@ -119,6 +123,23 @@ export default function benchLoop(opts: BenchLoopOpts): Program {
             description: "Remind hardener to run conventions CI before git commit",
             prompt: `⚠️ CONVENTIONS CI REMINDER: If you are about to commit, verify ALL 7 checks passed first:\n\`\`\`bash\nFAILED=0; for s in ${conventionsDir}/ci_checks/*.sh; do bash "$s" ${benchDir}/ 2>&1 || FAILED=1; done; [ $FAILED -eq 0 ] && echo "✅ PASS" || echo "❌ FAIL"\n\`\`\`\nDo NOT commit with failing checks. Also verify: LIKE/regex patterns (never exact match), oracle still passes.`,
           },
+          {
+            event: "Stop",
+            type: "command",
+            description: "Send round summary via fleet mail and push commits",
+            check: `
+RESULTS="{{SESSION_DIR}}/round-results.json"
+if [ -f "$RESULTS" ]; then
+  ROUND=$(python3 -c "import json; print(json.load(open('$RESULTS')).get('round','?'))" 2>/dev/null || echo "?")
+  PASSED=$(python3 -c "import json; d=json.load(open('$RESULTS')); print(d.get('summary',{}).get('passed','?'))" 2>/dev/null || echo "?")
+  TOTAL=$(python3 -c "import json; d=json.load(open('$RESULTS')); print(d.get('summary',{}).get('total','?'))" 2>/dev/null || echo "?")
+  fleet mail send coordinator "Round $ROUND complete" "${benchmark}: $PASSED/$TOTAL passed" 2>/dev/null || true
+fi
+cd ${benchDir} && git push 2>/dev/null || true
+exit 0
+`,
+            blocking: false,
+          },
         ],
       }],
       prelaunch: [
@@ -127,7 +148,7 @@ export default function benchLoop(opts: BenchLoopOpts): Program {
     })
     .edge("execute", "harden")
     .edge("harden", "execute", {
-      condition: `! test -f "{{SESSION_DIR}}/paused.flag"`,
+      condition: `! test -f "{{SESSION_DIR}}/paused.flag" && ! test -f "{{SESSION_DIR}}/skip-executor.flag"`,
       maxIterations: 999,
       label: "continue loop",
     })
@@ -301,8 +322,17 @@ rsync -az --delete ${benchDir}/ ${sshUser}@${host}:${remoteBenchDir}/
 \`\`\`
 
 ### Step 2: Build Docker image
+#### Skip Docker rebuild optimization
 \`\`\`bash
-${dockerCmd} build -t ${benchmark} ${remoteBenchDir}/ 2>&1 | tail -10
+# Hash Dockerfile + environment dir to detect changes
+DOCKER_HASH=$(find ${remoteBenchDir}/*/environment/ -type f 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
+CACHED_HASH=$(cat "{{SESSION_DIR}}/.docker-hash" 2>/dev/null || echo "")
+if [ "$DOCKER_HASH" = "$CACHED_HASH" ] && ${dockerCmd} images -q ${benchmark} 2>/dev/null | head -1 | grep -q .; then
+  echo "Docker image unchanged — skipping rebuild"
+else
+  ${dockerCmd} build -t ${benchmark} ${remoteBenchDir}/ 2>&1 | tail -10
+  echo "$DOCKER_HASH" > "{{SESSION_DIR}}/.docker-hash"
+fi
 \`\`\`
 
 If build fails, check if Dockerfile exists. Some benchmarks use docker-compose:
@@ -570,6 +600,17 @@ echo $((ROUND + 1)) > "{{SESSION_DIR}}/round.txt"
 \`\`\`
 
 Update \`{{SESSION_DIR}}/stable-passes.json\`.
+
+### Skip executor optimization
+If 3+ consecutive rounds have all cases passing AND you made no changes this round:
+\`\`\`bash
+touch "{{SESSION_DIR}}/skip-executor.flag"
+echo "Stable: 3+ consecutive clean passes, no changes needed. Skipping next executor run."
+\`\`\`
+If you DID make changes this round, remove the flag:
+\`\`\`bash
+rm -f "{{SESSION_DIR}}/skip-executor.flag"
+\`\`\`
 
 ### Phase 7: Write report
 Write \`{{SESSION_DIR}}/harden-report-r\${ROUND}.md\` with pass/fail matrix, classified issues, changes, CI results.
