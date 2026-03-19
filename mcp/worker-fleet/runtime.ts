@@ -46,23 +46,23 @@ export const CLAUDE_RUNTIME: RuntimeConfig = {
   binary: "claude",
   defaultModel: "opus[1m]",
   buildLaunchCmd({ model, permissionMode, disallowedTools, workerDir, reasoningEffort }) {
-    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model "${model}"`;
     if (permissionMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
-    if (reasoningEffort) cmd += ` --effort ${reasoningEffort}`;
+    if (reasoningEffort) cmd += ` --effort "${reasoningEffort}"`;
     if (disallowedTools) cmd += ` --disallowed-tools "${disallowedTools}"`;
-    cmd += ` --add-dir ${workerDir}`;
+    cmd += ` --add-dir "${workerDir}"`;
     return cmd;
   },
   buildResumeCmd({ model, permissionMode, workerDir, sessionId }) {
-    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model "${model}"`;
     if (permissionMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
-    cmd += ` --add-dir ${workerDir} --resume ${sessionId}`;
+    cmd += ` --add-dir "${workerDir}" --resume ${sessionId}`;
     return cmd;
   },
   buildForkCmd({ model, permissionMode, workerDir, sessionId }) {
-    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model "${model}"`;
     if (permissionMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
-    cmd += ` --add-dir ${workerDir} --resume ${sessionId} --fork-session`;
+    cmd += ` --add-dir "${workerDir}" --resume ${sessionId} --fork-session`;
     return cmd;
   },
   exitCommand: "/exit",
@@ -78,10 +78,10 @@ export const CODEX_RUNTIME: RuntimeConfig = {
   binary: "codex",
   defaultModel: "gpt-5.4",
   buildLaunchCmd({ model, permissionMode, reasoningEffort }) {
-    let cmd = `codex -m ${model}`;
+    let cmd = `codex -m "${model}"`;
     if (permissionMode === "bypassPermissions") cmd += " --dangerously-bypass-approvals-and-sandbox";
     else cmd += " -s workspace-write -a on-request";
-    if (reasoningEffort) cmd += ` -c model_reasoning_effort=${reasoningEffort}`;
+    if (reasoningEffort) cmd += ` -c model_reasoning_effort="${reasoningEffort}"`;
     cmd += " --no-alt-screen";
     return cmd;
   },

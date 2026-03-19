@@ -6,11 +6,12 @@
  */
 
 import type { Command } from "commander";
-import { mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { addGlobalOpts } from "../index";
-import { FLEET_MAIL_URL } from "../lib/paths";
+import { FLEET_MAIL_URL, workerDir, resolveProject } from "../lib/paths";
 import { ok, fail, info, warn } from "../lib/fmt";
+import { getState } from "../lib/config";
 import {
   resolveSessionId,
   resolveDirSlug,
@@ -39,7 +40,9 @@ export function register(parent: Command): void {
 
       // Check if already registered
       const existing = loadSessionIdentity(sessionId);
-      if (existing) {
+      if (existing && !opts.name) {
+        // Already registered, no rename requested — ensure worker entry exists
+        ensureWorkerEntry(existing, opts.quiet);
         if (!opts.quiet) {
           ok(`Already registered: ${existing.mailName}`);
         } else {
@@ -110,10 +113,45 @@ export function register(parent: Command): void {
         writeFileSync(missionPath, "# Mission\n\n<!-- Fill in your mission as you understand your task -->\n");
       }
 
+      // If renaming an existing registration, update identity + rename worker dir
+      if (existing && opts.name) {
+        const oldWorkerName = existing.customName;
+        const project = resolveProject();
+
+        // Update session identity
+        existing.mailName = mailName;
+        existing.customName = customName;
+        writeFileSync(join(dir, "identity.json"), JSON.stringify(existing, null, 2) + "\n");
+
+        // Rename worker directory if it exists
+        const oldDir = workerDir(project, oldWorkerName);
+        const newDir = workerDir(project, customName);
+        if (existsSync(oldDir) && oldDir !== newDir) {
+          if (existsSync(newDir)) {
+            rmSync(newDir, { recursive: true });
+          }
+          renameSync(oldDir, newDir);
+          if (!opts.quiet) info(`  Renamed worker: ${oldWorkerName} → ${customName}`);
+        }
+
+        ensureWorkerEntry(existing, opts.quiet);
+
+        if (!opts.quiet) {
+          ok(`Renamed: ${mailName}`);
+        } else {
+          process.stdout.write(mailName);
+        }
+        return;
+      }
+
+      // Create worker entry alongside session identity
+      ensureWorkerEntry(identity, opts.quiet);
+
       if (!opts.quiet) {
         ok(`Registered: ${mailName}`);
         info(`  Session: ${sessionId}`);
         info(`  Dir: ${dirSlug}`);
+        info(`  Worker: ${customName} (in fleet ls)`);
         if (paneId) info(`  Pane: ${paneId}`);
         if (siblings.length > 0) {
           warn(`Other sessions in ${dirSlug}: ${siblings.map(s => s.mailName).join(", ")}`);
@@ -123,6 +161,81 @@ export function register(parent: Command): void {
         process.stdout.write(mailName);
       }
     });
+}
+
+/** Ensure a worker entry exists for the given session identity. */
+function ensureWorkerEntry(identity: SessionIdentity, quiet?: boolean): void {
+  const project = resolveProject();
+  const name = identity.customName;
+  const dir = workerDir(project, name);
+
+  // Already has config.json → worker entry exists
+  if (existsSync(join(dir, "config.json"))) {
+    // Update state with current pane/session
+    const state = getState(project, name);
+    if (state && (state.session_id !== identity.sessionId || state.pane_id !== identity.paneId)) {
+      const updatedState = {
+        ...state,
+        status: "active" as const,
+        pane_id: identity.paneId,
+        session_id: identity.sessionId,
+      };
+      writeFileSync(join(dir, "state.json"), JSON.stringify(updatedState, null, 2) + "\n");
+    }
+    return;
+  }
+
+  mkdirSync(dir, { recursive: true });
+
+  // Minimal config — enough for fleet ls to show this entry
+  const config = {
+    model: "opus[1m]",
+    reasoning_effort: "high",
+    permission_mode: "bypassPermissions",
+    sleep_duration: null,
+    window: null,
+    worktree: identity.cwd,
+    branch: "HEAD",
+    mcp: {},
+    hooks: [],
+    ephemeral: true,
+    meta: {
+      created_at: identity.registeredAt,
+      created_by: "fleet-register",
+      forked_from: null,
+      project,
+    },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(config, null, 2) + "\n");
+
+  const workerState = {
+    status: "active",
+    pane_id: identity.paneId,
+    pane_target: null,
+    tmux_session: null,
+    session_id: identity.sessionId,
+    past_sessions: [],
+    last_relaunch: null,
+    relaunch_count: 0,
+    cycles_completed: 0,
+    last_cycle_at: null,
+    custom: {},
+  };
+  writeFileSync(join(dir, "state.json"), JSON.stringify(workerState, null, 2) + "\n");
+
+  // Symlink mission.md from session dir
+  const sessionMission = join(sessionDir(identity.sessionId), "mission.md");
+  const workerMission = join(dir, "mission.md");
+  if (!existsSync(workerMission)) {
+    try {
+      const { symlinkSync } = require("node:fs");
+      symlinkSync(sessionMission, workerMission);
+    } catch {
+      writeFileSync(workerMission, "# Mission\n\n<!-- Fill in your mission -->\n");
+    }
+  }
+
+  if (!quiet) info(`  Worker entry created: ${project}/${name}`);
 }
 
 /** Auto-detect a custom name from worktree or WORKER_NAME env. */

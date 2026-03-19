@@ -359,8 +359,8 @@ If \`${benchDir}/tasks/\` exists with subdirectories containing \`task.toml\`:
   - **Sync**: \`rsync -az --delete ${benchDir}/ ${sshUser}@${host}:${remoteBenchDir}/\`
   - **Build**: \`${dockerCmd} build -t ${benchmark}-TASKNAME ${remoteBenchDir}/tasks/TASKNAME/environment/\`
   - **Container**: \`${dockerCmd} run -d --name ${benchmark}-TASKNAME-r\${ROUND} --cpus=2 --memory=4g ${benchmark}-TASKNAME sleep infinity\`
-  - **Copy tests into container**: \`${dockerCmd} cp ${remoteBenchDir}/tasks/TASKNAME/tests/. ${benchmark}-TASKNAME-r\${ROUND}:/tests/\`
   - **Agent prompt**: contents of \`tasks/TASKNAME/instruction.md\` — agent runs commands via \`${dockerCmd} exec ${benchmark}-TASKNAME-r\${ROUND} bash -c '...'\`
+  - **Copy tests into container AFTER agent completes** (CRITICAL — agent must NOT see tests): \`${dockerCmd} cp ${remoteBenchDir}/tasks/TASKNAME/tests/. ${benchmark}-TASKNAME-r\${ROUND}:/tests/\`
   - **Test**: \`${dockerCmd} exec ${benchmark}-TASKNAME-r\${ROUND} bash /tests/test.sh\` (runs pytest on test_state.py)
   - **Results**: parse pytest output for pass/fail counts per test function
 - In round-results.json, use task name as case key, with per-test pass/fail details:

@@ -33,7 +33,7 @@ export interface BenchHardenOpts {
 export default function benchHarden(opts: BenchHardenOpts): Program {
   const problem = opts.problem || "distributed_kv_store";
   const rounds = opts.rounds || 3;
-  const problemDir = `/Users/wz/Desktop/zPersonalProjects/slop-code-bench/problems/${problem}`;
+  const problemDir = `/Users/wz/zPersonalProjects/slop-code-bench/problems/${problem}`;
 
   const g = graph(
     "bench-harden",

@@ -66,12 +66,37 @@ if [ -z "$CHILD_NAME" ]; then
   _prompt_name
 fi
 
-# Reject lazy fork-style names
-while [[ "$CHILD_NAME" =~ -fork(-|$) ]] || [[ "$CHILD_NAME" =~ ^child- ]] || [ -z "$CHILD_NAME" ]; do
-  echo "" >&2
-  echo "  ✗ '$CHILD_NAME' is not a useful name. Describe what this worker DOES." >&2
+# Require non-empty name
+while [ -z "$CHILD_NAME" ]; do
   _prompt_name
 done
+
+# ── Worktree choice (interactive unless --no-worktree or --cwd was passed) ──
+if [ "$NO_WORKTREE" = false ] && [ -z "$LAUNCH_CWD" ]; then
+  echo "" >&2
+  printf "  Create new worktree for '%s'? [y/N] " "$CHILD_NAME" >&2
+  read -r _wt_choice
+  if [[ ! "$_wt_choice" =~ ^[Yy] ]]; then
+    NO_WORKTREE=true
+    echo "  → Will launch in current directory" >&2
+  else
+    # Validate name doesn't conflict with existing worktree
+    _main_project_check="$(pwd)"
+    if [ -f "$_main_project_check/.git" ]; then
+      _main_project_check=$(sed 's|gitdir: ||; s|/\.git/worktrees/.*||' "$_main_project_check/.git" 2>/dev/null || echo "$_main_project_check")
+    fi
+    _candidate_dir="$(dirname "$_main_project_check")/$(basename "$_main_project_check")-w-${CHILD_NAME}"
+    while [ -d "$_candidate_dir" ]; do
+      echo "" >&2
+      echo "  ✗ Worktree already exists: $_candidate_dir" >&2
+      echo "  Choose a different name or press Ctrl-C to abort." >&2
+      _prompt_name
+      while [ -z "$CHILD_NAME" ]; do _prompt_name; done
+      _candidate_dir="$(dirname "$_main_project_check")/$(basename "$_main_project_check")-w-${CHILD_NAME}"
+    done
+    echo "  → Will create worktree: $_candidate_dir" >&2
+  fi
+fi
 
 echo "Forking session $PARENT_SESSION from parent pane $PARENT_PANE (child: $CHILD_NAME)"
 

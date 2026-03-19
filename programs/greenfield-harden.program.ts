@@ -28,7 +28,7 @@ export interface GreenfieldHardenOpts {
 }
 
 const PROJECT_ROOT = "/Users/wz/Desktop/qbg/greenfield-bench";
-const WECHAT_ROOT = "/Users/wz/Desktop/zPersonalProjects/Wechat";
+const WECHAT_ROOT = "/Users/wz/zPersonalProjects/Wechat";
 const STRATEGY_FILE = "/Users/wz/Desktop/qbg/qbg_benchmark_strategy";
 
 const ALL_CASES = [

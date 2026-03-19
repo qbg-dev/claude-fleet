@@ -35,7 +35,7 @@ export default function tb3Verify(opts: Tb3VerifyOpts): Program {
   const local = opts.local || false;
   const skipTrial = opts.skipTrial || false;
   const agentModel = opts.agentModel || "opus";
-  const taskDir = `/Users/wz/Desktop/zPersonalProjects/terminal-bench-3-w-tb3-ranger/tasks/${task}`;
+  const taskDir = `/Users/wz/zPersonalProjects/terminal-bench-3-w-tb3-ranger/tasks/${task}`;
 
   const sshPrefix = local ? "" : `ssh root@${host}`;
   const dockerCmd = local ? "docker" : `ssh root@${host} docker`;

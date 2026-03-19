@@ -40,22 +40,22 @@ export function buildAgentCmd(snap: WorkerSnapshot, projectName: string, session
 
   if (snap.runtime === "codex") {
     if (sessionId) return `codex resume ${sessionId}`;
-    let cmd = `codex -m ${snap.model}`;
+    let cmd = `codex -m "${snap.model}"`;
     if (snap.permissionMode === "bypassPermissions") {
       cmd += " --dangerously-bypass-approvals-and-sandbox";
     } else {
       cmd += " -s workspace-write -a on-request";
     }
-    if (snap.reasoningEffort) cmd += ` -c model_reasoning_effort=${snap.reasoningEffort}`;
+    if (snap.reasoningEffort) cmd += ` -c model_reasoning_effort="${snap.reasoningEffort}"`;
     cmd += " --no-alt-screen";
     return cmd;
   }
 
   // Claude Code (default)
-  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME=${snap.name} claude --model ${snap.model}`;
+  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME=${snap.name} claude --model "${snap.model}"`;
   if (snap.permissionMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
-  if (snap.reasoningEffort) cmd += ` --effort ${snap.reasoningEffort}`;
-  cmd += ` --add-dir ${workerDir}`;
+  if (snap.reasoningEffort) cmd += ` --effort "${snap.reasoningEffort}"`;
+  cmd += ` --add-dir "${workerDir}"`;
   if (sessionId) cmd += ` --resume ${sessionId}`;
   return cmd;
 }

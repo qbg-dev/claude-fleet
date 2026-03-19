@@ -145,6 +145,11 @@ export function sendKeys(paneId: string, text: string): void {
   run(["send-keys", "-t", paneId, text]);
 }
 
+/** Send keys literally (no tmux key-name interpretation) */
+export function sendKeysLiteral(paneId: string, text: string): void {
+  run(["send-keys", "-t", paneId, "-l", text]);
+}
+
 /** Send Enter to a pane */
 export function sendEnter(paneId: string): void {
   run(["send-keys", "-t", paneId, "-H", "0d"]);

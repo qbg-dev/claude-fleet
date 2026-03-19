@@ -181,53 +181,133 @@ if [ -n "$cost_raw" ] && [ "$cost_raw" != "null" ]; then
 	cost_info=$(printf " | %s %b%s%b" "${emoji}" "${color}" "${cost_display}" "\033[0m")
 
 	# ============================================================================
-	# SELF-CONTAINED SPENDING TRACKER
+	# SPENDING TRACKER — write-time aggregation
 	# ============================================================================
-	# Append-only JSONL at ~/.claude/spending.jsonl. No locks needed.
-	# printf >> file is atomic for lines < PIPE_BUF (512 bytes). Ours are ~81 bytes.
-	# Duplicates per session are expected — aggregation deduplicates by max cost per sid.
-	# Format: {"sid":"...","cost":N.NN,"ts":EPOCH}
+	# 1. Atomic append to spending.jsonl (archive, never read on hot path)
+	# 2. Update spending-index.json (per-session min/max/ts, ~100KB)
+	# Index is the hot-path data source; JSONL is append-only backup.
 	# ============================================================================
 	SPENDING_FILE="$HOME/.claude/spending.jsonl"
+	SPENDING_INDEX="$HOME/.claude/spending-index.json"
 
-	if [ -n "$session_id" ] && [ "$session_id" != "null" ] && (($(echo "$cost_dollars > 0" | bc -l))); then
-		printf '{"sid":"%s","cost":%s,"ts":%s}\n' "$session_id" "$cost_dollars" "$(date +%s)" >> "$SPENDING_FILE"
+	if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then
+		_now_ts=$(date +%s)
+
+		# Atomic append to JSONL archive (unchanged)
+		printf '{"sid":"%s","cost":%s,"ts":%s}\n' "$session_id" "$cost_dollars" "$_now_ts" >> "$SPENDING_FILE"
+
+		# Update index for this session (mkdir spinlock, skip on contention)
+		(
+			_LOCK_DIR="$HOME/.claude/statusline-locks/spending-index"
+			mkdir -p "$(dirname "$_LOCK_DIR")" 2>/dev/null || true
+			_W=0; while ! mkdir "$_LOCK_DIR" 2>/dev/null; do sleep 0.2; _W=$((_W+1)); [ "$_W" -ge 5 ] && exit 0; done
+			trap 'rmdir "$_LOCK_DIR" 2>/dev/null || true' EXIT
+
+			# Bootstrap index if missing/corrupt
+			if [ ! -f "$SPENDING_INDEX" ] || ! jq -e '.v' "$SPENDING_INDEX" >/dev/null 2>&1; then
+				echo '{"v":1,"sessions":{}}' > "$SPENDING_INDEX"
+			fi
+
+			_tmp=$(mktemp)
+			jq --arg sid "$session_id" --argjson cost "$cost_dollars" --argjson ts "$_now_ts" '
+				.sessions[$sid] as $cur |
+				if $cur then
+					.sessions[$sid].max = (if $cost > $cur.max then $cost else $cur.max end) |
+					.sessions[$sid].latest_ts = $ts
+				else
+					.sessions[$sid] = {min: $cost, max: $cost, first_ts: $ts, latest_ts: $ts}
+				end
+			' "$SPENDING_INDEX" > "$_tmp" 2>/dev/null && mv "$_tmp" "$SPENDING_INDEX" || rm -f "$_tmp"
+		) &
 	fi
 fi
 
 # ============================================================================
 # COMPUTE SPENDING TOTALS (hourly / daily / weekly)
 # ============================================================================
-# Dedup by max cost per sid, then sum by time window. Tolerates malformed lines.
+# Uses cumulative sum history for correct windowed totals.
+# cumsum = lifetime total spend (sum of all session deltas). Only goes up.
+# hourly = cumsum_now - cumsum_1h_ago (exactly what was spent in the window).
+# History: one line per ~10s in spending-cumsum.tsv, pruned to 8 days.
 # ============================================================================
 spending_totals=""
-SPENDING_FILE="$HOME/.claude/spending.jsonl"
+SPENDING_INDEX="$HOME/.claude/spending-index.json"
+SPENDING_TOTALS="$HOME/.claude/spending-totals.txt"
+SPENDING_CUMSUM="$HOME/.claude/spending-cumsum.tsv"
 
-if [ -f "$SPENDING_FILE" ] && [ -s "$SPENDING_FILE" ]; then
+if [ -f "$SPENDING_INDEX" ] || [ -f "$HOME/.claude/spending.jsonl" ]; then
 	now_epoch=$(date +%s)
+	hourly_total="0" daily_total="0" weekly_total="0"
 
-	# Single jq pass: dedup by max cost per sid, then compute hourly/daily/weekly sums.
-	# Uses jq -R (raw line input) + fromjson? to tolerate truncated/malformed lines.
-	read -r hourly_total daily_total weekly_total < <(
-		jq -R -r -s --argjson now "$now_epoch" '
-			[split("\n")[] | select(length > 0) | fromjson? | select(.ts and .cost)] |
-			group_by(.sid) | map(max_by(.cost)) |
-			reduce .[] as $e ({h:0,d:0,w:0};
-				($now - $e.ts) as $age |
-				(if $age <= 3600   then .h += $e.cost else . end) |
-				(if $age <= 86400  then .d += $e.cost else . end) |
-				(if $age <= 604800 then .w += $e.cost else . end)
-			) |
-			"\(.h | . * 100 | round / 100) \(.d | . * 100 | round / 100) \(.w | . * 100 | round / 100)"
-		' "$SPENDING_FILE" 2>/dev/null || echo "0 0 0"
-	)
+	# Read cached totals
+	_cache_fresh=0
+	if [ -f "$SPENDING_TOTALS" ]; then
+		read -r hourly_total daily_total weekly_total _cache_ts < "$SPENDING_TOTALS" 2>/dev/null || true
+		if [ -n "$_cache_ts" ] && [ $(( now_epoch - _cache_ts )) -le 10 ]; then
+			_cache_fresh=1
+		fi
+	fi
 
-	# Warn if spending file exceeds 1GB (no rotation — data is append-only)
-	# Cross-platform stat: macOS uses -f%z, Linux uses -c%s
-	_spending_size=$(stat -f%z "$SPENDING_FILE" 2>/dev/null || stat -c%s "$SPENDING_FILE" 2>/dev/null || echo 0)
-	if [ "${_spending_size}" -gt 1073741824 ]; then
-		spending_totals="⚠️ spending.jsonl > 1GB ($((_spending_size / 1048576))MB) — consider pruning${spending_totals:+
-}${spending_totals}"
+	if [ "$_cache_fresh" != 1 ]; then
+		# Rebuild index from JSONL if index is missing/corrupt
+		if [ ! -f "$SPENDING_INDEX" ] || ! jq -e '.v' "$SPENDING_INDEX" >/dev/null 2>&1; then
+			if [ -x "$HOME/.claude/scripts/migrate-spending-index.sh" ]; then
+				bash "$HOME/.claude/scripts/migrate-spending-index.sh" >/dev/null 2>&1
+			fi
+		fi
+
+		# Compute current cumulative sum from index (~5ms on ~170KB)
+		_cumsum="0"
+		if [ -f "$SPENDING_INDEX" ]; then
+			_cumsum=$(jq -r '
+				[.sessions | to_entries[] | .value.max - .value.min] | add // 0 |
+				. * 100 | round / 100
+			' "$SPENDING_INDEX" 2>/dev/null || echo "0")
+		fi
+
+		# Append to cumsum history (atomic, <512 bytes)
+		printf '%s\t%s\n' "$now_epoch" "$_cumsum" >> "$SPENDING_CUMSUM"
+
+		# Compute windowed totals by looking up historical cumsum values
+		# Find cumsum at ~1h, ~24h, ~7d ago via awk (single pass, fast on <60k lines)
+		if [ -f "$SPENDING_CUMSUM" ]; then
+			read -r hourly_total daily_total weekly_total < <(
+				awk -v now="$now_epoch" -v cumsum="$_cumsum" '
+				BEGIN { FS="\t"; h_ts=now-3600; d_ts=now-86400; w_ts=now-604800; h_v=0; d_v=0; w_v=0 }
+				{
+					ts=$1; v=$2
+					# Track closest entry at or before each window boundary
+					if (ts <= h_ts) h_v=v
+					if (ts <= d_ts) d_v=v
+					if (ts <= w_ts) w_v=v
+				}
+				END {
+					h = cumsum - h_v; d = cumsum - d_v; w = cumsum - w_v
+					# Round to 2 decimal places
+					printf "%.2f %.2f %.2f\n", h, d, w
+				}
+				' "$SPENDING_CUMSUM"
+			)
+		fi
+
+		# Cache the result
+		printf '%s %s %s %s\n' "$hourly_total" "$daily_total" "$weekly_total" "$now_epoch" > "$SPENDING_TOTALS"
+
+		# Prune cumsum history older than 8 days (keep buffer beyond 7d window)
+		_prune_ts=$(( now_epoch - 691200 ))
+		if [ -f "$SPENDING_CUMSUM" ] && [ "$(wc -l < "$SPENDING_CUMSUM")" -gt 70000 ]; then
+			awk -v cutoff="$_prune_ts" -F'\t' '$1 >= cutoff' "$SPENDING_CUMSUM" > "${SPENDING_CUMSUM}.tmp" && \
+				mv "${SPENDING_CUMSUM}.tmp" "$SPENDING_CUMSUM"
+		fi
+	fi
+
+	# Warn if spending file exceeds 1GB
+	_sf="$HOME/.claude/spending.jsonl"
+	if [ -f "$_sf" ]; then
+		_spending_size=$(stat -f%z "$_sf" 2>/dev/null || stat -c%s "$_sf" 2>/dev/null || echo 0)
+		if [ "${_spending_size}" -gt 1073741824 ]; then
+			spending_totals="⚠️ spending.jsonl > 1GB ($((_spending_size / 1048576))MB) — consider pruning"
+		fi
 	fi
 
 	# Color helper: green < threshold1 < yellow < threshold2 < red
@@ -243,19 +323,19 @@ if [ -f "$SPENDING_FILE" ] && [ -s "$SPENDING_FILE" ]; then
 	}
 
 	# Hourly (actual spend in last 60 min)
-	if [ -n "$hourly_total" ] && [ "$hourly_total" != "0.00" ]; then
+	if [ -n "$hourly_total" ] && [ "$hourly_total" != "0" ] && [ "$hourly_total" != "0.00" ]; then
 		hc=$(color_tier "$hourly_total" 2.00 10.00)
 		spending_totals=$(printf " ⏰ %b\$%s%b (1h)" "$hc" "$hourly_total" "\033[0m")
 	fi
 
 	# Daily (actual spend in last 24h)
-	if [ -n "$daily_total" ] && [ "$daily_total" != "0.00" ]; then
+	if [ -n "$daily_total" ] && [ "$daily_total" != "0" ] && [ "$daily_total" != "0.00" ]; then
 		dc=$(color_tier "$daily_total" 5.00 20.00)
 		spending_totals="${spending_totals}$(printf "  📅 %b\$%s%b (24h)" "$dc" "$daily_total" "\033[0m")"
 	fi
 
 	# Weekly (actual spend in last 7d)
-	if [ -n "$weekly_total" ] && [ "$weekly_total" != "0.00" ]; then
+	if [ -n "$weekly_total" ] && [ "$weekly_total" != "0" ] && [ "$weekly_total" != "0.00" ]; then
 		wc=$(color_tier "$weekly_total" 30.00 100.00)
 		spending_totals="${spending_totals}$(printf "  💰 %b\$%s%b (7d)" "$wc" "$weekly_total" "\033[0m")"
 	fi
@@ -281,6 +361,31 @@ is_worker=0
 _worker_name=""
 if [ -n "$git_branch" ]; then
 	case "$git_branch" in worker/*) is_worker=1; _worker_name="${git_branch#worker/}" ;; esac
+fi
+
+# ============================================================================
+# FLEET MAIL NAME LOOKUP
+# ============================================================================
+# Look up this session's fleet mail name from identity.json.
+# Shows as 📬 in the statusline so the user knows their fleet identity.
+# ============================================================================
+_fleet_mail_name=""
+_fleet_mail_display=""
+if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then
+	_fleet_identity="$HOME/.claude/fleet/.sessions/$session_id/identity.json"
+	if [ -f "$_fleet_identity" ]; then
+		eval "$(jq -r '
+			@sh "_fleet_mail_name=\(.mailName // "")",
+			@sh "_fleet_custom_name=\(.customName // "")"
+		' "$_fleet_identity" 2>/dev/null)"
+		# Display: custom name if set, otherwise dirSlug-shortId
+		if [ -n "$_fleet_custom_name" ] && [ "$_fleet_custom_name" != "session" ]; then
+			_fleet_mail_display="$_fleet_custom_name"
+		elif [ -n "$_fleet_mail_name" ]; then
+			# Shorten: "session-ChengXing-Bot-e1f7ad79-..." → "ChengXing-Bot-e1f7ad79"
+			_fleet_mail_display=$(echo "$_fleet_mail_name" | sed 's/^session-//; s/-\([0-9a-f]\{8\}\)-.*/–\1/')
+		fi
+	fi
 fi
 
 # ============================================================================
@@ -349,6 +454,9 @@ if [ -n "$_reg_worker_name" ]; then
 elif [ -n "$_fleet_worker_name" ]; then
 	# Fleet v2 worker — show name (no registry hierarchy available)
 	_tree_tag=$(printf "\n🔗 %b%s%b" "\033[1;97m" "$_fleet_worker_name" "\033[0m")
+elif [ -n "$_fleet_mail_display" ]; then
+	# Fleet mail registered (not a worker) — show mail identity
+	_tree_tag=$(printf "\n📬 %b%s%b" "\033[36m" "$_fleet_mail_display" "\033[0m")
 fi
 
 if [ "$is_worker" = 1 ]; then
@@ -373,6 +481,7 @@ else
 		_dir_part="$dir_display"
 	fi
 	printf "📁 %s%s  ⚙️ %s%s" "$_dir_part" "$git_info" "$model_colored" "$cost_info"
+	[ -n "$_tree_tag" ] && printf "%s" "$_tree_tag"
 fi
 if [ -n "$spending_totals" ]; then
 	printf "\n%s" "$spending_totals"

@@ -88,6 +88,21 @@ claude-named() {
   CLAUDE_INSTANCE_NAME="$instance_name" claude "$@"
 }
 
+# ===== China network routing =====
+cn() {
+  ~/.claude/scripts/china_network.sh "$@"
+  case "${1:-status}" in
+    on)
+      export HTTPS_PROXY=http://localhost:10809
+      export HTTP_PROXY=http://localhost:10809
+      export NO_PROXY=localhost,127.0.0.1,*.local,10.*,192.168.*
+      ;;
+    off)
+      unset HTTPS_PROXY HTTP_PROXY NO_PROXY
+      ;;
+  esac
+}
+
 # ===== Discord bot token loader =====
 load-discord-token() {
   if [[ -f ~/.config/discord-bot/.env ]]; then

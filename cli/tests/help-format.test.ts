@@ -47,6 +47,7 @@ const ALL_COMMANDS = [
   "state",
   "checkpoint",
   "session",
+  "send",
 ] as const;
 
 describe("fleet --help", () => {

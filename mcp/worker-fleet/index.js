@@ -6531,8 +6531,2807 @@ function releaseLock(lockPath) {
 }
 var init_lock_utils = () => {};
 
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/common.js
+var require_common = __commonJS((exports, module) => {
+  function isNothing(subject) {
+    return typeof subject === "undefined" || subject === null;
+  }
+  function isObject2(subject) {
+    return typeof subject === "object" && subject !== null;
+  }
+  function toArray(sequence) {
+    if (Array.isArray(sequence))
+      return sequence;
+    else if (isNothing(sequence))
+      return [];
+    return [sequence];
+  }
+  function extend2(target, source) {
+    var index, length, key, sourceKeys;
+    if (source) {
+      sourceKeys = Object.keys(source);
+      for (index = 0, length = sourceKeys.length;index < length; index += 1) {
+        key = sourceKeys[index];
+        target[key] = source[key];
+      }
+    }
+    return target;
+  }
+  function repeat(string4, count) {
+    var result = "", cycle;
+    for (cycle = 0;cycle < count; cycle += 1) {
+      result += string4;
+    }
+    return result;
+  }
+  function isNegativeZero(number4) {
+    return number4 === 0 && Number.NEGATIVE_INFINITY === 1 / number4;
+  }
+  exports.isNothing = isNothing;
+  exports.isObject = isObject2;
+  exports.toArray = toArray;
+  exports.repeat = repeat;
+  exports.isNegativeZero = isNegativeZero;
+  exports.extend = extend2;
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/exception.js
+var require_exception = __commonJS((exports, module) => {
+  function formatError2(exception, compact) {
+    var where = "", message = exception.reason || "(unknown reason)";
+    if (!exception.mark)
+      return message;
+    if (exception.mark.name) {
+      where += 'in "' + exception.mark.name + '" ';
+    }
+    where += "(" + (exception.mark.line + 1) + ":" + (exception.mark.column + 1) + ")";
+    if (!compact && exception.mark.snippet) {
+      where += `
+
+` + exception.mark.snippet;
+    }
+    return message + " " + where;
+  }
+  function YAMLException(reason, mark) {
+    Error.call(this);
+    this.name = "YAMLException";
+    this.reason = reason;
+    this.mark = mark;
+    this.message = formatError2(this, false);
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, this.constructor);
+    } else {
+      this.stack = new Error().stack || "";
+    }
+  }
+  YAMLException.prototype = Object.create(Error.prototype);
+  YAMLException.prototype.constructor = YAMLException;
+  YAMLException.prototype.toString = function toString(compact) {
+    return this.name + ": " + formatError2(this, compact);
+  };
+  module.exports = YAMLException;
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/snippet.js
+var require_snippet = __commonJS((exports, module) => {
+  var common = require_common();
+  function getLine(buffer, lineStart, lineEnd, position, maxLineLength) {
+    var head = "";
+    var tail = "";
+    var maxHalfLength = Math.floor(maxLineLength / 2) - 1;
+    if (position - lineStart > maxHalfLength) {
+      head = " ... ";
+      lineStart = position - maxHalfLength + head.length;
+    }
+    if (lineEnd - position > maxHalfLength) {
+      tail = " ...";
+      lineEnd = position + maxHalfLength - tail.length;
+    }
+    return {
+      str: head + buffer.slice(lineStart, lineEnd).replace(/\t/g, "\u2192") + tail,
+      pos: position - lineStart + head.length
+    };
+  }
+  function padStart(string4, max) {
+    return common.repeat(" ", max - string4.length) + string4;
+  }
+  function makeSnippet(mark, options) {
+    options = Object.create(options || null);
+    if (!mark.buffer)
+      return null;
+    if (!options.maxLength)
+      options.maxLength = 79;
+    if (typeof options.indent !== "number")
+      options.indent = 1;
+    if (typeof options.linesBefore !== "number")
+      options.linesBefore = 3;
+    if (typeof options.linesAfter !== "number")
+      options.linesAfter = 2;
+    var re = /\r?\n|\r|\0/g;
+    var lineStarts = [0];
+    var lineEnds = [];
+    var match;
+    var foundLineNo = -1;
+    while (match = re.exec(mark.buffer)) {
+      lineEnds.push(match.index);
+      lineStarts.push(match.index + match[0].length);
+      if (mark.position <= match.index && foundLineNo < 0) {
+        foundLineNo = lineStarts.length - 2;
+      }
+    }
+    if (foundLineNo < 0)
+      foundLineNo = lineStarts.length - 1;
+    var result = "", i, line;
+    var lineNoLength = Math.min(mark.line + options.linesAfter, lineEnds.length).toString().length;
+    var maxLineLength = options.maxLength - (options.indent + lineNoLength + 3);
+    for (i = 1;i <= options.linesBefore; i++) {
+      if (foundLineNo - i < 0)
+        break;
+      line = getLine(mark.buffer, lineStarts[foundLineNo - i], lineEnds[foundLineNo - i], mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo - i]), maxLineLength);
+      result = common.repeat(" ", options.indent) + padStart((mark.line - i + 1).toString(), lineNoLength) + " | " + line.str + `
+` + result;
+    }
+    line = getLine(mark.buffer, lineStarts[foundLineNo], lineEnds[foundLineNo], mark.position, maxLineLength);
+    result += common.repeat(" ", options.indent) + padStart((mark.line + 1).toString(), lineNoLength) + " | " + line.str + `
+`;
+    result += common.repeat("-", options.indent + lineNoLength + 3 + line.pos) + "^" + `
+`;
+    for (i = 1;i <= options.linesAfter; i++) {
+      if (foundLineNo + i >= lineEnds.length)
+        break;
+      line = getLine(mark.buffer, lineStarts[foundLineNo + i], lineEnds[foundLineNo + i], mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo + i]), maxLineLength);
+      result += common.repeat(" ", options.indent) + padStart((mark.line + i + 1).toString(), lineNoLength) + " | " + line.str + `
+`;
+    }
+    return result.replace(/\n$/, "");
+  }
+  module.exports = makeSnippet;
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type.js
+var require_type = __commonJS((exports, module) => {
+  var YAMLException = require_exception();
+  var TYPE_CONSTRUCTOR_OPTIONS = [
+    "kind",
+    "multi",
+    "resolve",
+    "construct",
+    "instanceOf",
+    "predicate",
+    "represent",
+    "representName",
+    "defaultStyle",
+    "styleAliases"
+  ];
+  var YAML_NODE_KINDS = [
+    "scalar",
+    "sequence",
+    "mapping"
+  ];
+  function compileStyleAliases(map2) {
+    var result = {};
+    if (map2 !== null) {
+      Object.keys(map2).forEach(function(style) {
+        map2[style].forEach(function(alias) {
+          result[String(alias)] = style;
+        });
+      });
+    }
+    return result;
+  }
+  function Type(tag, options) {
+    options = options || {};
+    Object.keys(options).forEach(function(name) {
+      if (TYPE_CONSTRUCTOR_OPTIONS.indexOf(name) === -1) {
+        throw new YAMLException('Unknown option "' + name + '" is met in definition of "' + tag + '" YAML type.');
+      }
+    });
+    this.options = options;
+    this.tag = tag;
+    this.kind = options["kind"] || null;
+    this.resolve = options["resolve"] || function() {
+      return true;
+    };
+    this.construct = options["construct"] || function(data) {
+      return data;
+    };
+    this.instanceOf = options["instanceOf"] || null;
+    this.predicate = options["predicate"] || null;
+    this.represent = options["represent"] || null;
+    this.representName = options["representName"] || null;
+    this.defaultStyle = options["defaultStyle"] || null;
+    this.multi = options["multi"] || false;
+    this.styleAliases = compileStyleAliases(options["styleAliases"] || null);
+    if (YAML_NODE_KINDS.indexOf(this.kind) === -1) {
+      throw new YAMLException('Unknown kind "' + this.kind + '" is specified for "' + tag + '" YAML type.');
+    }
+  }
+  module.exports = Type;
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/schema.js
+var require_schema = __commonJS((exports, module) => {
+  var YAMLException = require_exception();
+  var Type = require_type();
+  function compileList(schema, name) {
+    var result = [];
+    schema[name].forEach(function(currentType) {
+      var newIndex = result.length;
+      result.forEach(function(previousType, previousIndex) {
+        if (previousType.tag === currentType.tag && previousType.kind === currentType.kind && previousType.multi === currentType.multi) {
+          newIndex = previousIndex;
+        }
+      });
+      result[newIndex] = currentType;
+    });
+    return result;
+  }
+  function compileMap() {
+    var result = {
+      scalar: {},
+      sequence: {},
+      mapping: {},
+      fallback: {},
+      multi: {
+        scalar: [],
+        sequence: [],
+        mapping: [],
+        fallback: []
+      }
+    }, index, length;
+    function collectType(type) {
+      if (type.multi) {
+        result.multi[type.kind].push(type);
+        result.multi["fallback"].push(type);
+      } else {
+        result[type.kind][type.tag] = result["fallback"][type.tag] = type;
+      }
+    }
+    for (index = 0, length = arguments.length;index < length; index += 1) {
+      arguments[index].forEach(collectType);
+    }
+    return result;
+  }
+  function Schema(definition) {
+    return this.extend(definition);
+  }
+  Schema.prototype.extend = function extend(definition) {
+    var implicit = [];
+    var explicit = [];
+    if (definition instanceof Type) {
+      explicit.push(definition);
+    } else if (Array.isArray(definition)) {
+      explicit = explicit.concat(definition);
+    } else if (definition && (Array.isArray(definition.implicit) || Array.isArray(definition.explicit))) {
+      if (definition.implicit)
+        implicit = implicit.concat(definition.implicit);
+      if (definition.explicit)
+        explicit = explicit.concat(definition.explicit);
+    } else {
+      throw new YAMLException("Schema.extend argument should be a Type, [ Type ], " + "or a schema definition ({ implicit: [...], explicit: [...] })");
+    }
+    implicit.forEach(function(type) {
+      if (!(type instanceof Type)) {
+        throw new YAMLException("Specified list of YAML types (or a single Type object) contains a non-Type object.");
+      }
+      if (type.loadKind && type.loadKind !== "scalar") {
+        throw new YAMLException("There is a non-scalar type in the implicit list of a schema. Implicit resolving of such types is not supported.");
+      }
+      if (type.multi) {
+        throw new YAMLException("There is a multi type in the implicit list of a schema. Multi tags can only be listed as explicit.");
+      }
+    });
+    explicit.forEach(function(type) {
+      if (!(type instanceof Type)) {
+        throw new YAMLException("Specified list of YAML types (or a single Type object) contains a non-Type object.");
+      }
+    });
+    var result = Object.create(Schema.prototype);
+    result.implicit = (this.implicit || []).concat(implicit);
+    result.explicit = (this.explicit || []).concat(explicit);
+    result.compiledImplicit = compileList(result, "implicit");
+    result.compiledExplicit = compileList(result, "explicit");
+    result.compiledTypeMap = compileMap(result.compiledImplicit, result.compiledExplicit);
+    return result;
+  };
+  module.exports = Schema;
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/str.js
+var require_str = __commonJS((exports, module) => {
+  var Type = require_type();
+  module.exports = new Type("tag:yaml.org,2002:str", {
+    kind: "scalar",
+    construct: function(data) {
+      return data !== null ? data : "";
+    }
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/seq.js
+var require_seq = __commonJS((exports, module) => {
+  var Type = require_type();
+  module.exports = new Type("tag:yaml.org,2002:seq", {
+    kind: "sequence",
+    construct: function(data) {
+      return data !== null ? data : [];
+    }
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/map.js
+var require_map = __commonJS((exports, module) => {
+  var Type = require_type();
+  module.exports = new Type("tag:yaml.org,2002:map", {
+    kind: "mapping",
+    construct: function(data) {
+      return data !== null ? data : {};
+    }
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/schema/failsafe.js
+var require_failsafe = __commonJS((exports, module) => {
+  var Schema = require_schema();
+  module.exports = new Schema({
+    explicit: [
+      require_str(),
+      require_seq(),
+      require_map()
+    ]
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/null.js
+var require_null = __commonJS((exports, module) => {
+  var Type = require_type();
+  function resolveYamlNull(data) {
+    if (data === null)
+      return true;
+    var max = data.length;
+    return max === 1 && data === "~" || max === 4 && (data === "null" || data === "Null" || data === "NULL");
+  }
+  function constructYamlNull() {
+    return null;
+  }
+  function isNull(object4) {
+    return object4 === null;
+  }
+  module.exports = new Type("tag:yaml.org,2002:null", {
+    kind: "scalar",
+    resolve: resolveYamlNull,
+    construct: constructYamlNull,
+    predicate: isNull,
+    represent: {
+      canonical: function() {
+        return "~";
+      },
+      lowercase: function() {
+        return "null";
+      },
+      uppercase: function() {
+        return "NULL";
+      },
+      camelcase: function() {
+        return "Null";
+      },
+      empty: function() {
+        return "";
+      }
+    },
+    defaultStyle: "lowercase"
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/bool.js
+var require_bool = __commonJS((exports, module) => {
+  var Type = require_type();
+  function resolveYamlBoolean(data) {
+    if (data === null)
+      return false;
+    var max = data.length;
+    return max === 4 && (data === "true" || data === "True" || data === "TRUE") || max === 5 && (data === "false" || data === "False" || data === "FALSE");
+  }
+  function constructYamlBoolean(data) {
+    return data === "true" || data === "True" || data === "TRUE";
+  }
+  function isBoolean(object4) {
+    return Object.prototype.toString.call(object4) === "[object Boolean]";
+  }
+  module.exports = new Type("tag:yaml.org,2002:bool", {
+    kind: "scalar",
+    resolve: resolveYamlBoolean,
+    construct: constructYamlBoolean,
+    predicate: isBoolean,
+    represent: {
+      lowercase: function(object4) {
+        return object4 ? "true" : "false";
+      },
+      uppercase: function(object4) {
+        return object4 ? "TRUE" : "FALSE";
+      },
+      camelcase: function(object4) {
+        return object4 ? "True" : "False";
+      }
+    },
+    defaultStyle: "lowercase"
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/int.js
+var require_int = __commonJS((exports, module) => {
+  var common = require_common();
+  var Type = require_type();
+  function isHexCode(c) {
+    return 48 <= c && c <= 57 || 65 <= c && c <= 70 || 97 <= c && c <= 102;
+  }
+  function isOctCode(c) {
+    return 48 <= c && c <= 55;
+  }
+  function isDecCode(c) {
+    return 48 <= c && c <= 57;
+  }
+  function resolveYamlInteger(data) {
+    if (data === null)
+      return false;
+    var max = data.length, index = 0, hasDigits = false, ch;
+    if (!max)
+      return false;
+    ch = data[index];
+    if (ch === "-" || ch === "+") {
+      ch = data[++index];
+    }
+    if (ch === "0") {
+      if (index + 1 === max)
+        return true;
+      ch = data[++index];
+      if (ch === "b") {
+        index++;
+        for (;index < max; index++) {
+          ch = data[index];
+          if (ch === "_")
+            continue;
+          if (ch !== "0" && ch !== "1")
+            return false;
+          hasDigits = true;
+        }
+        return hasDigits && ch !== "_";
+      }
+      if (ch === "x") {
+        index++;
+        for (;index < max; index++) {
+          ch = data[index];
+          if (ch === "_")
+            continue;
+          if (!isHexCode(data.charCodeAt(index)))
+            return false;
+          hasDigits = true;
+        }
+        return hasDigits && ch !== "_";
+      }
+      if (ch === "o") {
+        index++;
+        for (;index < max; index++) {
+          ch = data[index];
+          if (ch === "_")
+            continue;
+          if (!isOctCode(data.charCodeAt(index)))
+            return false;
+          hasDigits = true;
+        }
+        return hasDigits && ch !== "_";
+      }
+    }
+    if (ch === "_")
+      return false;
+    for (;index < max; index++) {
+      ch = data[index];
+      if (ch === "_")
+        continue;
+      if (!isDecCode(data.charCodeAt(index))) {
+        return false;
+      }
+      hasDigits = true;
+    }
+    if (!hasDigits || ch === "_")
+      return false;
+    return true;
+  }
+  function constructYamlInteger(data) {
+    var value = data, sign = 1, ch;
+    if (value.indexOf("_") !== -1) {
+      value = value.replace(/_/g, "");
+    }
+    ch = value[0];
+    if (ch === "-" || ch === "+") {
+      if (ch === "-")
+        sign = -1;
+      value = value.slice(1);
+      ch = value[0];
+    }
+    if (value === "0")
+      return 0;
+    if (ch === "0") {
+      if (value[1] === "b")
+        return sign * parseInt(value.slice(2), 2);
+      if (value[1] === "x")
+        return sign * parseInt(value.slice(2), 16);
+      if (value[1] === "o")
+        return sign * parseInt(value.slice(2), 8);
+    }
+    return sign * parseInt(value, 10);
+  }
+  function isInteger(object4) {
+    return Object.prototype.toString.call(object4) === "[object Number]" && (object4 % 1 === 0 && !common.isNegativeZero(object4));
+  }
+  module.exports = new Type("tag:yaml.org,2002:int", {
+    kind: "scalar",
+    resolve: resolveYamlInteger,
+    construct: constructYamlInteger,
+    predicate: isInteger,
+    represent: {
+      binary: function(obj) {
+        return obj >= 0 ? "0b" + obj.toString(2) : "-0b" + obj.toString(2).slice(1);
+      },
+      octal: function(obj) {
+        return obj >= 0 ? "0o" + obj.toString(8) : "-0o" + obj.toString(8).slice(1);
+      },
+      decimal: function(obj) {
+        return obj.toString(10);
+      },
+      hexadecimal: function(obj) {
+        return obj >= 0 ? "0x" + obj.toString(16).toUpperCase() : "-0x" + obj.toString(16).toUpperCase().slice(1);
+      }
+    },
+    defaultStyle: "decimal",
+    styleAliases: {
+      binary: [2, "bin"],
+      octal: [8, "oct"],
+      decimal: [10, "dec"],
+      hexadecimal: [16, "hex"]
+    }
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/float.js
+var require_float = __commonJS((exports, module) => {
+  var common = require_common();
+  var Type = require_type();
+  var YAML_FLOAT_PATTERN = new RegExp("^(?:[-+]?(?:[0-9][0-9_]*)(?:\\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?" + "|\\.[0-9_]+(?:[eE][-+]?[0-9]+)?" + "|[-+]?\\.(?:inf|Inf|INF)" + "|\\.(?:nan|NaN|NAN))$");
+  function resolveYamlFloat(data) {
+    if (data === null)
+      return false;
+    if (!YAML_FLOAT_PATTERN.test(data) || data[data.length - 1] === "_") {
+      return false;
+    }
+    return true;
+  }
+  function constructYamlFloat(data) {
+    var value, sign;
+    value = data.replace(/_/g, "").toLowerCase();
+    sign = value[0] === "-" ? -1 : 1;
+    if ("+-".indexOf(value[0]) >= 0) {
+      value = value.slice(1);
+    }
+    if (value === ".inf") {
+      return sign === 1 ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+    } else if (value === ".nan") {
+      return NaN;
+    }
+    return sign * parseFloat(value, 10);
+  }
+  var SCIENTIFIC_WITHOUT_DOT = /^[-+]?[0-9]+e/;
+  function representYamlFloat(object4, style) {
+    var res;
+    if (isNaN(object4)) {
+      switch (style) {
+        case "lowercase":
+          return ".nan";
+        case "uppercase":
+          return ".NAN";
+        case "camelcase":
+          return ".NaN";
+      }
+    } else if (Number.POSITIVE_INFINITY === object4) {
+      switch (style) {
+        case "lowercase":
+          return ".inf";
+        case "uppercase":
+          return ".INF";
+        case "camelcase":
+          return ".Inf";
+      }
+    } else if (Number.NEGATIVE_INFINITY === object4) {
+      switch (style) {
+        case "lowercase":
+          return "-.inf";
+        case "uppercase":
+          return "-.INF";
+        case "camelcase":
+          return "-.Inf";
+      }
+    } else if (common.isNegativeZero(object4)) {
+      return "-0.0";
+    }
+    res = object4.toString(10);
+    return SCIENTIFIC_WITHOUT_DOT.test(res) ? res.replace("e", ".e") : res;
+  }
+  function isFloat(object4) {
+    return Object.prototype.toString.call(object4) === "[object Number]" && (object4 % 1 !== 0 || common.isNegativeZero(object4));
+  }
+  module.exports = new Type("tag:yaml.org,2002:float", {
+    kind: "scalar",
+    resolve: resolveYamlFloat,
+    construct: constructYamlFloat,
+    predicate: isFloat,
+    represent: representYamlFloat,
+    defaultStyle: "lowercase"
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/schema/json.js
+var require_json = __commonJS((exports, module) => {
+  module.exports = require_failsafe().extend({
+    implicit: [
+      require_null(),
+      require_bool(),
+      require_int(),
+      require_float()
+    ]
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/timestamp.js
+var require_timestamp = __commonJS((exports, module) => {
+  var Type = require_type();
+  var YAML_DATE_REGEXP = new RegExp("^([0-9][0-9][0-9][0-9])" + "-([0-9][0-9])" + "-([0-9][0-9])$");
+  var YAML_TIMESTAMP_REGEXP = new RegExp("^([0-9][0-9][0-9][0-9])" + "-([0-9][0-9]?)" + "-([0-9][0-9]?)" + "(?:[Tt]|[ \\t]+)" + "([0-9][0-9]?)" + ":([0-9][0-9])" + ":([0-9][0-9])" + "(?:\\.([0-9]*))?" + "(?:[ \\t]*(Z|([-+])([0-9][0-9]?)" + "(?::([0-9][0-9]))?))?$");
+  function resolveYamlTimestamp(data) {
+    if (data === null)
+      return false;
+    if (YAML_DATE_REGEXP.exec(data) !== null)
+      return true;
+    if (YAML_TIMESTAMP_REGEXP.exec(data) !== null)
+      return true;
+    return false;
+  }
+  function constructYamlTimestamp(data) {
+    var match, year, month, day, hour, minute, second, fraction = 0, delta = null, tz_hour, tz_minute, date4;
+    match = YAML_DATE_REGEXP.exec(data);
+    if (match === null)
+      match = YAML_TIMESTAMP_REGEXP.exec(data);
+    if (match === null)
+      throw new Error("Date resolve error");
+    year = +match[1];
+    month = +match[2] - 1;
+    day = +match[3];
+    if (!match[4]) {
+      return new Date(Date.UTC(year, month, day));
+    }
+    hour = +match[4];
+    minute = +match[5];
+    second = +match[6];
+    if (match[7]) {
+      fraction = match[7].slice(0, 3);
+      while (fraction.length < 3) {
+        fraction += "0";
+      }
+      fraction = +fraction;
+    }
+    if (match[9]) {
+      tz_hour = +match[10];
+      tz_minute = +(match[11] || 0);
+      delta = (tz_hour * 60 + tz_minute) * 60000;
+      if (match[9] === "-")
+        delta = -delta;
+    }
+    date4 = new Date(Date.UTC(year, month, day, hour, minute, second, fraction));
+    if (delta)
+      date4.setTime(date4.getTime() - delta);
+    return date4;
+  }
+  function representYamlTimestamp(object4) {
+    return object4.toISOString();
+  }
+  module.exports = new Type("tag:yaml.org,2002:timestamp", {
+    kind: "scalar",
+    resolve: resolveYamlTimestamp,
+    construct: constructYamlTimestamp,
+    instanceOf: Date,
+    represent: representYamlTimestamp
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/merge.js
+var require_merge = __commonJS((exports, module) => {
+  var Type = require_type();
+  function resolveYamlMerge(data) {
+    return data === "<<" || data === null;
+  }
+  module.exports = new Type("tag:yaml.org,2002:merge", {
+    kind: "scalar",
+    resolve: resolveYamlMerge
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/binary.js
+var require_binary = __commonJS((exports, module) => {
+  var Type = require_type();
+  var BASE64_MAP = `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=
+\r`;
+  function resolveYamlBinary(data) {
+    if (data === null)
+      return false;
+    var code, idx, bitlen = 0, max = data.length, map2 = BASE64_MAP;
+    for (idx = 0;idx < max; idx++) {
+      code = map2.indexOf(data.charAt(idx));
+      if (code > 64)
+        continue;
+      if (code < 0)
+        return false;
+      bitlen += 6;
+    }
+    return bitlen % 8 === 0;
+  }
+  function constructYamlBinary(data) {
+    var idx, tailbits, input = data.replace(/[\r\n=]/g, ""), max = input.length, map2 = BASE64_MAP, bits = 0, result = [];
+    for (idx = 0;idx < max; idx++) {
+      if (idx % 4 === 0 && idx) {
+        result.push(bits >> 16 & 255);
+        result.push(bits >> 8 & 255);
+        result.push(bits & 255);
+      }
+      bits = bits << 6 | map2.indexOf(input.charAt(idx));
+    }
+    tailbits = max % 4 * 6;
+    if (tailbits === 0) {
+      result.push(bits >> 16 & 255);
+      result.push(bits >> 8 & 255);
+      result.push(bits & 255);
+    } else if (tailbits === 18) {
+      result.push(bits >> 10 & 255);
+      result.push(bits >> 2 & 255);
+    } else if (tailbits === 12) {
+      result.push(bits >> 4 & 255);
+    }
+    return new Uint8Array(result);
+  }
+  function representYamlBinary(object4) {
+    var result = "", bits = 0, idx, tail, max = object4.length, map2 = BASE64_MAP;
+    for (idx = 0;idx < max; idx++) {
+      if (idx % 3 === 0 && idx) {
+        result += map2[bits >> 18 & 63];
+        result += map2[bits >> 12 & 63];
+        result += map2[bits >> 6 & 63];
+        result += map2[bits & 63];
+      }
+      bits = (bits << 8) + object4[idx];
+    }
+    tail = max % 3;
+    if (tail === 0) {
+      result += map2[bits >> 18 & 63];
+      result += map2[bits >> 12 & 63];
+      result += map2[bits >> 6 & 63];
+      result += map2[bits & 63];
+    } else if (tail === 2) {
+      result += map2[bits >> 10 & 63];
+      result += map2[bits >> 4 & 63];
+      result += map2[bits << 2 & 63];
+      result += map2[64];
+    } else if (tail === 1) {
+      result += map2[bits >> 2 & 63];
+      result += map2[bits << 4 & 63];
+      result += map2[64];
+      result += map2[64];
+    }
+    return result;
+  }
+  function isBinary(obj) {
+    return Object.prototype.toString.call(obj) === "[object Uint8Array]";
+  }
+  module.exports = new Type("tag:yaml.org,2002:binary", {
+    kind: "scalar",
+    resolve: resolveYamlBinary,
+    construct: constructYamlBinary,
+    predicate: isBinary,
+    represent: representYamlBinary
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/omap.js
+var require_omap = __commonJS((exports, module) => {
+  var Type = require_type();
+  var _hasOwnProperty = Object.prototype.hasOwnProperty;
+  var _toString = Object.prototype.toString;
+  function resolveYamlOmap(data) {
+    if (data === null)
+      return true;
+    var objectKeys = [], index, length, pair, pairKey, pairHasKey, object4 = data;
+    for (index = 0, length = object4.length;index < length; index += 1) {
+      pair = object4[index];
+      pairHasKey = false;
+      if (_toString.call(pair) !== "[object Object]")
+        return false;
+      for (pairKey in pair) {
+        if (_hasOwnProperty.call(pair, pairKey)) {
+          if (!pairHasKey)
+            pairHasKey = true;
+          else
+            return false;
+        }
+      }
+      if (!pairHasKey)
+        return false;
+      if (objectKeys.indexOf(pairKey) === -1)
+        objectKeys.push(pairKey);
+      else
+        return false;
+    }
+    return true;
+  }
+  function constructYamlOmap(data) {
+    return data !== null ? data : [];
+  }
+  module.exports = new Type("tag:yaml.org,2002:omap", {
+    kind: "sequence",
+    resolve: resolveYamlOmap,
+    construct: constructYamlOmap
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/pairs.js
+var require_pairs = __commonJS((exports, module) => {
+  var Type = require_type();
+  var _toString = Object.prototype.toString;
+  function resolveYamlPairs(data) {
+    if (data === null)
+      return true;
+    var index, length, pair, keys, result, object4 = data;
+    result = new Array(object4.length);
+    for (index = 0, length = object4.length;index < length; index += 1) {
+      pair = object4[index];
+      if (_toString.call(pair) !== "[object Object]")
+        return false;
+      keys = Object.keys(pair);
+      if (keys.length !== 1)
+        return false;
+      result[index] = [keys[0], pair[keys[0]]];
+    }
+    return true;
+  }
+  function constructYamlPairs(data) {
+    if (data === null)
+      return [];
+    var index, length, pair, keys, result, object4 = data;
+    result = new Array(object4.length);
+    for (index = 0, length = object4.length;index < length; index += 1) {
+      pair = object4[index];
+      keys = Object.keys(pair);
+      result[index] = [keys[0], pair[keys[0]]];
+    }
+    return result;
+  }
+  module.exports = new Type("tag:yaml.org,2002:pairs", {
+    kind: "sequence",
+    resolve: resolveYamlPairs,
+    construct: constructYamlPairs
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/type/set.js
+var require_set = __commonJS((exports, module) => {
+  var Type = require_type();
+  var _hasOwnProperty = Object.prototype.hasOwnProperty;
+  function resolveYamlSet(data) {
+    if (data === null)
+      return true;
+    var key, object4 = data;
+    for (key in object4) {
+      if (_hasOwnProperty.call(object4, key)) {
+        if (object4[key] !== null)
+          return false;
+      }
+    }
+    return true;
+  }
+  function constructYamlSet(data) {
+    return data !== null ? data : {};
+  }
+  module.exports = new Type("tag:yaml.org,2002:set", {
+    kind: "mapping",
+    resolve: resolveYamlSet,
+    construct: constructYamlSet
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/schema/default.js
+var require_default = __commonJS((exports, module) => {
+  module.exports = require_json().extend({
+    implicit: [
+      require_timestamp(),
+      require_merge()
+    ],
+    explicit: [
+      require_binary(),
+      require_omap(),
+      require_pairs(),
+      require_set()
+    ]
+  });
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/loader.js
+var require_loader = __commonJS((exports, module) => {
+  var common = require_common();
+  var YAMLException = require_exception();
+  var makeSnippet = require_snippet();
+  var DEFAULT_SCHEMA = require_default();
+  var _hasOwnProperty = Object.prototype.hasOwnProperty;
+  var CONTEXT_FLOW_IN = 1;
+  var CONTEXT_FLOW_OUT = 2;
+  var CONTEXT_BLOCK_IN = 3;
+  var CONTEXT_BLOCK_OUT = 4;
+  var CHOMPING_CLIP = 1;
+  var CHOMPING_STRIP = 2;
+  var CHOMPING_KEEP = 3;
+  var PATTERN_NON_PRINTABLE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x84\x86-\x9F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
+  var PATTERN_NON_ASCII_LINE_BREAKS = /[\x85\u2028\u2029]/;
+  var PATTERN_FLOW_INDICATORS = /[,\[\]\{\}]/;
+  var PATTERN_TAG_HANDLE = /^(?:!|!!|![a-z\-]+!)$/i;
+  var PATTERN_TAG_URI = /^(?:!|[^,\[\]\{\}])(?:%[0-9a-f]{2}|[0-9a-z\-#;\/\?:@&=\+\$,_\.!~\*'\(\)\[\]])*$/i;
+  function _class(obj) {
+    return Object.prototype.toString.call(obj);
+  }
+  function is_EOL(c) {
+    return c === 10 || c === 13;
+  }
+  function is_WHITE_SPACE(c) {
+    return c === 9 || c === 32;
+  }
+  function is_WS_OR_EOL(c) {
+    return c === 9 || c === 32 || c === 10 || c === 13;
+  }
+  function is_FLOW_INDICATOR(c) {
+    return c === 44 || c === 91 || c === 93 || c === 123 || c === 125;
+  }
+  function fromHexCode(c) {
+    var lc;
+    if (48 <= c && c <= 57) {
+      return c - 48;
+    }
+    lc = c | 32;
+    if (97 <= lc && lc <= 102) {
+      return lc - 97 + 10;
+    }
+    return -1;
+  }
+  function escapedHexLen(c) {
+    if (c === 120) {
+      return 2;
+    }
+    if (c === 117) {
+      return 4;
+    }
+    if (c === 85) {
+      return 8;
+    }
+    return 0;
+  }
+  function fromDecimalCode(c) {
+    if (48 <= c && c <= 57) {
+      return c - 48;
+    }
+    return -1;
+  }
+  function simpleEscapeSequence(c) {
+    return c === 48 ? "\x00" : c === 97 ? "\x07" : c === 98 ? "\b" : c === 116 ? "\t" : c === 9 ? "\t" : c === 110 ? `
+` : c === 118 ? "\v" : c === 102 ? "\f" : c === 114 ? "\r" : c === 101 ? "\x1B" : c === 32 ? " " : c === 34 ? '"' : c === 47 ? "/" : c === 92 ? "\\" : c === 78 ? "\x85" : c === 95 ? "\xA0" : c === 76 ? "\u2028" : c === 80 ? "\u2029" : "";
+  }
+  function charFromCodepoint(c) {
+    if (c <= 65535) {
+      return String.fromCharCode(c);
+    }
+    return String.fromCharCode((c - 65536 >> 10) + 55296, (c - 65536 & 1023) + 56320);
+  }
+  function setProperty(object4, key, value) {
+    if (key === "__proto__") {
+      Object.defineProperty(object4, key, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value
+      });
+    } else {
+      object4[key] = value;
+    }
+  }
+  var simpleEscapeCheck = new Array(256);
+  var simpleEscapeMap = new Array(256);
+  for (i = 0;i < 256; i++) {
+    simpleEscapeCheck[i] = simpleEscapeSequence(i) ? 1 : 0;
+    simpleEscapeMap[i] = simpleEscapeSequence(i);
+  }
+  var i;
+  function State(input, options) {
+    this.input = input;
+    this.filename = options["filename"] || null;
+    this.schema = options["schema"] || DEFAULT_SCHEMA;
+    this.onWarning = options["onWarning"] || null;
+    this.legacy = options["legacy"] || false;
+    this.json = options["json"] || false;
+    this.listener = options["listener"] || null;
+    this.implicitTypes = this.schema.compiledImplicit;
+    this.typeMap = this.schema.compiledTypeMap;
+    this.length = input.length;
+    this.position = 0;
+    this.line = 0;
+    this.lineStart = 0;
+    this.lineIndent = 0;
+    this.firstTabInLine = -1;
+    this.documents = [];
+  }
+  function generateError(state, message) {
+    var mark = {
+      name: state.filename,
+      buffer: state.input.slice(0, -1),
+      position: state.position,
+      line: state.line,
+      column: state.position - state.lineStart
+    };
+    mark.snippet = makeSnippet(mark);
+    return new YAMLException(message, mark);
+  }
+  function throwError(state, message) {
+    throw generateError(state, message);
+  }
+  function throwWarning(state, message) {
+    if (state.onWarning) {
+      state.onWarning.call(null, generateError(state, message));
+    }
+  }
+  var directiveHandlers = {
+    YAML: function handleYamlDirective(state, name, args) {
+      var match, major, minor;
+      if (state.version !== null) {
+        throwError(state, "duplication of %YAML directive");
+      }
+      if (args.length !== 1) {
+        throwError(state, "YAML directive accepts exactly one argument");
+      }
+      match = /^([0-9]+)\.([0-9]+)$/.exec(args[0]);
+      if (match === null) {
+        throwError(state, "ill-formed argument of the YAML directive");
+      }
+      major = parseInt(match[1], 10);
+      minor = parseInt(match[2], 10);
+      if (major !== 1) {
+        throwError(state, "unacceptable YAML version of the document");
+      }
+      state.version = args[0];
+      state.checkLineBreaks = minor < 2;
+      if (minor !== 1 && minor !== 2) {
+        throwWarning(state, "unsupported YAML version of the document");
+      }
+    },
+    TAG: function handleTagDirective(state, name, args) {
+      var handle, prefix;
+      if (args.length !== 2) {
+        throwError(state, "TAG directive accepts exactly two arguments");
+      }
+      handle = args[0];
+      prefix = args[1];
+      if (!PATTERN_TAG_HANDLE.test(handle)) {
+        throwError(state, "ill-formed tag handle (first argument) of the TAG directive");
+      }
+      if (_hasOwnProperty.call(state.tagMap, handle)) {
+        throwError(state, 'there is a previously declared suffix for "' + handle + '" tag handle');
+      }
+      if (!PATTERN_TAG_URI.test(prefix)) {
+        throwError(state, "ill-formed tag prefix (second argument) of the TAG directive");
+      }
+      try {
+        prefix = decodeURIComponent(prefix);
+      } catch (err) {
+        throwError(state, "tag prefix is malformed: " + prefix);
+      }
+      state.tagMap[handle] = prefix;
+    }
+  };
+  function captureSegment(state, start, end, checkJson) {
+    var _position, _length2, _character, _result;
+    if (start < end) {
+      _result = state.input.slice(start, end);
+      if (checkJson) {
+        for (_position = 0, _length2 = _result.length;_position < _length2; _position += 1) {
+          _character = _result.charCodeAt(_position);
+          if (!(_character === 9 || 32 <= _character && _character <= 1114111)) {
+            throwError(state, "expected valid JSON character");
+          }
+        }
+      } else if (PATTERN_NON_PRINTABLE.test(_result)) {
+        throwError(state, "the stream contains non-printable characters");
+      }
+      state.result += _result;
+    }
+  }
+  function mergeMappings(state, destination, source, overridableKeys) {
+    var sourceKeys, key, index, quantity;
+    if (!common.isObject(source)) {
+      throwError(state, "cannot merge mappings; the provided source object is unacceptable");
+    }
+    sourceKeys = Object.keys(source);
+    for (index = 0, quantity = sourceKeys.length;index < quantity; index += 1) {
+      key = sourceKeys[index];
+      if (!_hasOwnProperty.call(destination, key)) {
+        setProperty(destination, key, source[key]);
+        overridableKeys[key] = true;
+      }
+    }
+  }
+  function storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode, startLine, startLineStart, startPos) {
+    var index, quantity;
+    if (Array.isArray(keyNode)) {
+      keyNode = Array.prototype.slice.call(keyNode);
+      for (index = 0, quantity = keyNode.length;index < quantity; index += 1) {
+        if (Array.isArray(keyNode[index])) {
+          throwError(state, "nested arrays are not supported inside keys");
+        }
+        if (typeof keyNode === "object" && _class(keyNode[index]) === "[object Object]") {
+          keyNode[index] = "[object Object]";
+        }
+      }
+    }
+    if (typeof keyNode === "object" && _class(keyNode) === "[object Object]") {
+      keyNode = "[object Object]";
+    }
+    keyNode = String(keyNode);
+    if (_result === null) {
+      _result = {};
+    }
+    if (keyTag === "tag:yaml.org,2002:merge") {
+      if (Array.isArray(valueNode)) {
+        for (index = 0, quantity = valueNode.length;index < quantity; index += 1) {
+          mergeMappings(state, _result, valueNode[index], overridableKeys);
+        }
+      } else {
+        mergeMappings(state, _result, valueNode, overridableKeys);
+      }
+    } else {
+      if (!state.json && !_hasOwnProperty.call(overridableKeys, keyNode) && _hasOwnProperty.call(_result, keyNode)) {
+        state.line = startLine || state.line;
+        state.lineStart = startLineStart || state.lineStart;
+        state.position = startPos || state.position;
+        throwError(state, "duplicated mapping key");
+      }
+      setProperty(_result, keyNode, valueNode);
+      delete overridableKeys[keyNode];
+    }
+    return _result;
+  }
+  function readLineBreak(state) {
+    var ch;
+    ch = state.input.charCodeAt(state.position);
+    if (ch === 10) {
+      state.position++;
+    } else if (ch === 13) {
+      state.position++;
+      if (state.input.charCodeAt(state.position) === 10) {
+        state.position++;
+      }
+    } else {
+      throwError(state, "a line break is expected");
+    }
+    state.line += 1;
+    state.lineStart = state.position;
+    state.firstTabInLine = -1;
+  }
+  function skipSeparationSpace(state, allowComments, checkIndent) {
+    var lineBreaks = 0, ch = state.input.charCodeAt(state.position);
+    while (ch !== 0) {
+      while (is_WHITE_SPACE(ch)) {
+        if (ch === 9 && state.firstTabInLine === -1) {
+          state.firstTabInLine = state.position;
+        }
+        ch = state.input.charCodeAt(++state.position);
+      }
+      if (allowComments && ch === 35) {
+        do {
+          ch = state.input.charCodeAt(++state.position);
+        } while (ch !== 10 && ch !== 13 && ch !== 0);
+      }
+      if (is_EOL(ch)) {
+        readLineBreak(state);
+        ch = state.input.charCodeAt(state.position);
+        lineBreaks++;
+        state.lineIndent = 0;
+        while (ch === 32) {
+          state.lineIndent++;
+          ch = state.input.charCodeAt(++state.position);
+        }
+      } else {
+        break;
+      }
+    }
+    if (checkIndent !== -1 && lineBreaks !== 0 && state.lineIndent < checkIndent) {
+      throwWarning(state, "deficient indentation");
+    }
+    return lineBreaks;
+  }
+  function testDocumentSeparator(state) {
+    var _position = state.position, ch;
+    ch = state.input.charCodeAt(_position);
+    if ((ch === 45 || ch === 46) && ch === state.input.charCodeAt(_position + 1) && ch === state.input.charCodeAt(_position + 2)) {
+      _position += 3;
+      ch = state.input.charCodeAt(_position);
+      if (ch === 0 || is_WS_OR_EOL(ch)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function writeFoldedLines(state, count) {
+    if (count === 1) {
+      state.result += " ";
+    } else if (count > 1) {
+      state.result += common.repeat(`
+`, count - 1);
+    }
+  }
+  function readPlainScalar(state, nodeIndent, withinFlowCollection) {
+    var preceding, following, captureStart, captureEnd, hasPendingContent, _line, _lineStart, _lineIndent, _kind = state.kind, _result = state.result, ch;
+    ch = state.input.charCodeAt(state.position);
+    if (is_WS_OR_EOL(ch) || is_FLOW_INDICATOR(ch) || ch === 35 || ch === 38 || ch === 42 || ch === 33 || ch === 124 || ch === 62 || ch === 39 || ch === 34 || ch === 37 || ch === 64 || ch === 96) {
+      return false;
+    }
+    if (ch === 63 || ch === 45) {
+      following = state.input.charCodeAt(state.position + 1);
+      if (is_WS_OR_EOL(following) || withinFlowCollection && is_FLOW_INDICATOR(following)) {
+        return false;
+      }
+    }
+    state.kind = "scalar";
+    state.result = "";
+    captureStart = captureEnd = state.position;
+    hasPendingContent = false;
+    while (ch !== 0) {
+      if (ch === 58) {
+        following = state.input.charCodeAt(state.position + 1);
+        if (is_WS_OR_EOL(following) || withinFlowCollection && is_FLOW_INDICATOR(following)) {
+          break;
+        }
+      } else if (ch === 35) {
+        preceding = state.input.charCodeAt(state.position - 1);
+        if (is_WS_OR_EOL(preceding)) {
+          break;
+        }
+      } else if (state.position === state.lineStart && testDocumentSeparator(state) || withinFlowCollection && is_FLOW_INDICATOR(ch)) {
+        break;
+      } else if (is_EOL(ch)) {
+        _line = state.line;
+        _lineStart = state.lineStart;
+        _lineIndent = state.lineIndent;
+        skipSeparationSpace(state, false, -1);
+        if (state.lineIndent >= nodeIndent) {
+          hasPendingContent = true;
+          ch = state.input.charCodeAt(state.position);
+          continue;
+        } else {
+          state.position = captureEnd;
+          state.line = _line;
+          state.lineStart = _lineStart;
+          state.lineIndent = _lineIndent;
+          break;
+        }
+      }
+      if (hasPendingContent) {
+        captureSegment(state, captureStart, captureEnd, false);
+        writeFoldedLines(state, state.line - _line);
+        captureStart = captureEnd = state.position;
+        hasPendingContent = false;
+      }
+      if (!is_WHITE_SPACE(ch)) {
+        captureEnd = state.position + 1;
+      }
+      ch = state.input.charCodeAt(++state.position);
+    }
+    captureSegment(state, captureStart, captureEnd, false);
+    if (state.result) {
+      return true;
+    }
+    state.kind = _kind;
+    state.result = _result;
+    return false;
+  }
+  function readSingleQuotedScalar(state, nodeIndent) {
+    var ch, captureStart, captureEnd;
+    ch = state.input.charCodeAt(state.position);
+    if (ch !== 39) {
+      return false;
+    }
+    state.kind = "scalar";
+    state.result = "";
+    state.position++;
+    captureStart = captureEnd = state.position;
+    while ((ch = state.input.charCodeAt(state.position)) !== 0) {
+      if (ch === 39) {
+        captureSegment(state, captureStart, state.position, true);
+        ch = state.input.charCodeAt(++state.position);
+        if (ch === 39) {
+          captureStart = state.position;
+          state.position++;
+          captureEnd = state.position;
+        } else {
+          return true;
+        }
+      } else if (is_EOL(ch)) {
+        captureSegment(state, captureStart, captureEnd, true);
+        writeFoldedLines(state, skipSeparationSpace(state, false, nodeIndent));
+        captureStart = captureEnd = state.position;
+      } else if (state.position === state.lineStart && testDocumentSeparator(state)) {
+        throwError(state, "unexpected end of the document within a single quoted scalar");
+      } else {
+        state.position++;
+        captureEnd = state.position;
+      }
+    }
+    throwError(state, "unexpected end of the stream within a single quoted scalar");
+  }
+  function readDoubleQuotedScalar(state, nodeIndent) {
+    var captureStart, captureEnd, hexLength, hexResult, tmp, ch;
+    ch = state.input.charCodeAt(state.position);
+    if (ch !== 34) {
+      return false;
+    }
+    state.kind = "scalar";
+    state.result = "";
+    state.position++;
+    captureStart = captureEnd = state.position;
+    while ((ch = state.input.charCodeAt(state.position)) !== 0) {
+      if (ch === 34) {
+        captureSegment(state, captureStart, state.position, true);
+        state.position++;
+        return true;
+      } else if (ch === 92) {
+        captureSegment(state, captureStart, state.position, true);
+        ch = state.input.charCodeAt(++state.position);
+        if (is_EOL(ch)) {
+          skipSeparationSpace(state, false, nodeIndent);
+        } else if (ch < 256 && simpleEscapeCheck[ch]) {
+          state.result += simpleEscapeMap[ch];
+          state.position++;
+        } else if ((tmp = escapedHexLen(ch)) > 0) {
+          hexLength = tmp;
+          hexResult = 0;
+          for (;hexLength > 0; hexLength--) {
+            ch = state.input.charCodeAt(++state.position);
+            if ((tmp = fromHexCode(ch)) >= 0) {
+              hexResult = (hexResult << 4) + tmp;
+            } else {
+              throwError(state, "expected hexadecimal character");
+            }
+          }
+          state.result += charFromCodepoint(hexResult);
+          state.position++;
+        } else {
+          throwError(state, "unknown escape sequence");
+        }
+        captureStart = captureEnd = state.position;
+      } else if (is_EOL(ch)) {
+        captureSegment(state, captureStart, captureEnd, true);
+        writeFoldedLines(state, skipSeparationSpace(state, false, nodeIndent));
+        captureStart = captureEnd = state.position;
+      } else if (state.position === state.lineStart && testDocumentSeparator(state)) {
+        throwError(state, "unexpected end of the document within a double quoted scalar");
+      } else {
+        state.position++;
+        captureEnd = state.position;
+      }
+    }
+    throwError(state, "unexpected end of the stream within a double quoted scalar");
+  }
+  function readFlowCollection(state, nodeIndent) {
+    var readNext = true, _line, _lineStart, _pos, _tag = state.tag, _result, _anchor = state.anchor, following, terminator, isPair, isExplicitPair, isMapping, overridableKeys = Object.create(null), keyNode, keyTag, valueNode, ch;
+    ch = state.input.charCodeAt(state.position);
+    if (ch === 91) {
+      terminator = 93;
+      isMapping = false;
+      _result = [];
+    } else if (ch === 123) {
+      terminator = 125;
+      isMapping = true;
+      _result = {};
+    } else {
+      return false;
+    }
+    if (state.anchor !== null) {
+      state.anchorMap[state.anchor] = _result;
+    }
+    ch = state.input.charCodeAt(++state.position);
+    while (ch !== 0) {
+      skipSeparationSpace(state, true, nodeIndent);
+      ch = state.input.charCodeAt(state.position);
+      if (ch === terminator) {
+        state.position++;
+        state.tag = _tag;
+        state.anchor = _anchor;
+        state.kind = isMapping ? "mapping" : "sequence";
+        state.result = _result;
+        return true;
+      } else if (!readNext) {
+        throwError(state, "missed comma between flow collection entries");
+      } else if (ch === 44) {
+        throwError(state, "expected the node content, but found ','");
+      }
+      keyTag = keyNode = valueNode = null;
+      isPair = isExplicitPair = false;
+      if (ch === 63) {
+        following = state.input.charCodeAt(state.position + 1);
+        if (is_WS_OR_EOL(following)) {
+          isPair = isExplicitPair = true;
+          state.position++;
+          skipSeparationSpace(state, true, nodeIndent);
+        }
+      }
+      _line = state.line;
+      _lineStart = state.lineStart;
+      _pos = state.position;
+      composeNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true);
+      keyTag = state.tag;
+      keyNode = state.result;
+      skipSeparationSpace(state, true, nodeIndent);
+      ch = state.input.charCodeAt(state.position);
+      if ((isExplicitPair || state.line === _line) && ch === 58) {
+        isPair = true;
+        ch = state.input.charCodeAt(++state.position);
+        skipSeparationSpace(state, true, nodeIndent);
+        composeNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true);
+        valueNode = state.result;
+      }
+      if (isMapping) {
+        storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode, _line, _lineStart, _pos);
+      } else if (isPair) {
+        _result.push(storeMappingPair(state, null, overridableKeys, keyTag, keyNode, valueNode, _line, _lineStart, _pos));
+      } else {
+        _result.push(keyNode);
+      }
+      skipSeparationSpace(state, true, nodeIndent);
+      ch = state.input.charCodeAt(state.position);
+      if (ch === 44) {
+        readNext = true;
+        ch = state.input.charCodeAt(++state.position);
+      } else {
+        readNext = false;
+      }
+    }
+    throwError(state, "unexpected end of the stream within a flow collection");
+  }
+  function readBlockScalar(state, nodeIndent) {
+    var captureStart, folding, chomping = CHOMPING_CLIP, didReadContent = false, detectedIndent = false, textIndent = nodeIndent, emptyLines = 0, atMoreIndented = false, tmp, ch;
+    ch = state.input.charCodeAt(state.position);
+    if (ch === 124) {
+      folding = false;
+    } else if (ch === 62) {
+      folding = true;
+    } else {
+      return false;
+    }
+    state.kind = "scalar";
+    state.result = "";
+    while (ch !== 0) {
+      ch = state.input.charCodeAt(++state.position);
+      if (ch === 43 || ch === 45) {
+        if (CHOMPING_CLIP === chomping) {
+          chomping = ch === 43 ? CHOMPING_KEEP : CHOMPING_STRIP;
+        } else {
+          throwError(state, "repeat of a chomping mode identifier");
+        }
+      } else if ((tmp = fromDecimalCode(ch)) >= 0) {
+        if (tmp === 0) {
+          throwError(state, "bad explicit indentation width of a block scalar; it cannot be less than one");
+        } else if (!detectedIndent) {
+          textIndent = nodeIndent + tmp - 1;
+          detectedIndent = true;
+        } else {
+          throwError(state, "repeat of an indentation width identifier");
+        }
+      } else {
+        break;
+      }
+    }
+    if (is_WHITE_SPACE(ch)) {
+      do {
+        ch = state.input.charCodeAt(++state.position);
+      } while (is_WHITE_SPACE(ch));
+      if (ch === 35) {
+        do {
+          ch = state.input.charCodeAt(++state.position);
+        } while (!is_EOL(ch) && ch !== 0);
+      }
+    }
+    while (ch !== 0) {
+      readLineBreak(state);
+      state.lineIndent = 0;
+      ch = state.input.charCodeAt(state.position);
+      while ((!detectedIndent || state.lineIndent < textIndent) && ch === 32) {
+        state.lineIndent++;
+        ch = state.input.charCodeAt(++state.position);
+      }
+      if (!detectedIndent && state.lineIndent > textIndent) {
+        textIndent = state.lineIndent;
+      }
+      if (is_EOL(ch)) {
+        emptyLines++;
+        continue;
+      }
+      if (state.lineIndent < textIndent) {
+        if (chomping === CHOMPING_KEEP) {
+          state.result += common.repeat(`
+`, didReadContent ? 1 + emptyLines : emptyLines);
+        } else if (chomping === CHOMPING_CLIP) {
+          if (didReadContent) {
+            state.result += `
+`;
+          }
+        }
+        break;
+      }
+      if (folding) {
+        if (is_WHITE_SPACE(ch)) {
+          atMoreIndented = true;
+          state.result += common.repeat(`
+`, didReadContent ? 1 + emptyLines : emptyLines);
+        } else if (atMoreIndented) {
+          atMoreIndented = false;
+          state.result += common.repeat(`
+`, emptyLines + 1);
+        } else if (emptyLines === 0) {
+          if (didReadContent) {
+            state.result += " ";
+          }
+        } else {
+          state.result += common.repeat(`
+`, emptyLines);
+        }
+      } else {
+        state.result += common.repeat(`
+`, didReadContent ? 1 + emptyLines : emptyLines);
+      }
+      didReadContent = true;
+      detectedIndent = true;
+      emptyLines = 0;
+      captureStart = state.position;
+      while (!is_EOL(ch) && ch !== 0) {
+        ch = state.input.charCodeAt(++state.position);
+      }
+      captureSegment(state, captureStart, state.position, false);
+    }
+    return true;
+  }
+  function readBlockSequence(state, nodeIndent) {
+    var _line, _tag = state.tag, _anchor = state.anchor, _result = [], following, detected = false, ch;
+    if (state.firstTabInLine !== -1)
+      return false;
+    if (state.anchor !== null) {
+      state.anchorMap[state.anchor] = _result;
+    }
+    ch = state.input.charCodeAt(state.position);
+    while (ch !== 0) {
+      if (state.firstTabInLine !== -1) {
+        state.position = state.firstTabInLine;
+        throwError(state, "tab characters must not be used in indentation");
+      }
+      if (ch !== 45) {
+        break;
+      }
+      following = state.input.charCodeAt(state.position + 1);
+      if (!is_WS_OR_EOL(following)) {
+        break;
+      }
+      detected = true;
+      state.position++;
+      if (skipSeparationSpace(state, true, -1)) {
+        if (state.lineIndent <= nodeIndent) {
+          _result.push(null);
+          ch = state.input.charCodeAt(state.position);
+          continue;
+        }
+      }
+      _line = state.line;
+      composeNode(state, nodeIndent, CONTEXT_BLOCK_IN, false, true);
+      _result.push(state.result);
+      skipSeparationSpace(state, true, -1);
+      ch = state.input.charCodeAt(state.position);
+      if ((state.line === _line || state.lineIndent > nodeIndent) && ch !== 0) {
+        throwError(state, "bad indentation of a sequence entry");
+      } else if (state.lineIndent < nodeIndent) {
+        break;
+      }
+    }
+    if (detected) {
+      state.tag = _tag;
+      state.anchor = _anchor;
+      state.kind = "sequence";
+      state.result = _result;
+      return true;
+    }
+    return false;
+  }
+  function readBlockMapping(state, nodeIndent, flowIndent) {
+    var following, allowCompact, _line, _keyLine, _keyLineStart, _keyPos, _tag = state.tag, _anchor = state.anchor, _result = {}, overridableKeys = Object.create(null), keyTag = null, keyNode = null, valueNode = null, atExplicitKey = false, detected = false, ch;
+    if (state.firstTabInLine !== -1)
+      return false;
+    if (state.anchor !== null) {
+      state.anchorMap[state.anchor] = _result;
+    }
+    ch = state.input.charCodeAt(state.position);
+    while (ch !== 0) {
+      if (!atExplicitKey && state.firstTabInLine !== -1) {
+        state.position = state.firstTabInLine;
+        throwError(state, "tab characters must not be used in indentation");
+      }
+      following = state.input.charCodeAt(state.position + 1);
+      _line = state.line;
+      if ((ch === 63 || ch === 58) && is_WS_OR_EOL(following)) {
+        if (ch === 63) {
+          if (atExplicitKey) {
+            storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null, _keyLine, _keyLineStart, _keyPos);
+            keyTag = keyNode = valueNode = null;
+          }
+          detected = true;
+          atExplicitKey = true;
+          allowCompact = true;
+        } else if (atExplicitKey) {
+          atExplicitKey = false;
+          allowCompact = true;
+        } else {
+          throwError(state, "incomplete explicit mapping pair; a key node is missed; or followed by a non-tabulated empty line");
+        }
+        state.position += 1;
+        ch = following;
+      } else {
+        _keyLine = state.line;
+        _keyLineStart = state.lineStart;
+        _keyPos = state.position;
+        if (!composeNode(state, flowIndent, CONTEXT_FLOW_OUT, false, true)) {
+          break;
+        }
+        if (state.line === _line) {
+          ch = state.input.charCodeAt(state.position);
+          while (is_WHITE_SPACE(ch)) {
+            ch = state.input.charCodeAt(++state.position);
+          }
+          if (ch === 58) {
+            ch = state.input.charCodeAt(++state.position);
+            if (!is_WS_OR_EOL(ch)) {
+              throwError(state, "a whitespace character is expected after the key-value separator within a block mapping");
+            }
+            if (atExplicitKey) {
+              storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null, _keyLine, _keyLineStart, _keyPos);
+              keyTag = keyNode = valueNode = null;
+            }
+            detected = true;
+            atExplicitKey = false;
+            allowCompact = false;
+            keyTag = state.tag;
+            keyNode = state.result;
+          } else if (detected) {
+            throwError(state, "can not read an implicit mapping pair; a colon is missed");
+          } else {
+            state.tag = _tag;
+            state.anchor = _anchor;
+            return true;
+          }
+        } else if (detected) {
+          throwError(state, "can not read a block mapping entry; a multiline key may not be an implicit key");
+        } else {
+          state.tag = _tag;
+          state.anchor = _anchor;
+          return true;
+        }
+      }
+      if (state.line === _line || state.lineIndent > nodeIndent) {
+        if (atExplicitKey) {
+          _keyLine = state.line;
+          _keyLineStart = state.lineStart;
+          _keyPos = state.position;
+        }
+        if (composeNode(state, nodeIndent, CONTEXT_BLOCK_OUT, true, allowCompact)) {
+          if (atExplicitKey) {
+            keyNode = state.result;
+          } else {
+            valueNode = state.result;
+          }
+        }
+        if (!atExplicitKey) {
+          storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode, _keyLine, _keyLineStart, _keyPos);
+          keyTag = keyNode = valueNode = null;
+        }
+        skipSeparationSpace(state, true, -1);
+        ch = state.input.charCodeAt(state.position);
+      }
+      if ((state.line === _line || state.lineIndent > nodeIndent) && ch !== 0) {
+        throwError(state, "bad indentation of a mapping entry");
+      } else if (state.lineIndent < nodeIndent) {
+        break;
+      }
+    }
+    if (atExplicitKey) {
+      storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null, _keyLine, _keyLineStart, _keyPos);
+    }
+    if (detected) {
+      state.tag = _tag;
+      state.anchor = _anchor;
+      state.kind = "mapping";
+      state.result = _result;
+    }
+    return detected;
+  }
+  function readTagProperty(state) {
+    var _position, isVerbatim = false, isNamed = false, tagHandle, tagName, ch;
+    ch = state.input.charCodeAt(state.position);
+    if (ch !== 33)
+      return false;
+    if (state.tag !== null) {
+      throwError(state, "duplication of a tag property");
+    }
+    ch = state.input.charCodeAt(++state.position);
+    if (ch === 60) {
+      isVerbatim = true;
+      ch = state.input.charCodeAt(++state.position);
+    } else if (ch === 33) {
+      isNamed = true;
+      tagHandle = "!!";
+      ch = state.input.charCodeAt(++state.position);
+    } else {
+      tagHandle = "!";
+    }
+    _position = state.position;
+    if (isVerbatim) {
+      do {
+        ch = state.input.charCodeAt(++state.position);
+      } while (ch !== 0 && ch !== 62);
+      if (state.position < state.length) {
+        tagName = state.input.slice(_position, state.position);
+        ch = state.input.charCodeAt(++state.position);
+      } else {
+        throwError(state, "unexpected end of the stream within a verbatim tag");
+      }
+    } else {
+      while (ch !== 0 && !is_WS_OR_EOL(ch)) {
+        if (ch === 33) {
+          if (!isNamed) {
+            tagHandle = state.input.slice(_position - 1, state.position + 1);
+            if (!PATTERN_TAG_HANDLE.test(tagHandle)) {
+              throwError(state, "named tag handle cannot contain such characters");
+            }
+            isNamed = true;
+            _position = state.position + 1;
+          } else {
+            throwError(state, "tag suffix cannot contain exclamation marks");
+          }
+        }
+        ch = state.input.charCodeAt(++state.position);
+      }
+      tagName = state.input.slice(_position, state.position);
+      if (PATTERN_FLOW_INDICATORS.test(tagName)) {
+        throwError(state, "tag suffix cannot contain flow indicator characters");
+      }
+    }
+    if (tagName && !PATTERN_TAG_URI.test(tagName)) {
+      throwError(state, "tag name cannot contain such characters: " + tagName);
+    }
+    try {
+      tagName = decodeURIComponent(tagName);
+    } catch (err) {
+      throwError(state, "tag name is malformed: " + tagName);
+    }
+    if (isVerbatim) {
+      state.tag = tagName;
+    } else if (_hasOwnProperty.call(state.tagMap, tagHandle)) {
+      state.tag = state.tagMap[tagHandle] + tagName;
+    } else if (tagHandle === "!") {
+      state.tag = "!" + tagName;
+    } else if (tagHandle === "!!") {
+      state.tag = "tag:yaml.org,2002:" + tagName;
+    } else {
+      throwError(state, 'undeclared tag handle "' + tagHandle + '"');
+    }
+    return true;
+  }
+  function readAnchorProperty(state) {
+    var _position, ch;
+    ch = state.input.charCodeAt(state.position);
+    if (ch !== 38)
+      return false;
+    if (state.anchor !== null) {
+      throwError(state, "duplication of an anchor property");
+    }
+    ch = state.input.charCodeAt(++state.position);
+    _position = state.position;
+    while (ch !== 0 && !is_WS_OR_EOL(ch) && !is_FLOW_INDICATOR(ch)) {
+      ch = state.input.charCodeAt(++state.position);
+    }
+    if (state.position === _position) {
+      throwError(state, "name of an anchor node must contain at least one character");
+    }
+    state.anchor = state.input.slice(_position, state.position);
+    return true;
+  }
+  function readAlias(state) {
+    var _position, alias, ch;
+    ch = state.input.charCodeAt(state.position);
+    if (ch !== 42)
+      return false;
+    ch = state.input.charCodeAt(++state.position);
+    _position = state.position;
+    while (ch !== 0 && !is_WS_OR_EOL(ch) && !is_FLOW_INDICATOR(ch)) {
+      ch = state.input.charCodeAt(++state.position);
+    }
+    if (state.position === _position) {
+      throwError(state, "name of an alias node must contain at least one character");
+    }
+    alias = state.input.slice(_position, state.position);
+    if (!_hasOwnProperty.call(state.anchorMap, alias)) {
+      throwError(state, 'unidentified alias "' + alias + '"');
+    }
+    state.result = state.anchorMap[alias];
+    skipSeparationSpace(state, true, -1);
+    return true;
+  }
+  function composeNode(state, parentIndent, nodeContext, allowToSeek, allowCompact) {
+    var allowBlockStyles, allowBlockScalars, allowBlockCollections, indentStatus = 1, atNewLine = false, hasContent = false, typeIndex, typeQuantity, typeList, type, flowIndent, blockIndent;
+    if (state.listener !== null) {
+      state.listener("open", state);
+    }
+    state.tag = null;
+    state.anchor = null;
+    state.kind = null;
+    state.result = null;
+    allowBlockStyles = allowBlockScalars = allowBlockCollections = CONTEXT_BLOCK_OUT === nodeContext || CONTEXT_BLOCK_IN === nodeContext;
+    if (allowToSeek) {
+      if (skipSeparationSpace(state, true, -1)) {
+        atNewLine = true;
+        if (state.lineIndent > parentIndent) {
+          indentStatus = 1;
+        } else if (state.lineIndent === parentIndent) {
+          indentStatus = 0;
+        } else if (state.lineIndent < parentIndent) {
+          indentStatus = -1;
+        }
+      }
+    }
+    if (indentStatus === 1) {
+      while (readTagProperty(state) || readAnchorProperty(state)) {
+        if (skipSeparationSpace(state, true, -1)) {
+          atNewLine = true;
+          allowBlockCollections = allowBlockStyles;
+          if (state.lineIndent > parentIndent) {
+            indentStatus = 1;
+          } else if (state.lineIndent === parentIndent) {
+            indentStatus = 0;
+          } else if (state.lineIndent < parentIndent) {
+            indentStatus = -1;
+          }
+        } else {
+          allowBlockCollections = false;
+        }
+      }
+    }
+    if (allowBlockCollections) {
+      allowBlockCollections = atNewLine || allowCompact;
+    }
+    if (indentStatus === 1 || CONTEXT_BLOCK_OUT === nodeContext) {
+      if (CONTEXT_FLOW_IN === nodeContext || CONTEXT_FLOW_OUT === nodeContext) {
+        flowIndent = parentIndent;
+      } else {
+        flowIndent = parentIndent + 1;
+      }
+      blockIndent = state.position - state.lineStart;
+      if (indentStatus === 1) {
+        if (allowBlockCollections && (readBlockSequence(state, blockIndent) || readBlockMapping(state, blockIndent, flowIndent)) || readFlowCollection(state, flowIndent)) {
+          hasContent = true;
+        } else {
+          if (allowBlockScalars && readBlockScalar(state, flowIndent) || readSingleQuotedScalar(state, flowIndent) || readDoubleQuotedScalar(state, flowIndent)) {
+            hasContent = true;
+          } else if (readAlias(state)) {
+            hasContent = true;
+            if (state.tag !== null || state.anchor !== null) {
+              throwError(state, "alias node should not have any properties");
+            }
+          } else if (readPlainScalar(state, flowIndent, CONTEXT_FLOW_IN === nodeContext)) {
+            hasContent = true;
+            if (state.tag === null) {
+              state.tag = "?";
+            }
+          }
+          if (state.anchor !== null) {
+            state.anchorMap[state.anchor] = state.result;
+          }
+        }
+      } else if (indentStatus === 0) {
+        hasContent = allowBlockCollections && readBlockSequence(state, blockIndent);
+      }
+    }
+    if (state.tag === null) {
+      if (state.anchor !== null) {
+        state.anchorMap[state.anchor] = state.result;
+      }
+    } else if (state.tag === "?") {
+      if (state.result !== null && state.kind !== "scalar") {
+        throwError(state, 'unacceptable node kind for !<?> tag; it should be "scalar", not "' + state.kind + '"');
+      }
+      for (typeIndex = 0, typeQuantity = state.implicitTypes.length;typeIndex < typeQuantity; typeIndex += 1) {
+        type = state.implicitTypes[typeIndex];
+        if (type.resolve(state.result)) {
+          state.result = type.construct(state.result);
+          state.tag = type.tag;
+          if (state.anchor !== null) {
+            state.anchorMap[state.anchor] = state.result;
+          }
+          break;
+        }
+      }
+    } else if (state.tag !== "!") {
+      if (_hasOwnProperty.call(state.typeMap[state.kind || "fallback"], state.tag)) {
+        type = state.typeMap[state.kind || "fallback"][state.tag];
+      } else {
+        type = null;
+        typeList = state.typeMap.multi[state.kind || "fallback"];
+        for (typeIndex = 0, typeQuantity = typeList.length;typeIndex < typeQuantity; typeIndex += 1) {
+          if (state.tag.slice(0, typeList[typeIndex].tag.length) === typeList[typeIndex].tag) {
+            type = typeList[typeIndex];
+            break;
+          }
+        }
+      }
+      if (!type) {
+        throwError(state, "unknown tag !<" + state.tag + ">");
+      }
+      if (state.result !== null && type.kind !== state.kind) {
+        throwError(state, "unacceptable node kind for !<" + state.tag + '> tag; it should be "' + type.kind + '", not "' + state.kind + '"');
+      }
+      if (!type.resolve(state.result, state.tag)) {
+        throwError(state, "cannot resolve a node with !<" + state.tag + "> explicit tag");
+      } else {
+        state.result = type.construct(state.result, state.tag);
+        if (state.anchor !== null) {
+          state.anchorMap[state.anchor] = state.result;
+        }
+      }
+    }
+    if (state.listener !== null) {
+      state.listener("close", state);
+    }
+    return state.tag !== null || state.anchor !== null || hasContent;
+  }
+  function readDocument(state) {
+    var documentStart = state.position, _position, directiveName, directiveArgs, hasDirectives = false, ch;
+    state.version = null;
+    state.checkLineBreaks = state.legacy;
+    state.tagMap = Object.create(null);
+    state.anchorMap = Object.create(null);
+    while ((ch = state.input.charCodeAt(state.position)) !== 0) {
+      skipSeparationSpace(state, true, -1);
+      ch = state.input.charCodeAt(state.position);
+      if (state.lineIndent > 0 || ch !== 37) {
+        break;
+      }
+      hasDirectives = true;
+      ch = state.input.charCodeAt(++state.position);
+      _position = state.position;
+      while (ch !== 0 && !is_WS_OR_EOL(ch)) {
+        ch = state.input.charCodeAt(++state.position);
+      }
+      directiveName = state.input.slice(_position, state.position);
+      directiveArgs = [];
+      if (directiveName.length < 1) {
+        throwError(state, "directive name must not be less than one character in length");
+      }
+      while (ch !== 0) {
+        while (is_WHITE_SPACE(ch)) {
+          ch = state.input.charCodeAt(++state.position);
+        }
+        if (ch === 35) {
+          do {
+            ch = state.input.charCodeAt(++state.position);
+          } while (ch !== 0 && !is_EOL(ch));
+          break;
+        }
+        if (is_EOL(ch))
+          break;
+        _position = state.position;
+        while (ch !== 0 && !is_WS_OR_EOL(ch)) {
+          ch = state.input.charCodeAt(++state.position);
+        }
+        directiveArgs.push(state.input.slice(_position, state.position));
+      }
+      if (ch !== 0)
+        readLineBreak(state);
+      if (_hasOwnProperty.call(directiveHandlers, directiveName)) {
+        directiveHandlers[directiveName](state, directiveName, directiveArgs);
+      } else {
+        throwWarning(state, 'unknown document directive "' + directiveName + '"');
+      }
+    }
+    skipSeparationSpace(state, true, -1);
+    if (state.lineIndent === 0 && state.input.charCodeAt(state.position) === 45 && state.input.charCodeAt(state.position + 1) === 45 && state.input.charCodeAt(state.position + 2) === 45) {
+      state.position += 3;
+      skipSeparationSpace(state, true, -1);
+    } else if (hasDirectives) {
+      throwError(state, "directives end mark is expected");
+    }
+    composeNode(state, state.lineIndent - 1, CONTEXT_BLOCK_OUT, false, true);
+    skipSeparationSpace(state, true, -1);
+    if (state.checkLineBreaks && PATTERN_NON_ASCII_LINE_BREAKS.test(state.input.slice(documentStart, state.position))) {
+      throwWarning(state, "non-ASCII line breaks are interpreted as content");
+    }
+    state.documents.push(state.result);
+    if (state.position === state.lineStart && testDocumentSeparator(state)) {
+      if (state.input.charCodeAt(state.position) === 46) {
+        state.position += 3;
+        skipSeparationSpace(state, true, -1);
+      }
+      return;
+    }
+    if (state.position < state.length - 1) {
+      throwError(state, "end of the stream or a document separator is expected");
+    } else {
+      return;
+    }
+  }
+  function loadDocuments(input, options) {
+    input = String(input);
+    options = options || {};
+    if (input.length !== 0) {
+      if (input.charCodeAt(input.length - 1) !== 10 && input.charCodeAt(input.length - 1) !== 13) {
+        input += `
+`;
+      }
+      if (input.charCodeAt(0) === 65279) {
+        input = input.slice(1);
+      }
+    }
+    var state = new State(input, options);
+    var nullpos = input.indexOf("\x00");
+    if (nullpos !== -1) {
+      state.position = nullpos;
+      throwError(state, "null byte is not allowed in input");
+    }
+    state.input += "\x00";
+    while (state.input.charCodeAt(state.position) === 32) {
+      state.lineIndent += 1;
+      state.position += 1;
+    }
+    while (state.position < state.length - 1) {
+      readDocument(state);
+    }
+    return state.documents;
+  }
+  function loadAll(input, iterator, options) {
+    if (iterator !== null && typeof iterator === "object" && typeof options === "undefined") {
+      options = iterator;
+      iterator = null;
+    }
+    var documents = loadDocuments(input, options);
+    if (typeof iterator !== "function") {
+      return documents;
+    }
+    for (var index = 0, length = documents.length;index < length; index += 1) {
+      iterator(documents[index]);
+    }
+  }
+  function load(input, options) {
+    var documents = loadDocuments(input, options);
+    if (documents.length === 0) {
+      return;
+    } else if (documents.length === 1) {
+      return documents[0];
+    }
+    throw new YAMLException("expected a single document in the stream, but found more");
+  }
+  exports.loadAll = loadAll;
+  exports.load = load;
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/lib/dumper.js
+var require_dumper = __commonJS((exports, module) => {
+  var common = require_common();
+  var YAMLException = require_exception();
+  var DEFAULT_SCHEMA = require_default();
+  var _toString = Object.prototype.toString;
+  var _hasOwnProperty = Object.prototype.hasOwnProperty;
+  var CHAR_BOM = 65279;
+  var CHAR_TAB = 9;
+  var CHAR_LINE_FEED = 10;
+  var CHAR_CARRIAGE_RETURN = 13;
+  var CHAR_SPACE = 32;
+  var CHAR_EXCLAMATION = 33;
+  var CHAR_DOUBLE_QUOTE = 34;
+  var CHAR_SHARP = 35;
+  var CHAR_PERCENT = 37;
+  var CHAR_AMPERSAND = 38;
+  var CHAR_SINGLE_QUOTE = 39;
+  var CHAR_ASTERISK = 42;
+  var CHAR_COMMA = 44;
+  var CHAR_MINUS = 45;
+  var CHAR_COLON = 58;
+  var CHAR_EQUALS = 61;
+  var CHAR_GREATER_THAN = 62;
+  var CHAR_QUESTION = 63;
+  var CHAR_COMMERCIAL_AT = 64;
+  var CHAR_LEFT_SQUARE_BRACKET = 91;
+  var CHAR_RIGHT_SQUARE_BRACKET = 93;
+  var CHAR_GRAVE_ACCENT = 96;
+  var CHAR_LEFT_CURLY_BRACKET = 123;
+  var CHAR_VERTICAL_LINE = 124;
+  var CHAR_RIGHT_CURLY_BRACKET = 125;
+  var ESCAPE_SEQUENCES = {};
+  ESCAPE_SEQUENCES[0] = "\\0";
+  ESCAPE_SEQUENCES[7] = "\\a";
+  ESCAPE_SEQUENCES[8] = "\\b";
+  ESCAPE_SEQUENCES[9] = "\\t";
+  ESCAPE_SEQUENCES[10] = "\\n";
+  ESCAPE_SEQUENCES[11] = "\\v";
+  ESCAPE_SEQUENCES[12] = "\\f";
+  ESCAPE_SEQUENCES[13] = "\\r";
+  ESCAPE_SEQUENCES[27] = "\\e";
+  ESCAPE_SEQUENCES[34] = "\\\"";
+  ESCAPE_SEQUENCES[92] = "\\\\";
+  ESCAPE_SEQUENCES[133] = "\\N";
+  ESCAPE_SEQUENCES[160] = "\\_";
+  ESCAPE_SEQUENCES[8232] = "\\L";
+  ESCAPE_SEQUENCES[8233] = "\\P";
+  var DEPRECATED_BOOLEANS_SYNTAX = [
+    "y",
+    "Y",
+    "yes",
+    "Yes",
+    "YES",
+    "on",
+    "On",
+    "ON",
+    "n",
+    "N",
+    "no",
+    "No",
+    "NO",
+    "off",
+    "Off",
+    "OFF"
+  ];
+  var DEPRECATED_BASE60_SYNTAX = /^[-+]?[0-9_]+(?::[0-9_]+)+(?:\.[0-9_]*)?$/;
+  function compileStyleMap(schema, map2) {
+    var result, keys, index, length, tag, style, type;
+    if (map2 === null)
+      return {};
+    result = {};
+    keys = Object.keys(map2);
+    for (index = 0, length = keys.length;index < length; index += 1) {
+      tag = keys[index];
+      style = String(map2[tag]);
+      if (tag.slice(0, 2) === "!!") {
+        tag = "tag:yaml.org,2002:" + tag.slice(2);
+      }
+      type = schema.compiledTypeMap["fallback"][tag];
+      if (type && _hasOwnProperty.call(type.styleAliases, style)) {
+        style = type.styleAliases[style];
+      }
+      result[tag] = style;
+    }
+    return result;
+  }
+  function encodeHex(character) {
+    var string4, handle, length;
+    string4 = character.toString(16).toUpperCase();
+    if (character <= 255) {
+      handle = "x";
+      length = 2;
+    } else if (character <= 65535) {
+      handle = "u";
+      length = 4;
+    } else if (character <= 4294967295) {
+      handle = "U";
+      length = 8;
+    } else {
+      throw new YAMLException("code point within a string may not be greater than 0xFFFFFFFF");
+    }
+    return "\\" + handle + common.repeat("0", length - string4.length) + string4;
+  }
+  var QUOTING_TYPE_SINGLE = 1;
+  var QUOTING_TYPE_DOUBLE = 2;
+  function State(options) {
+    this.schema = options["schema"] || DEFAULT_SCHEMA;
+    this.indent = Math.max(1, options["indent"] || 2);
+    this.noArrayIndent = options["noArrayIndent"] || false;
+    this.skipInvalid = options["skipInvalid"] || false;
+    this.flowLevel = common.isNothing(options["flowLevel"]) ? -1 : options["flowLevel"];
+    this.styleMap = compileStyleMap(this.schema, options["styles"] || null);
+    this.sortKeys = options["sortKeys"] || false;
+    this.lineWidth = options["lineWidth"] || 80;
+    this.noRefs = options["noRefs"] || false;
+    this.noCompatMode = options["noCompatMode"] || false;
+    this.condenseFlow = options["condenseFlow"] || false;
+    this.quotingType = options["quotingType"] === '"' ? QUOTING_TYPE_DOUBLE : QUOTING_TYPE_SINGLE;
+    this.forceQuotes = options["forceQuotes"] || false;
+    this.replacer = typeof options["replacer"] === "function" ? options["replacer"] : null;
+    this.implicitTypes = this.schema.compiledImplicit;
+    this.explicitTypes = this.schema.compiledExplicit;
+    this.tag = null;
+    this.result = "";
+    this.duplicates = [];
+    this.usedDuplicates = null;
+  }
+  function indentString(string4, spaces) {
+    var ind = common.repeat(" ", spaces), position = 0, next = -1, result = "", line, length = string4.length;
+    while (position < length) {
+      next = string4.indexOf(`
+`, position);
+      if (next === -1) {
+        line = string4.slice(position);
+        position = length;
+      } else {
+        line = string4.slice(position, next + 1);
+        position = next + 1;
+      }
+      if (line.length && line !== `
+`)
+        result += ind;
+      result += line;
+    }
+    return result;
+  }
+  function generateNextLine(state, level) {
+    return `
+` + common.repeat(" ", state.indent * level);
+  }
+  function testImplicitResolving(state, str) {
+    var index, length, type;
+    for (index = 0, length = state.implicitTypes.length;index < length; index += 1) {
+      type = state.implicitTypes[index];
+      if (type.resolve(str)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function isWhitespace(c) {
+    return c === CHAR_SPACE || c === CHAR_TAB;
+  }
+  function isPrintable(c) {
+    return 32 <= c && c <= 126 || 161 <= c && c <= 55295 && c !== 8232 && c !== 8233 || 57344 <= c && c <= 65533 && c !== CHAR_BOM || 65536 <= c && c <= 1114111;
+  }
+  function isNsCharOrWhitespace(c) {
+    return isPrintable(c) && c !== CHAR_BOM && c !== CHAR_CARRIAGE_RETURN && c !== CHAR_LINE_FEED;
+  }
+  function isPlainSafe(c, prev, inblock) {
+    var cIsNsCharOrWhitespace = isNsCharOrWhitespace(c);
+    var cIsNsChar = cIsNsCharOrWhitespace && !isWhitespace(c);
+    return (inblock ? cIsNsCharOrWhitespace : cIsNsCharOrWhitespace && c !== CHAR_COMMA && c !== CHAR_LEFT_SQUARE_BRACKET && c !== CHAR_RIGHT_SQUARE_BRACKET && c !== CHAR_LEFT_CURLY_BRACKET && c !== CHAR_RIGHT_CURLY_BRACKET) && c !== CHAR_SHARP && !(prev === CHAR_COLON && !cIsNsChar) || isNsCharOrWhitespace(prev) && !isWhitespace(prev) && c === CHAR_SHARP || prev === CHAR_COLON && cIsNsChar;
+  }
+  function isPlainSafeFirst(c) {
+    return isPrintable(c) && c !== CHAR_BOM && !isWhitespace(c) && c !== CHAR_MINUS && c !== CHAR_QUESTION && c !== CHAR_COLON && c !== CHAR_COMMA && c !== CHAR_LEFT_SQUARE_BRACKET && c !== CHAR_RIGHT_SQUARE_BRACKET && c !== CHAR_LEFT_CURLY_BRACKET && c !== CHAR_RIGHT_CURLY_BRACKET && c !== CHAR_SHARP && c !== CHAR_AMPERSAND && c !== CHAR_ASTERISK && c !== CHAR_EXCLAMATION && c !== CHAR_VERTICAL_LINE && c !== CHAR_EQUALS && c !== CHAR_GREATER_THAN && c !== CHAR_SINGLE_QUOTE && c !== CHAR_DOUBLE_QUOTE && c !== CHAR_PERCENT && c !== CHAR_COMMERCIAL_AT && c !== CHAR_GRAVE_ACCENT;
+  }
+  function isPlainSafeLast(c) {
+    return !isWhitespace(c) && c !== CHAR_COLON;
+  }
+  function codePointAt(string4, pos) {
+    var first = string4.charCodeAt(pos), second;
+    if (first >= 55296 && first <= 56319 && pos + 1 < string4.length) {
+      second = string4.charCodeAt(pos + 1);
+      if (second >= 56320 && second <= 57343) {
+        return (first - 55296) * 1024 + second - 56320 + 65536;
+      }
+    }
+    return first;
+  }
+  function needIndentIndicator(string4) {
+    var leadingSpaceRe = /^\n* /;
+    return leadingSpaceRe.test(string4);
+  }
+  var STYLE_PLAIN = 1;
+  var STYLE_SINGLE = 2;
+  var STYLE_LITERAL = 3;
+  var STYLE_FOLDED = 4;
+  var STYLE_DOUBLE = 5;
+  function chooseScalarStyle(string4, singleLineOnly, indentPerLevel, lineWidth, testAmbiguousType, quotingType, forceQuotes, inblock) {
+    var i;
+    var char = 0;
+    var prevChar = null;
+    var hasLineBreak = false;
+    var hasFoldableLine = false;
+    var shouldTrackWidth = lineWidth !== -1;
+    var previousLineBreak = -1;
+    var plain = isPlainSafeFirst(codePointAt(string4, 0)) && isPlainSafeLast(codePointAt(string4, string4.length - 1));
+    if (singleLineOnly || forceQuotes) {
+      for (i = 0;i < string4.length; char >= 65536 ? i += 2 : i++) {
+        char = codePointAt(string4, i);
+        if (!isPrintable(char)) {
+          return STYLE_DOUBLE;
+        }
+        plain = plain && isPlainSafe(char, prevChar, inblock);
+        prevChar = char;
+      }
+    } else {
+      for (i = 0;i < string4.length; char >= 65536 ? i += 2 : i++) {
+        char = codePointAt(string4, i);
+        if (char === CHAR_LINE_FEED) {
+          hasLineBreak = true;
+          if (shouldTrackWidth) {
+            hasFoldableLine = hasFoldableLine || i - previousLineBreak - 1 > lineWidth && string4[previousLineBreak + 1] !== " ";
+            previousLineBreak = i;
+          }
+        } else if (!isPrintable(char)) {
+          return STYLE_DOUBLE;
+        }
+        plain = plain && isPlainSafe(char, prevChar, inblock);
+        prevChar = char;
+      }
+      hasFoldableLine = hasFoldableLine || shouldTrackWidth && (i - previousLineBreak - 1 > lineWidth && string4[previousLineBreak + 1] !== " ");
+    }
+    if (!hasLineBreak && !hasFoldableLine) {
+      if (plain && !forceQuotes && !testAmbiguousType(string4)) {
+        return STYLE_PLAIN;
+      }
+      return quotingType === QUOTING_TYPE_DOUBLE ? STYLE_DOUBLE : STYLE_SINGLE;
+    }
+    if (indentPerLevel > 9 && needIndentIndicator(string4)) {
+      return STYLE_DOUBLE;
+    }
+    if (!forceQuotes) {
+      return hasFoldableLine ? STYLE_FOLDED : STYLE_LITERAL;
+    }
+    return quotingType === QUOTING_TYPE_DOUBLE ? STYLE_DOUBLE : STYLE_SINGLE;
+  }
+  function writeScalar(state, string4, level, iskey, inblock) {
+    state.dump = function() {
+      if (string4.length === 0) {
+        return state.quotingType === QUOTING_TYPE_DOUBLE ? '""' : "''";
+      }
+      if (!state.noCompatMode) {
+        if (DEPRECATED_BOOLEANS_SYNTAX.indexOf(string4) !== -1 || DEPRECATED_BASE60_SYNTAX.test(string4)) {
+          return state.quotingType === QUOTING_TYPE_DOUBLE ? '"' + string4 + '"' : "'" + string4 + "'";
+        }
+      }
+      var indent = state.indent * Math.max(1, level);
+      var lineWidth = state.lineWidth === -1 ? -1 : Math.max(Math.min(state.lineWidth, 40), state.lineWidth - indent);
+      var singleLineOnly = iskey || state.flowLevel > -1 && level >= state.flowLevel;
+      function testAmbiguity(string5) {
+        return testImplicitResolving(state, string5);
+      }
+      switch (chooseScalarStyle(string4, singleLineOnly, state.indent, lineWidth, testAmbiguity, state.quotingType, state.forceQuotes && !iskey, inblock)) {
+        case STYLE_PLAIN:
+          return string4;
+        case STYLE_SINGLE:
+          return "'" + string4.replace(/'/g, "''") + "'";
+        case STYLE_LITERAL:
+          return "|" + blockHeader(string4, state.indent) + dropEndingNewline(indentString(string4, indent));
+        case STYLE_FOLDED:
+          return ">" + blockHeader(string4, state.indent) + dropEndingNewline(indentString(foldString(string4, lineWidth), indent));
+        case STYLE_DOUBLE:
+          return '"' + escapeString(string4, lineWidth) + '"';
+        default:
+          throw new YAMLException("impossible error: invalid scalar style");
+      }
+    }();
+  }
+  function blockHeader(string4, indentPerLevel) {
+    var indentIndicator = needIndentIndicator(string4) ? String(indentPerLevel) : "";
+    var clip = string4[string4.length - 1] === `
+`;
+    var keep = clip && (string4[string4.length - 2] === `
+` || string4 === `
+`);
+    var chomp = keep ? "+" : clip ? "" : "-";
+    return indentIndicator + chomp + `
+`;
+  }
+  function dropEndingNewline(string4) {
+    return string4[string4.length - 1] === `
+` ? string4.slice(0, -1) : string4;
+  }
+  function foldString(string4, width) {
+    var lineRe = /(\n+)([^\n]*)/g;
+    var result = function() {
+      var nextLF = string4.indexOf(`
+`);
+      nextLF = nextLF !== -1 ? nextLF : string4.length;
+      lineRe.lastIndex = nextLF;
+      return foldLine(string4.slice(0, nextLF), width);
+    }();
+    var prevMoreIndented = string4[0] === `
+` || string4[0] === " ";
+    var moreIndented;
+    var match;
+    while (match = lineRe.exec(string4)) {
+      var prefix = match[1], line = match[2];
+      moreIndented = line[0] === " ";
+      result += prefix + (!prevMoreIndented && !moreIndented && line !== "" ? `
+` : "") + foldLine(line, width);
+      prevMoreIndented = moreIndented;
+    }
+    return result;
+  }
+  function foldLine(line, width) {
+    if (line === "" || line[0] === " ")
+      return line;
+    var breakRe = / [^ ]/g;
+    var match;
+    var start = 0, end, curr = 0, next = 0;
+    var result = "";
+    while (match = breakRe.exec(line)) {
+      next = match.index;
+      if (next - start > width) {
+        end = curr > start ? curr : next;
+        result += `
+` + line.slice(start, end);
+        start = end + 1;
+      }
+      curr = next;
+    }
+    result += `
+`;
+    if (line.length - start > width && curr > start) {
+      result += line.slice(start, curr) + `
+` + line.slice(curr + 1);
+    } else {
+      result += line.slice(start);
+    }
+    return result.slice(1);
+  }
+  function escapeString(string4) {
+    var result = "";
+    var char = 0;
+    var escapeSeq;
+    for (var i = 0;i < string4.length; char >= 65536 ? i += 2 : i++) {
+      char = codePointAt(string4, i);
+      escapeSeq = ESCAPE_SEQUENCES[char];
+      if (!escapeSeq && isPrintable(char)) {
+        result += string4[i];
+        if (char >= 65536)
+          result += string4[i + 1];
+      } else {
+        result += escapeSeq || encodeHex(char);
+      }
+    }
+    return result;
+  }
+  function writeFlowSequence(state, level, object4) {
+    var _result = "", _tag = state.tag, index, length, value;
+    for (index = 0, length = object4.length;index < length; index += 1) {
+      value = object4[index];
+      if (state.replacer) {
+        value = state.replacer.call(object4, String(index), value);
+      }
+      if (writeNode(state, level, value, false, false) || typeof value === "undefined" && writeNode(state, level, null, false, false)) {
+        if (_result !== "")
+          _result += "," + (!state.condenseFlow ? " " : "");
+        _result += state.dump;
+      }
+    }
+    state.tag = _tag;
+    state.dump = "[" + _result + "]";
+  }
+  function writeBlockSequence(state, level, object4, compact) {
+    var _result = "", _tag = state.tag, index, length, value;
+    for (index = 0, length = object4.length;index < length; index += 1) {
+      value = object4[index];
+      if (state.replacer) {
+        value = state.replacer.call(object4, String(index), value);
+      }
+      if (writeNode(state, level + 1, value, true, true, false, true) || typeof value === "undefined" && writeNode(state, level + 1, null, true, true, false, true)) {
+        if (!compact || _result !== "") {
+          _result += generateNextLine(state, level);
+        }
+        if (state.dump && CHAR_LINE_FEED === state.dump.charCodeAt(0)) {
+          _result += "-";
+        } else {
+          _result += "- ";
+        }
+        _result += state.dump;
+      }
+    }
+    state.tag = _tag;
+    state.dump = _result || "[]";
+  }
+  function writeFlowMapping(state, level, object4) {
+    var _result = "", _tag = state.tag, objectKeyList = Object.keys(object4), index, length, objectKey, objectValue, pairBuffer;
+    for (index = 0, length = objectKeyList.length;index < length; index += 1) {
+      pairBuffer = "";
+      if (_result !== "")
+        pairBuffer += ", ";
+      if (state.condenseFlow)
+        pairBuffer += '"';
+      objectKey = objectKeyList[index];
+      objectValue = object4[objectKey];
+      if (state.replacer) {
+        objectValue = state.replacer.call(object4, objectKey, objectValue);
+      }
+      if (!writeNode(state, level, objectKey, false, false)) {
+        continue;
+      }
+      if (state.dump.length > 1024)
+        pairBuffer += "? ";
+      pairBuffer += state.dump + (state.condenseFlow ? '"' : "") + ":" + (state.condenseFlow ? "" : " ");
+      if (!writeNode(state, level, objectValue, false, false)) {
+        continue;
+      }
+      pairBuffer += state.dump;
+      _result += pairBuffer;
+    }
+    state.tag = _tag;
+    state.dump = "{" + _result + "}";
+  }
+  function writeBlockMapping(state, level, object4, compact) {
+    var _result = "", _tag = state.tag, objectKeyList = Object.keys(object4), index, length, objectKey, objectValue, explicitPair, pairBuffer;
+    if (state.sortKeys === true) {
+      objectKeyList.sort();
+    } else if (typeof state.sortKeys === "function") {
+      objectKeyList.sort(state.sortKeys);
+    } else if (state.sortKeys) {
+      throw new YAMLException("sortKeys must be a boolean or a function");
+    }
+    for (index = 0, length = objectKeyList.length;index < length; index += 1) {
+      pairBuffer = "";
+      if (!compact || _result !== "") {
+        pairBuffer += generateNextLine(state, level);
+      }
+      objectKey = objectKeyList[index];
+      objectValue = object4[objectKey];
+      if (state.replacer) {
+        objectValue = state.replacer.call(object4, objectKey, objectValue);
+      }
+      if (!writeNode(state, level + 1, objectKey, true, true, true)) {
+        continue;
+      }
+      explicitPair = state.tag !== null && state.tag !== "?" || state.dump && state.dump.length > 1024;
+      if (explicitPair) {
+        if (state.dump && CHAR_LINE_FEED === state.dump.charCodeAt(0)) {
+          pairBuffer += "?";
+        } else {
+          pairBuffer += "? ";
+        }
+      }
+      pairBuffer += state.dump;
+      if (explicitPair) {
+        pairBuffer += generateNextLine(state, level);
+      }
+      if (!writeNode(state, level + 1, objectValue, true, explicitPair)) {
+        continue;
+      }
+      if (state.dump && CHAR_LINE_FEED === state.dump.charCodeAt(0)) {
+        pairBuffer += ":";
+      } else {
+        pairBuffer += ": ";
+      }
+      pairBuffer += state.dump;
+      _result += pairBuffer;
+    }
+    state.tag = _tag;
+    state.dump = _result || "{}";
+  }
+  function detectType(state, object4, explicit) {
+    var _result, typeList, index, length, type, style;
+    typeList = explicit ? state.explicitTypes : state.implicitTypes;
+    for (index = 0, length = typeList.length;index < length; index += 1) {
+      type = typeList[index];
+      if ((type.instanceOf || type.predicate) && (!type.instanceOf || typeof object4 === "object" && object4 instanceof type.instanceOf) && (!type.predicate || type.predicate(object4))) {
+        if (explicit) {
+          if (type.multi && type.representName) {
+            state.tag = type.representName(object4);
+          } else {
+            state.tag = type.tag;
+          }
+        } else {
+          state.tag = "?";
+        }
+        if (type.represent) {
+          style = state.styleMap[type.tag] || type.defaultStyle;
+          if (_toString.call(type.represent) === "[object Function]") {
+            _result = type.represent(object4, style);
+          } else if (_hasOwnProperty.call(type.represent, style)) {
+            _result = type.represent[style](object4, style);
+          } else {
+            throw new YAMLException("!<" + type.tag + '> tag resolver accepts not "' + style + '" style');
+          }
+          state.dump = _result;
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+  function writeNode(state, level, object4, block, compact, iskey, isblockseq) {
+    state.tag = null;
+    state.dump = object4;
+    if (!detectType(state, object4, false)) {
+      detectType(state, object4, true);
+    }
+    var type = _toString.call(state.dump);
+    var inblock = block;
+    var tagStr;
+    if (block) {
+      block = state.flowLevel < 0 || state.flowLevel > level;
+    }
+    var objectOrArray = type === "[object Object]" || type === "[object Array]", duplicateIndex, duplicate;
+    if (objectOrArray) {
+      duplicateIndex = state.duplicates.indexOf(object4);
+      duplicate = duplicateIndex !== -1;
+    }
+    if (state.tag !== null && state.tag !== "?" || duplicate || state.indent !== 2 && level > 0) {
+      compact = false;
+    }
+    if (duplicate && state.usedDuplicates[duplicateIndex]) {
+      state.dump = "*ref_" + duplicateIndex;
+    } else {
+      if (objectOrArray && duplicate && !state.usedDuplicates[duplicateIndex]) {
+        state.usedDuplicates[duplicateIndex] = true;
+      }
+      if (type === "[object Object]") {
+        if (block && Object.keys(state.dump).length !== 0) {
+          writeBlockMapping(state, level, state.dump, compact);
+          if (duplicate) {
+            state.dump = "&ref_" + duplicateIndex + state.dump;
+          }
+        } else {
+          writeFlowMapping(state, level, state.dump);
+          if (duplicate) {
+            state.dump = "&ref_" + duplicateIndex + " " + state.dump;
+          }
+        }
+      } else if (type === "[object Array]") {
+        if (block && state.dump.length !== 0) {
+          if (state.noArrayIndent && !isblockseq && level > 0) {
+            writeBlockSequence(state, level - 1, state.dump, compact);
+          } else {
+            writeBlockSequence(state, level, state.dump, compact);
+          }
+          if (duplicate) {
+            state.dump = "&ref_" + duplicateIndex + state.dump;
+          }
+        } else {
+          writeFlowSequence(state, level, state.dump);
+          if (duplicate) {
+            state.dump = "&ref_" + duplicateIndex + " " + state.dump;
+          }
+        }
+      } else if (type === "[object String]") {
+        if (state.tag !== "?") {
+          writeScalar(state, state.dump, level, iskey, inblock);
+        }
+      } else if (type === "[object Undefined]") {
+        return false;
+      } else {
+        if (state.skipInvalid)
+          return false;
+        throw new YAMLException("unacceptable kind of an object to dump " + type);
+      }
+      if (state.tag !== null && state.tag !== "?") {
+        tagStr = encodeURI(state.tag[0] === "!" ? state.tag.slice(1) : state.tag).replace(/!/g, "%21");
+        if (state.tag[0] === "!") {
+          tagStr = "!" + tagStr;
+        } else if (tagStr.slice(0, 18) === "tag:yaml.org,2002:") {
+          tagStr = "!!" + tagStr.slice(18);
+        } else {
+          tagStr = "!<" + tagStr + ">";
+        }
+        state.dump = tagStr + " " + state.dump;
+      }
+    }
+    return true;
+  }
+  function getDuplicateReferences(object4, state) {
+    var objects = [], duplicatesIndexes = [], index, length;
+    inspectNode(object4, objects, duplicatesIndexes);
+    for (index = 0, length = duplicatesIndexes.length;index < length; index += 1) {
+      state.duplicates.push(objects[duplicatesIndexes[index]]);
+    }
+    state.usedDuplicates = new Array(length);
+  }
+  function inspectNode(object4, objects, duplicatesIndexes) {
+    var objectKeyList, index, length;
+    if (object4 !== null && typeof object4 === "object") {
+      index = objects.indexOf(object4);
+      if (index !== -1) {
+        if (duplicatesIndexes.indexOf(index) === -1) {
+          duplicatesIndexes.push(index);
+        }
+      } else {
+        objects.push(object4);
+        if (Array.isArray(object4)) {
+          for (index = 0, length = object4.length;index < length; index += 1) {
+            inspectNode(object4[index], objects, duplicatesIndexes);
+          }
+        } else {
+          objectKeyList = Object.keys(object4);
+          for (index = 0, length = objectKeyList.length;index < length; index += 1) {
+            inspectNode(object4[objectKeyList[index]], objects, duplicatesIndexes);
+          }
+        }
+      }
+    }
+  }
+  function dump(input, options) {
+    options = options || {};
+    var state = new State(options);
+    if (!state.noRefs)
+      getDuplicateReferences(input, state);
+    var value = input;
+    if (state.replacer) {
+      value = state.replacer.call({ "": value }, "", value);
+    }
+    if (writeNode(state, 0, value, true, true))
+      return state.dump + `
+`;
+    return "";
+  }
+  exports.dump = dump;
+});
+
+// node_modules/.bun/js-yaml@4.1.1/node_modules/js-yaml/index.js
+var require_js_yaml = __commonJS((exports, module) => {
+  var loader = require_loader();
+  var dumper = require_dumper();
+  function renamed(from, to) {
+    return function() {
+      throw new Error("Function yaml." + from + " is removed in js-yaml 4. " + "Use yaml." + to + " instead, which is now safe by default.");
+    };
+  }
+  exports.Type = require_type();
+  exports.Schema = require_schema();
+  exports.FAILSAFE_SCHEMA = require_failsafe();
+  exports.JSON_SCHEMA = require_json();
+  exports.CORE_SCHEMA = require_json();
+  exports.DEFAULT_SCHEMA = require_default();
+  exports.load = loader.load;
+  exports.loadAll = loader.loadAll;
+  exports.dump = dumper.dump;
+  exports.YAMLException = require_exception();
+  exports.types = {
+    binary: require_binary(),
+    float: require_float(),
+    map: require_map(),
+    null: require_null(),
+    pairs: require_pairs(),
+    set: require_set(),
+    timestamp: require_timestamp(),
+    bool: require_bool(),
+    int: require_int(),
+    merge: require_merge(),
+    omap: require_omap(),
+    seq: require_seq(),
+    str: require_str()
+  };
+  exports.safeLoad = renamed("safeLoad", "load");
+  exports.safeLoadAll = renamed("safeLoadAll", "loadAll");
+  exports.safeDump = renamed("safeDump", "dump");
+});
+
 // shared/types.ts
-var SYSTEM_HOOKS;
+var exports_types = {};
+__export(exports_types, {
+  loadAgentSpec: () => loadAgentSpec,
+  SYSTEM_HOOKS: () => SYSTEM_HOOKS,
+  HARDCODED_DEFAULTS: () => HARDCODED_DEFAULTS
+});
+function loadAgentSpec(path) {
+  const { readFileSync } = __require("fs");
+  const content = readFileSync(path, "utf-8");
+  let spec;
+  if (path.endsWith(".json")) {
+    spec = JSON.parse(content);
+  } else {
+    const yaml = require_js_yaml();
+    spec = yaml.load(content);
+  }
+  if (!spec || typeof spec !== "object") {
+    throw new Error(`Invalid agent spec file: ${path}`);
+  }
+  if (!spec.name) {
+    throw new Error(`Agent spec missing required 'name' field: ${path}`);
+  }
+  return spec;
+}
+var SYSTEM_HOOKS, HARDCODED_DEFAULTS;
 var init_types = __esm(() => {
   SYSTEM_HOOKS = [
     { id: "sys-1", owner: "system", event: "PreToolUse", tool: "Bash", condition: { command_pattern: "rm\\s+-rf\\s+[/~.]" }, action: "block", message: "Catastrophic rm -rf blocked" },
@@ -6548,11 +9347,18 @@ var init_types = __esm(() => {
     { id: "sys-11", owner: "system", event: "PreToolUse", tool: "Edit", condition: { file_glob: "**/fleet/**/token" }, action: "block", message: "Token is auto-provisioned" },
     { id: "sys-12", owner: "system", event: "PreToolUse", tool: "Write", condition: { file_glob: "**/fleet/**/token" }, action: "block", message: "Token is auto-provisioned" }
   ];
+  HARDCODED_DEFAULTS = {
+    model: "opus[1m]",
+    runtime: "claude",
+    effort: "high",
+    permission_mode: "bypassPermissions",
+    sleep_duration: null
+  };
 });
 
 // cli/lib/paths.ts
 import { join as join11 } from "path";
-import { existsSync as existsSync9, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync9, readFileSync as readFileSync9 } from "fs";
 function resolveMailConfig() {
   const envUrl = process.env.FLEET_MAIL_URL || null;
   const envToken = process.env.FLEET_MAIL_TOKEN || null;
@@ -6561,7 +9367,7 @@ function resolveMailConfig() {
   const dp = defaultsPath();
   if (existsSync9(dp)) {
     try {
-      const d = JSON.parse(readFileSync8(dp, "utf-8"));
+      const d = JSON.parse(readFileSync9(dp, "utf-8"));
       if (d.fleet_mail_url)
         fileUrl = String(d.fleet_mail_url);
       if (d.fleet_mail_token)
@@ -6582,11 +9388,11 @@ function configPath(project, name) {
 function defaultsPath() {
   return join11(FLEET_DATA, "defaults.json");
 }
-var HOME3, FLEET_DIR2, FLEET_DATA, _mailConfig, FLEET_MAIL_URL2, FLEET_MAIL_TOKEN;
+var HOME2, FLEET_DIR2, FLEET_DATA, _mailConfig, FLEET_MAIL_URL2, FLEET_MAIL_TOKEN;
 var init_paths = __esm(() => {
-  HOME3 = process.env.HOME || process.env.USERPROFILE || "/tmp";
-  FLEET_DIR2 = process.env.CLAUDE_FLEET_DIR || join11(HOME3, ".claude-fleet");
-  FLEET_DATA = join11(HOME3, ".claude", "fleet");
+  HOME2 = process.env.HOME || process.env.USERPROFILE || "/tmp";
+  FLEET_DIR2 = process.env.CLAUDE_FLEET_DIR || join11(HOME2, ".claude-fleet");
+  FLEET_DATA = join11(HOME2, ".claude", "fleet");
   _mailConfig = resolveMailConfig();
   FLEET_MAIL_URL2 = _mailConfig.url;
   FLEET_MAIL_TOKEN = _mailConfig.token;
@@ -6601,11 +9407,11 @@ __export(exports_io, {
   readJson: () => readJson,
   REGISTRY_LOCK_PATH: () => REGISTRY_LOCK_PATH
 });
-import { readFileSync as readFileSync9, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9 } from "fs";
+import { readFileSync as readFileSync10, writeFileSync as writeFileSync9, mkdirSync as mkdirSync9 } from "fs";
 import { dirname, join as join12 } from "path";
 function readJson(path) {
   try {
-    return JSON.parse(readFileSync9(path, "utf-8"));
+    return JSON.parse(readFileSync10(path, "utf-8"));
   } catch {
     return null;
   }
@@ -6640,11 +9446,11 @@ function updateJsonLocked(path, updater) {
     releaseLock(REGISTRY_LOCK_PATH);
   }
 }
-var HOME4, FLEET_ROOT, REGISTRY_LOCK_PATH;
+var HOME3, FLEET_ROOT, REGISTRY_LOCK_PATH;
 var init_io = __esm(() => {
   init_lock_utils();
-  HOME4 = process.env.HOME || process.env.USERPROFILE || "/tmp";
-  FLEET_ROOT = process.env.CLAUDE_FLEET_DIR || join12(HOME4, ".claude-fleet");
+  HOME3 = process.env.HOME || process.env.USERPROFILE || "/tmp";
+  FLEET_ROOT = process.env.CLAUDE_FLEET_DIR || join12(HOME3, ".claude-fleet");
   REGISTRY_LOCK_PATH = join12(FLEET_ROOT, "state", "locks", "worker-registry");
 });
 
@@ -6808,6 +9614,25 @@ function pasteBuffer(paneId, content) {
       unlinkSync2(tmpFile);
     } catch {}
   }
+}
+function windowHasClaudeProcess(session, window) {
+  const { ok, stdout } = run([
+    "list-panes",
+    "-t",
+    `${session}:${window}`,
+    "-F",
+    "#{pane_id}\t#{pane_current_command}"
+  ]);
+  if (!ok)
+    return null;
+  for (const line of stdout.split(`
+`)) {
+    const [paneId, cmd] = line.split("\t");
+    if (paneId && cmd && (/^\d+\.\d+/.test(cmd) || cmd.includes("claude"))) {
+      return paneId;
+    }
+  }
+  return null;
 }
 
 // node_modules/.bun/chalk@5.6.2/node_modules/chalk/source/vendor/ansi-styles/index.js
@@ -7300,8 +10125,38 @@ var init_source = __esm(() => {
 });
 
 // cli/lib/fmt.ts
-var ok = (msg) => console.log(`${source_default.green("\u2713")} ${msg}`), info = (msg) => console.log(`${source_default.cyan("\u2192")} ${msg}`), warn = (msg) => console.log(`${source_default.yellow("\u26A0")} ${msg}`), fail = (msg) => {
-  console.error(`${source_default.red("ERROR:")} ${msg}`);
+function isHumanMode() {
+  if (_humanMode !== null)
+    return _humanMode;
+  return !!process.env.HUMAN;
+}
+function stripAnsi(s) {
+  return s.replace(/\x1b\[[0-9;]*m/g, "");
+}
+var _humanMode = null, ok = (msg) => {
+  if (isHumanMode()) {
+    console.log(`${source_default.green("\u2713")} ${msg}`);
+  } else {
+    console.log(`OK: ${stripAnsi(msg)}`);
+  }
+}, info = (msg) => {
+  if (isHumanMode()) {
+    console.log(`${source_default.cyan("\u2192")} ${msg}`);
+  } else {
+    console.log(`INFO: ${stripAnsi(msg)}`);
+  }
+}, warn = (msg) => {
+  if (isHumanMode()) {
+    console.log(`${source_default.yellow("\u26A0")} ${msg}`);
+  } else {
+    console.error(`WARN: ${stripAnsi(msg)}`);
+  }
+}, fail = (msg) => {
+  if (isHumanMode()) {
+    console.error(`${source_default.red("ERROR:")} ${msg}`);
+  } else {
+    console.error(`ERROR: ${stripAnsi(msg)}`);
+  }
   process.exit(1);
 };
 var init_fmt = __esm(() => {
@@ -7313,7 +10168,7 @@ var exports_launch = {};
 __export(exports_launch, {
   launchInTmux: () => launchInTmux
 });
-import { readFileSync as readFileSync10, writeFileSync as writeFileSync10, existsSync as existsSync10, copyFileSync as copyFileSync3, mkdirSync as mkdirSync10 } from "fs";
+import { readFileSync as readFileSync11, writeFileSync as writeFileSync10, existsSync as existsSync10, copyFileSync as copyFileSync3, mkdirSync as mkdirSync10 } from "fs";
 import { join as join13 } from "path";
 async function launchInTmux(name, project, session, window, windowIndex, options) {
   const dir = workerDir(project, name);
@@ -7344,82 +10199,92 @@ async function launchInTmux(name, project, session, window, windowIndex, options
   installWorktreeGitHooks(worktree, projectRoot);
   let paneId;
   let createdSession = false;
+  let adopted = false;
   if (!sessionExists(session)) {
     paneId = createSession(session, window, worktree);
     createdSession = true;
   } else if (windowExists(session, window)) {
-    paneId = splitIntoWindow(session, window, worktree);
+    const existingPane = windowHasClaudeProcess(session, window);
+    if (existingPane) {
+      info(`Claude already running in ${window} (${existingPane}), adopting`);
+      paneId = existingPane;
+      adopted = true;
+    } else {
+      paneId = splitIntoWindow(session, window, worktree);
+    }
   } else {
     paneId = createWindow(session, window, worktree, windowIndex);
   }
   setPaneTitle(paneId, name);
-  try {
-    const { readJson: readJsonImport } = await Promise.resolve().then(() => (init_io(), exports_io));
-    const fleetJsonPath2 = join13(FLEET_DATA, project, "fleet.json");
-    const fleetJson = readJsonImport(fleetJsonPath2);
-    if (fleetJson?.layouts?.[window]) {
-      Bun.spawnSync(["tmux", "select-layout", "-t", `${session}:${window}`, fleetJson.layouts[window]], { stderr: "pipe" });
-    }
-  } catch {}
-  if (createdSession) {
-    sendKeys(paneId, `cd "${worktree}"`);
-    sendEnter(paneId);
-  }
-  const { model, reasoning_effort: effort, permission_mode: perm } = config2;
-  let cmd;
-  if (runtime === "codex") {
-    cmd = `WORKER_NAME="${name}" WORKER_RUNTIME=codex codex -m "${model}"`;
-    if (perm === "bypassPermissions") {
-      cmd += " --dangerously-bypass-approvals-and-sandbox";
-    } else {
-      cmd += " -s workspace-write -a on-request";
-    }
-    cmd += ` -c model_reasoning_effort=${effort}`;
-    cmd += " --no-alt-screen";
-    cmd += ` --add-dir "${dir}"`;
-  } else {
-    cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${name}" claude --model "${model}" --effort "${effort}"`;
-    if (perm === "bypassPermissions") {
-      cmd += " --dangerously-skip-permissions";
-    } else {
-      cmd += ` --permission-mode "${perm}"`;
-    }
-    cmd += ` --add-dir "${dir}"`;
-  }
-  sendKeys(paneId, cmd);
-  sendEnter(paneId);
-  info("Waiting for TUI...");
-  const ready = await waitForPrompt(paneId);
-  if (!ready)
-    warn("TUI timeout after 60s, proceeding anyway");
-  await Bun.sleep(2000);
-  let seedContent;
-  try {
-    const result = Bun.spawnSync([Bun.which("bun") || "bun", "-e", `
-        const { generateSeedContent } = await import('${FLEET_DIR2}/mcp/worker-fleet/index.ts');
-        process.stdout.write(generateSeedContent());
-      `], {
-      env: { ...process.env, WORKER_NAME: name, PROJECT_ROOT: worktree },
-      stderr: "pipe"
-    });
-    seedContent = result.exitCode === 0 ? result.stdout.toString() : `You are worker ${name}. Read mission.md, then start your next cycle.`;
-  } catch {
-    seedContent = `You are worker ${name}. Read mission.md, then start your next cycle.`;
-  }
-  const pasted = pasteBuffer(paneId, seedContent);
-  if (!pasted) {
-    warn("Failed to load seed buffer \u2014 worker launched without seed");
-  } else {
-    const settleMs = Math.min(8000, 2000 + Math.floor(seedContent.length / 4096) * 1000);
-    await Bun.sleep(settleMs);
-    sendEnter(paneId);
-    await Bun.sleep(3000);
-    const output = capturePane(paneId, 10);
-    if (/command not found|bad pattern|zsh:|bash:/.test(output) && !/\u276F.*command not found/.test(output)) {
-      warn("Detected garbled seed (shell errors) \u2014 seed may have leaked into shell");
-    }
-    if (/\u276F/.test(output))
+  if (!adopted) {
+    try {
+      const { readJson: readJsonImport } = await Promise.resolve().then(() => (init_io(), exports_io));
+      const fleetJsonPath2 = join13(FLEET_DATA, project, "fleet.json");
+      const fleetJson = readJsonImport(fleetJsonPath2);
+      if (fleetJson?.layouts?.[window]) {
+        Bun.spawnSync(["tmux", "select-layout", "-t", `${session}:${window}`, fleetJson.layouts[window]], { stderr: "pipe" });
+      }
+    } catch {}
+    if (createdSession) {
+      sendKeys(paneId, `cd "${worktree}"`);
       sendEnter(paneId);
+    }
+    const { model, reasoning_effort: effort, permission_mode: perm } = config2;
+    let cmd;
+    if (runtime === "codex") {
+      cmd = `WORKER_NAME="${name}" WORKER_RUNTIME=codex codex -m "${model}"`;
+      if (perm === "bypassPermissions") {
+        cmd += " --dangerously-bypass-approvals-and-sandbox";
+      } else {
+        cmd += " -s workspace-write -a on-request";
+      }
+      cmd += ` -c model_reasoning_effort=${effort}`;
+      cmd += " --no-alt-screen";
+      cmd += ` --add-dir "${dir}"`;
+    } else {
+      cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME="${name}" claude --model "${model}" --effort "${effort}"`;
+      if (perm === "bypassPermissions") {
+        cmd += " --dangerously-skip-permissions";
+      } else {
+        cmd += ` --permission-mode "${perm}"`;
+      }
+      cmd += ` --add-dir "${dir}"`;
+    }
+    sendKeys(paneId, cmd);
+    sendEnter(paneId);
+    info("Waiting for TUI...");
+    const ready = await waitForPrompt(paneId);
+    if (!ready)
+      warn("TUI timeout after 60s, proceeding anyway");
+    await Bun.sleep(2000);
+    let seedContent;
+    try {
+      const result = Bun.spawnSync([Bun.which("bun") || "bun", "-e", `
+          const { generateSeedContent } = await import('${FLEET_DIR2}/mcp/worker-fleet/index.ts');
+          process.stdout.write(generateSeedContent());
+        `], {
+        env: { ...process.env, WORKER_NAME: name, PROJECT_ROOT: worktree },
+        stderr: "pipe"
+      });
+      seedContent = result.exitCode === 0 ? result.stdout.toString() : `You are worker ${name}. Read mission.md, then start your next cycle.`;
+    } catch {
+      seedContent = `You are worker ${name}. Read mission.md, then start your next cycle.`;
+    }
+    const pasted = pasteBuffer(paneId, seedContent);
+    if (!pasted) {
+      warn("Failed to load seed buffer \u2014 worker launched without seed");
+    } else {
+      const settleMs = Math.min(8000, 2000 + Math.floor(seedContent.length / 4096) * 1000);
+      await Bun.sleep(settleMs);
+      sendEnter(paneId);
+      await Bun.sleep(3000);
+      const output = capturePane(paneId, 10);
+      if (/command not found|bad pattern|zsh:|bash:/.test(output) && !/\u276F.*command not found/.test(output)) {
+        warn("Detected garbled seed (shell errors) \u2014 seed may have leaked into shell");
+      }
+      if (/\u276F/.test(output))
+        sendEnter(paneId);
+    }
   }
   const paneTarget = getPaneTarget(paneId);
   const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -7436,14 +10301,14 @@ async function launchInTmux(name, project, session, window, windowIndex, options
     tmux_session: session,
     session_id: "",
     past_sessions: pastSessions,
-    last_relaunch: { at: now, reason: "fleet-start" },
-    relaunch_count: (oldState?.relaunch_count || 0) + 1,
+    last_relaunch: { at: now, reason: adopted ? "adopted" : "fleet-start" },
+    relaunch_count: (oldState?.relaunch_count || 0) + (adopted ? 0 : 1),
     cycles_completed: oldState?.cycles_completed || 0,
     last_cycle_at: oldState?.last_cycle_at || null,
     custom: oldState?.custom || {}
   });
   updateRegistry(name, project, paneId, paneTarget, session);
-  ok(`Worker '${name}' launched in pane ${paneId} (session: ${session}, window: ${window})`);
+  ok(`Worker '${name}' ${adopted ? "adopted" : "launched in"} pane ${paneId} (session: ${session}, window: ${window})`);
   return paneId;
 }
 function installWorktreeGitHooks(worktree, projectRoot) {
@@ -7489,7 +10354,7 @@ function updateRegistry(name, project, paneId, paneTarget, session) {
   if (!config2)
     return;
   try {
-    const registry2 = JSON.parse(readFileSync10(registryPath, "utf-8"));
+    const registry2 = JSON.parse(readFileSync11(registryPath, "utf-8"));
     registry2[name] = {
       ...registry2[name] || {},
       pane_id: paneId,
@@ -7510,6 +10375,173 @@ var init_launch = __esm(() => {
   init_paths();
   init_config();
   init_fmt();
+});
+
+// engine/program/hooks-bridge.ts
+import { join as join14 } from "path";
+import { existsSync as existsSync11 } from "fs";
+function resolveHooksDir2() {
+  return process.env.CLAUDE_HOOKS_DIR || join14(HOME4, ".claude-hooks");
+}
+async function getHooksIO() {
+  const hooksDir = resolveHooksDir2();
+  const ioPath = join14(hooksDir, "shared/hooks-io.ts");
+  if (!existsSync11(ioPath)) {
+    throw new Error(`claude-hooks not installed at ${hooksDir}. Run: bash ~/.claude-hooks/scripts/install.sh`);
+  }
+  return await import(ioPath);
+}
+var HOME4;
+var init_hooks_bridge = __esm(() => {
+  HOME4 = process.env.HOME || "/tmp";
+});
+
+// engine/program/hook-generator.ts
+var exports_hook_generator = {};
+__export(exports_hook_generator, {
+  installToolRestrictionHooks: () => installToolRestrictionHooks,
+  installPipelineHooks: () => installPipelineHooks
+});
+import { join as join15 } from "path";
+async function installPipelineHooks(hooksDir, hooks, registeredBy) {
+  const { addHookToFile, writeScriptFile: writeScriptFile2 } = await getHooksIO();
+  for (const hook of hooks) {
+    const id = `ph-${++_phCounter}`;
+    const desc = hook.description || `Pipeline ${hook.event} hook`;
+    const dynHook = {
+      id,
+      event: hook.event,
+      description: desc,
+      blocking: hook.blocking ?? hook.event === "Stop",
+      completed: false,
+      added_at: new Date().toISOString(),
+      registered_by: registeredBy,
+      ownership: "creator",
+      status: "active",
+      lifetime: "persistent"
+    };
+    if (hook.check)
+      dynHook.check = hook.check;
+    if (hook.command) {
+      const filename = writeScriptFile2(hooksDir, id, desc, hook.command);
+      dynHook.script_path = filename;
+    }
+    if (hook.type === "launch" && hook.workers) {
+      const launchScript = generateLaunchHookScript(hook.workers);
+      const filename = writeScriptFile2(hooksDir, id, desc, launchScript);
+      dynHook.script_path = filename;
+    }
+    if (hook.type === "message" && hook.to) {
+      const messageScript = generateMessageHookScript(hook.to, hook.subject || "", hook.body || "");
+      const filename = writeScriptFile2(hooksDir, id, desc, messageScript);
+      dynHook.script_path = filename;
+    }
+    if (hook.prompt) {
+      dynHook.content = hook.prompt;
+    }
+    if (hook.matcher) {
+      dynHook.condition = { tool: hook.matcher };
+    }
+    addHookToFile(hooksDir, dynHook);
+  }
+}
+function generateLaunchHookScript(workers) {
+  if (typeof workers === "string") {
+    return `#!/usr/bin/env bash
+set -euo pipefail
+FLEET_DIR="\${CLAUDE_FLEET_DIR:-${FLEET_DIR_DEFAULT}}"
+SESSION_DIR="\${SESSION_DIR:-.}"
+nohup bun "$FLEET_DIR/engine/program/bridge.ts" "$SESSION_DIR" --node "${workers}" \\
+  >> "$SESSION_DIR/bridge-launch.log" 2>&1 &
+exit 0
+`;
+  }
+  const creates = workers.map((w) => `fleet create "${w.name}" "${w.role}" --model "${w.model || "sonnet[1m]"}" &`).join(`
+`);
+  return `#!/usr/bin/env bash
+set -euo pipefail
+${creates}
+wait
+exit 0
+`;
+}
+async function installToolRestrictionHooks(hooksDir, allowedTools, deniedTools) {
+  if (!allowedTools?.length && !deniedTools?.length)
+    return;
+  const { addHookToFile, writeScriptFile: writeScriptFile2 } = await getHooksIO();
+  if (deniedTools && deniedTools.length > 0) {
+    const id = `ph-${++_phCounter}`;
+    const matcher = deniedTools.join("|");
+    const script = `#!/usr/bin/env bash
+# Block denied tools: ${deniedTools.join(", ")}
+echo "Tool $TOOL_NAME is blocked by pipeline configuration" >&2
+exit 1
+`;
+    const filename = writeScriptFile2(hooksDir, id, `Block denied tools`, script);
+    addHookToFile(hooksDir, {
+      id,
+      event: "PreToolUse",
+      description: `Pipeline: block tools (${deniedTools.join(", ")})`,
+      blocking: true,
+      completed: false,
+      added_at: new Date().toISOString(),
+      registered_by: "program-api",
+      ownership: "creator",
+      status: "active",
+      lifetime: "persistent",
+      script_path: filename,
+      condition: { tool: matcher }
+    });
+  }
+  if (allowedTools && allowedTools.length > 0) {
+    const id = `ph-${++_phCounter}`;
+    const allowed = allowedTools.join("|");
+    const script = `#!/usr/bin/env bash
+# Only allow: ${allowedTools.join(", ")}
+# TOOL_NAME is set by the hook runner
+if echo "$TOOL_NAME" | grep -qE "^(${allowed})$"; then
+  exit 0
+fi
+echo "Tool $TOOL_NAME is not in the allowlist" >&2
+exit 1
+`;
+    const filename = writeScriptFile2(hooksDir, id, `Allow only listed tools`, script);
+    addHookToFile(hooksDir, {
+      id,
+      event: "PreToolUse",
+      description: `Pipeline: allowlist (${allowedTools.join(", ")})`,
+      blocking: true,
+      completed: false,
+      added_at: new Date().toISOString(),
+      registered_by: "program-api",
+      ownership: "creator",
+      status: "active",
+      lifetime: "persistent",
+      script_path: filename
+    });
+  }
+}
+function generateMessageHookScript(to, subject, body) {
+  return `#!/usr/bin/env bash
+set -euo pipefail
+if [ -z "\${FLEET_MAIL_URL:-}" ] || [ -z "\${FLEET_MAIL_TOKEN:-}" ]; then
+  echo "WARN: Fleet Mail not configured, skipping message to ${to}" >&2
+  exit 0
+fi
+curl -s -X POST "\${FLEET_MAIL_URL}/api/messages" \\
+  -H "Authorization: Bearer \${FLEET_MAIL_TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d "$(cat <<'EOFMSG'
+{"to":"${to}","subject":"${subject}","body":"${body}"}
+EOFMSG
+)" > /dev/null 2>&1 || true
+exit 0
+`;
+}
+var FLEET_DIR_DEFAULT, _phCounter = 0;
+var init_hook_generator = __esm(() => {
+  init_hooks_bridge();
+  FLEET_DIR_DEFAULT = join15(process.env.HOME || "/tmp", ".claude-fleet");
 });
 
 // node_modules/.bun/zod@3.25.76/node_modules/zod/v3/external.js
@@ -20469,7 +23501,7 @@ class StdioServerTransport {
 }
 
 // mcp/worker-fleet/tools/state.ts
-import { writeFileSync as writeFileSync5, existsSync as existsSync5, mkdirSync as mkdirSync6, readdirSync as readdirSync3 } from "fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync5, existsSync as existsSync5, mkdirSync as mkdirSync6, readdirSync as readdirSync3 } from "fs";
 import { join as join7, basename as basename2 } from "path";
 import { execSync as execSync5 } from "child_process";
 
@@ -20521,7 +23553,7 @@ try {
 var _cachedBranch = _cachedBranchValue;
 var LINT_ENABLED = process.env.WORKER_FLEET_LINT !== "0";
 function getWorktreeDir() {
-  const projectName = PROJECT_ROOT.split("/").pop();
+  const projectName = PROJECT_ROOT.split("/").pop().replace(/-w-.*$/, "");
   return join(PROJECT_ROOT, "..", `${projectName}-w-${WORKER_NAME}`);
 }
 var FLEET_MAIL_URL = process.env.FLEET_MAIL_URL ?? "http://127.0.0.1:8025";
@@ -20710,7 +23742,7 @@ function readFleetConfig() {
     merge_authority: "merger",
     deploy_authority: "merger",
     mission_authority: "chief-of-staff",
-    tmux_session: "w",
+    tmux_session: resolveProjectName(),
     project_name: resolveProjectName()
   };
 }
@@ -20748,15 +23780,15 @@ function listWorkerNames() {
 }
 function generateLaunchScript(name, config2) {
   const worktree = config2.worktree || PROJECT_ROOT;
-  const model = config2.model || "opus";
+  const model = config2.model || "opus[1m]";
   const effort = config2.reasoning_effort || "high";
   const permMode = config2.permission_mode || "bypassPermissions";
   const missionPath = join3(FLEET_DIR, name, "mission.md");
-  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model "${model}"`;
   if (permMode === "bypassPermissions")
     cmd += " --dangerously-skip-permissions";
   if (effort)
-    cmd += ` --effort ${effort}`;
+    cmd += ` --effort "${effort}"`;
   return `#!/bin/bash
 # Auto-generated by fleet \u2014 restart command for ${name}
 # Regenerated on config changes. Do not edit manually.
@@ -20773,7 +23805,7 @@ function writeLaunchScript(name, config2) {
 }
 function registryEntryToConfigState(name, entry, config2) {
   const wConfig = {
-    model: entry.model || "opus",
+    model: entry.model || "opus[1m]",
     reasoning_effort: entry.custom?.reasoning_effort || "high",
     permission_mode: entry.permission_mode || "bypassPermissions",
     sleep_duration: entry.sleep_duration ?? null,
@@ -20830,7 +23862,7 @@ function migrateToPerWorkerDirs() {
       merge_authority: "merger",
       deploy_authority: "merger",
       mission_authority: "chief-of-staff",
-      tmux_session: "w",
+      tmux_session: resolveProjectName(),
       project_name: resolveProjectName()
     });
     return;
@@ -20887,7 +23919,7 @@ function workerDirsToRegistryEntry(name) {
     status: "idle",
     pane_id: null,
     pane_target: null,
-    tmux_session: "w",
+    tmux_session: readFleetConfig().tmux_session || resolveProjectName(),
     session_id: null,
     past_sessions: [],
     last_relaunch: null,
@@ -20901,7 +23933,7 @@ function workerDirsToRegistryEntry(name) {
     bmsToken = readFileSync2(join3(FLEET_DIR, name, "token"), "utf-8").trim();
   } catch {}
   const entry = {
-    model: config2.model || "opus",
+    model: config2.model || "opus[1m]",
     permission_mode: config2.permission_mode || "bypassPermissions",
     disallowed_tools: [],
     status: s.status || "idle",
@@ -21064,7 +24096,7 @@ function ensureWorkerInRegistry(registry2, name) {
   const projectName = resolveProjectName();
   const worktreeDir = join3(PROJECT_ROOT, "..", `${projectName}-w-${name}`);
   const entry = {
-    model: "opus",
+    model: "opus[1m]",
     permission_mode: "bypassPermissions",
     disallowed_tools: [],
     status: "idle",
@@ -21127,9 +24159,9 @@ function canUpdateWorker(callerName, targetName, registry2) {
 function getWorkerModel() {
   try {
     const entry = getWorkerEntry(WORKER_NAME);
-    return entry?.model || "opus";
+    return entry?.model || "opus[1m]";
   } catch {
-    return "opus";
+    return "opus[1m]";
   }
 }
 
@@ -21144,6 +24176,20 @@ function isPaneAlive(paneId) {
       timeout: 3000
     });
     return check2.status === 0 && check2.stdout.trim() === paneId;
+  } catch {
+    return false;
+  }
+}
+function isPaneOwnedBy(paneId, workerName) {
+  if (!isPaneAlive(paneId))
+    return false;
+  try {
+    const result = spawnSync2("tmux", ["display-message", "-t", paneId, "-p", "#{window_name}"], {
+      encoding: "utf-8",
+      timeout: 3000
+    });
+    const windowName = result.stdout?.trim() || "";
+    return windowName === workerName || windowName === "infra";
   } catch {
     return false;
   }
@@ -21494,7 +24540,7 @@ function fleetMailTextResult(data) {
 var _fleetMailDirectoryCache = null;
 var _fleetMailDirCacheTime = 0;
 var FLEET_MAIL_DIR_CACHE_TTL = 60000;
-async function resolveFleetMailAccountId(name) {
+async function resolveFleetMailAccountId(name, messageHint) {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name))
     return name;
   if (name.startsWith("list:"))
@@ -21519,50 +24565,84 @@ async function resolveFleetMailAccountId(name) {
   const id = _fleetMailDirectoryCache?.[nsName];
   if (id)
     return nsName;
-  if (name === "user") {
-    const nsUserName = mailAccountName("user");
+  return await autoProvisionAccount(name, nsName, messageHint);
+}
+async function autoProvisionAccount(localName, nsName, messageHint) {
+  const displayName = localName === "user" ? "operator" : localName;
+  const bio = localName === "user" ? `Human operator (${FLEET_MAIL_PROJECT})` : `Auto-provisioned Fleet worker: ${localName} (${FLEET_MAIL_PROJECT})`;
+  const provResp = await fetch(`${FLEET_MAIL_URL}/api/accounts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: nsName, display_name: displayName, bio })
+  });
+  if (provResp.ok) {
+    const acct = await provResp.json();
     try {
-      const provResp = await fetch(`${FLEET_MAIL_URL}/api/accounts`, {
+      withRegistryLocked((reg) => {
+        if (!reg[localName])
+          reg[localName] = {};
+        reg[localName].bms_token = acct.bearerToken;
+        reg[localName].bms_id = acct.id;
+        reg[localName].status = "active";
+      });
+    } catch {}
+    try {
+      const tokenPath = join5(FLEET_DIR, localName, "token");
+      mkdirSync5(join5(FLEET_DIR, localName), { recursive: true });
+      writeFileSync4(tokenPath, acct.bearerToken);
+    } catch {}
+    if (!_fleetMailDirectoryCache)
+      _fleetMailDirectoryCache = {};
+    _fleetMailDirectoryCache[nsName] = acct.id;
+    return nsName;
+  }
+  if (provResp.status === 409) {
+    _fleetMailDirectoryCache = null;
+    _fleetMailDirCacheTime = 0;
+    const token = await getFleetMailToken();
+    const dirResp = await fetch(`${FLEET_MAIL_URL}/api/directory`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(1e4)
+    });
+    if (dirResp.ok) {
+      const data = await dirResp.json();
+      _fleetMailDirectoryCache = {};
+      for (const acct of data.directory || []) {
+        _fleetMailDirectoryCache[acct.name] = acct.id;
+      }
+      _fleetMailDirCacheTime = Date.now();
+      if (_fleetMailDirectoryCache[nsName])
+        return nsName;
+    }
+    if (messageHint) {
+      const suffix = messageHint.slice(0, 15).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, "").toLowerCase();
+      const uniqueName = `${localName}-${suffix}`;
+      const nsUniqueName = mailAccountName(uniqueName);
+      const retryResp = await fetch(`${FLEET_MAIL_URL}/api/accounts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: nsUserName, display_name: "operator", bio: `Human operator (${FLEET_MAIL_PROJECT})` })
+        body: JSON.stringify({ name: nsUniqueName, display_name: localName, bio })
       });
-      if (provResp.ok) {
-        const acct = await provResp.json();
+      if (retryResp.ok) {
+        const acct = await retryResp.json();
         try {
-          withRegistryLocked((reg) => {
-            if (!reg.user)
-              reg.user = {};
-            reg.user.bms_token = acct.bearerToken;
-            reg.user.bms_id = acct.id;
-            reg.user.status = "active";
-          });
+          const tokenPath = join5(FLEET_DIR, uniqueName, "token");
+          mkdirSync5(join5(FLEET_DIR, uniqueName), { recursive: true });
+          writeFileSync4(tokenPath, acct.bearerToken);
         } catch {}
         if (!_fleetMailDirectoryCache)
           _fleetMailDirectoryCache = {};
-        _fleetMailDirectoryCache[nsUserName] = acct.id;
-        return nsUserName;
+        _fleetMailDirectoryCache[nsUniqueName] = acct.id;
+        return nsUniqueName;
       }
-      if (provResp.status === 409) {
-        if (resolveFleetMailAccountId._retrying) {
-          delete resolveFleetMailAccountId._retrying;
-          throw new Error(`Fleet Mail account '${nsName}' exists but cannot be resolved after retry`);
-        }
-        resolveFleetMailAccountId._retrying = true;
-        _fleetMailDirectoryCache = null;
-        _fleetMailDirCacheTime = 0;
-        try {
-          return await resolveFleetMailAccountId(name);
-        } finally {
-          delete resolveFleetMailAccountId._retrying;
-        }
-      }
-    } catch {}
+    }
+    throw new Error(`Fleet Mail account '${nsName}' already exists but could not be resolved or de-duplicated`);
   }
-  throw new Error(`Fleet Mail account '${nsName}' not found in directory`);
+  const errText = await provResp.text().catch(() => "");
+  throw new Error(`Fleet Mail auto-provision failed (${provResp.status}): ${errText}`);
 }
-async function resolveFleetMailRecipients(names) {
-  return Promise.all(names.map(resolveFleetMailAccountId));
+async function resolveFleetMailRecipients(names, messageHint) {
+  return Promise.all(names.map((n) => resolveFleetMailAccountId(n, messageHint)));
 }
 
 // mcp/worker-fleet/diagnostics.ts
@@ -21760,6 +24840,26 @@ function withLint(result) {
 }
 
 // mcp/worker-fleet/tools/state.ts
+async function getWorkerUnreadCount(workerName) {
+  const tokenPath = join7(FLEET_DIR, workerName, "token");
+  let token;
+  try {
+    token = readFileSync6(tokenPath, "utf-8").trim();
+  } catch {
+    return 0;
+  }
+  if (!token)
+    return 0;
+  try {
+    const resp = await fetch(`${FLEET_MAIL_URL}/api/messages?label=UNREAD&maxResults=1`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) });
+    if (!resp.ok)
+      return 0;
+    const data = await resp.json();
+    return data?._diagnostics?.unread_count ?? data?.messages?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
 function registerStateTools(server) {
   server.registerTool("get_worker_state", { description: "Read a worker's state from the central registry. Returns status, sleep_duration config, last commit info, issue counts, and any custom state keys. For a single worker, returns raw JSON. For name='all', returns a formatted fleet dashboard with a table of all workers showing runtime, status, pane health (alive/dead), and current in-progress task \u2014 plus a custom state section. The fleet view also auto-discovers workers from the filesystem and prunes dead panes.", inputSchema: {
     name: exports_external.string().optional().describe("Worker name to query. Omit for your own state. Use 'all' for a fleet-wide dashboard showing every registered worker, pane health, and active tasks")
@@ -21803,17 +24903,24 @@ function registerStateTools(server) {
 ${new Date().toISOString()}
 
 `;
-        const header = `${"Worker".padEnd(22)} ${"Runtime".padEnd(9)} ${"Status".padEnd(10)} ${"Pane".padEnd(12)} ${"Active Task"}`;
+        const header = `${"Worker".padEnd(22)} ${"Runtime".padEnd(9)} ${"Status".padEnd(10)} ${"Pane".padEnd(12)} ${"Inbox".padEnd(7)} ${"Active Task"}`;
         output += header + `
-` + `${"------".padEnd(22)} ${"-------".padEnd(9)} ${"------".padEnd(10)} ${"----".padEnd(12)} ${"-----------"}
+` + `${"------".padEnd(22)} ${"-------".padEnd(9)} ${"------".padEnd(10)} ${"----".padEnd(12)} ${"-----".padEnd(7)} ${"-----------"}
 `;
         const entries = Object.entries(registry2).filter(([k]) => k !== "_config").sort(([a], [b]) => a.localeCompare(b));
+        const unreadCounts = new Map;
+        await Promise.allSettled(entries.map(async ([n]) => {
+          const count = await getWorkerUnreadCount(n);
+          unreadCounts.set(n, count);
+        }));
         for (const [n, entry2] of entries) {
           const w = entry2;
           const task = "";
           const paneStatus = w.pane_id ? checkPaneAlive(w.pane_id) ? `${w.pane_id}` : `${w.pane_id} DEAD` : "\u2014";
           const runtime = String(w.custom?.runtime || "claude");
-          output += `${n.padEnd(22)} ${runtime.padEnd(9)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${task}
+          const unread = unreadCounts.get(n) ?? 0;
+          const inboxStr = unread > 0 ? String(unread) : "\u2014";
+          output += `${n.padEnd(22)} ${runtime.padEnd(9)} ${String(w.status || "?").padEnd(10)} ${paneStatus.padEnd(12)} ${inboxStr.padEnd(7)} ${task}
 `;
         }
         const stateLines = [];
@@ -21930,11 +25037,11 @@ ${new Date().toISOString()}
 }
 
 // mcp/worker-fleet/tools/hooks.ts
-import { readFileSync as readFileSync7, writeFileSync as writeFileSync7, existsSync as existsSync7, mkdirSync as mkdirSync8 } from "fs";
-import { join as join9 } from "path";
+import { readFileSync as readFileSync8, writeFileSync as writeFileSync7, existsSync as existsSync7, mkdirSync as mkdirSync8 } from "fs";
+import { join as join9, resolve as resolve2 } from "path";
 
 // mcp/worker-fleet/hooks.ts
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync6, existsSync as existsSync6, mkdirSync as mkdirSync7, rmSync as rmSync3, copyFileSync as copyFileSync2 } from "fs";
+import { readFileSync as readFileSync7, writeFileSync as writeFileSync6, existsSync as existsSync6, mkdirSync as mkdirSync7, rmSync as rmSync3, copyFileSync as copyFileSync2 } from "fs";
 import { join as join8, resolve } from "path";
 var dynamicHooks = new Map;
 var _hookCounter = 0;
@@ -22003,7 +25110,7 @@ function _persistHooks() {
     let archivedHooks = [];
     try {
       if (existsSync6(HOOKS_FILE)) {
-        const data = JSON.parse(readFileSync6(HOOKS_FILE, "utf-8"));
+        const data = JSON.parse(readFileSync7(HOOKS_FILE, "utf-8"));
         if (Array.isArray(data.hooks)) {
           archivedHooks = data.hooks.filter((h) => h.status === "archived");
         }
@@ -22034,7 +25141,7 @@ function _restoreHooks() {
     try {
       if (!existsSync6(file))
         continue;
-      const data = JSON.parse(readFileSync6(file, "utf-8"));
+      const data = JSON.parse(readFileSync7(file, "utf-8"));
       const hooks = data.hooks;
       if (!Array.isArray(hooks))
         continue;
@@ -22105,7 +25212,7 @@ function resolveMainRepoRoot() {
     if (existsSync6(gitPath)) {
       const stat = Bun.file(gitPath);
       if (stat.size < 1000) {
-        const content = readFileSync6(gitPath, "utf-8").trim();
+        const content = readFileSync7(gitPath, "utf-8").trim();
         if (content.startsWith("gitdir:")) {
           const gitdir = content.replace("gitdir:", "").trim();
           const mainGit = gitdir.replace(/\/\.git\/worktrees\/[^/]+$/, "");
@@ -22127,7 +25234,7 @@ function readOtherWorkerHooks(workerName, includeArchived = false) {
     try {
       if (!existsSync6(file))
         continue;
-      const data = JSON.parse(readFileSync6(file, "utf-8"));
+      const data = JSON.parse(readFileSync7(file, "utf-8"));
       if (!Array.isArray(data.hooks))
         continue;
       return includeArchived ? data.hooks : data.hooks.filter((h) => h.status !== "archived");
@@ -22137,13 +25244,13 @@ function readOtherWorkerHooks(workerName, includeArchived = false) {
 }
 
 // mcp/worker-fleet/tools/hooks.ts
-function scanScriptAgainstDenyList(scriptContent) {
-  const permsPath = join9(PROJECT_ROOT, ".claude/workers", WORKER_NAME, "permissions.json");
+function scanScriptAgainstDenyList(scriptContent, _permsPath) {
+  const permsPath = _permsPath ?? join9(PROJECT_ROOT, ".claude/workers", WORKER_NAME, "permissions.json");
   if (!existsSync7(permsPath))
     return null;
   let denyList;
   try {
-    const perms = JSON.parse(readFileSync7(permsPath, "utf-8"));
+    const perms = JSON.parse(readFileSync8(permsPath, "utf-8"));
     denyList = perms.denyList || [];
   } catch {
     return null;
@@ -22167,6 +25274,15 @@ function scanScriptAgainstDenyList(scriptContent) {
         return `Script blocked by policy: matches Bash(${argPattern}) in denyList`;
       }
     } catch {}
+  }
+  return null;
+}
+function checkHookAccess(hook, operation, callerName) {
+  if (hook.ownership === "system") {
+    return `Cannot ${operation} system hook [${hook.id}]. System hooks are irremovable.`;
+  }
+  if (hook.ownership === "creator" && hook.registered_by !== callerName) {
+    return operation === "remove" ? `Cannot remove creator-owned hook [${hook.id}] (owned by ${hook.registered_by}). Only the creator can remove it.` : `Cannot complete hook [${hook.id}] \u2014 owned by ${hook.registered_by || "creator"}. Use the check command mechanism or ask the owner.`;
   }
   return null;
 }
@@ -22219,7 +25335,7 @@ function registerHookTools(server) {
         if (!existsSync7(srcPath)) {
           return { content: [{ type: "text", text: `Script source file not found: ${srcPath}` }], isError: true };
         }
-        scriptContent = readFileSync7(srcPath, "utf-8");
+        scriptContent = readFileSync8(srcPath, "utf-8");
       } else {
         scriptContent = script;
       }
@@ -22248,6 +25364,7 @@ function registerHookTools(server) {
       completed: false,
       status: "active",
       lifetime: resolvedLifetime,
+      scope: `worker:${WORKER_NAME}`,
       added_at: new Date().toISOString(),
       registered_by: WORKER_NAME,
       ownership: "self"
@@ -22315,8 +25432,9 @@ Active hooks: ${_pendingHooksSummary()}.`
     if (!hook) {
       return { content: [{ type: "text", text: `No hook with ID '${id}'.` }], isError: true };
     }
-    if (hook.ownership === "system" || hook.ownership === "creator" && hook.registered_by !== WORKER_NAME) {
-      return { content: [{ type: "text", text: `Cannot complete hook [${id}] \u2014 owned by ${hook.registered_by || "system"}. Use the check command mechanism or ask the owner.` }], isError: true };
+    const completeBlocked = checkHookAccess(hook, "complete", WORKER_NAME);
+    if (completeBlocked) {
+      return { content: [{ type: "text", text: completeBlocked }], isError: true };
     }
     hook.completed = true;
     hook.completed_at = new Date().toISOString();
@@ -22359,7 +25477,7 @@ ${pending.length} blocking hook(s) remaining.`
         try {
           const hooksDir = join9(FLEET_DIR, WORKER_NAME, "hooks", "hooks.json");
           if (existsSync7(hooksDir)) {
-            const data = JSON.parse(readFileSync7(hooksDir, "utf-8"));
+            const data = JSON.parse(readFileSync8(hooksDir, "utf-8"));
             if (Array.isArray(data.hooks)) {
               const activeIds = new Set(hookList.map((h) => h.id));
               const archived = data.hooks.filter((h) => h.status === "archived" && !activeIds.has(h.id));
@@ -22403,7 +25521,7 @@ ${pending.length} blocking hook(s) remaining.`
     if (showStatic && !isOtherWorker) {
       try {
         const manifestPath = join9(CLAUDE_FLEET, "hooks", "manifest.json");
-        const manifest = JSON.parse(readFileSync7(manifestPath, "utf-8"));
+        const manifest = JSON.parse(readFileSync8(manifestPath, "utf-8"));
         const staticHooks = (manifest.hooks || []).filter((h) => h.id && h.event && (!event || h.event === event) && !h._comment);
         if (staticHooks.length > 0) {
           const byCategory = {};
@@ -22462,11 +25580,9 @@ _Could not read manifest.json_`);
     if (!hook) {
       return { content: [{ type: "text", text: `No active hook with ID '${id}'.` }], isError: true };
     }
-    if (hook.ownership === "system") {
-      return { content: [{ type: "text", text: `Cannot remove system hook [${id}]. System hooks are irremovable.` }], isError: true };
-    }
-    if (hook.ownership === "creator" && hook.registered_by !== WORKER_NAME) {
-      return { content: [{ type: "text", text: `Cannot remove creator-owned hook [${id}] (owned by ${hook.registered_by}). Only the creator or mission_authority can remove it.` }], isError: true };
+    const removeBlocked = checkHookAccess(hook, "remove", WORKER_NAME);
+    if (removeBlocked) {
+      return { content: [{ type: "text", text: removeBlocked }], isError: true };
     }
     const archived = _archiveHook(id, "removed");
     return {
@@ -22512,7 +25628,7 @@ Remaining active hooks: ${_pendingHooksSummary()}.`
       if (!existsSync7(targetHooksFile))
         return { hooks: [], counter: 0 };
       try {
-        const data = JSON.parse(readFileSync7(targetHooksFile, "utf-8"));
+        const data = JSON.parse(readFileSync8(targetHooksFile, "utf-8"));
         const hooks = data.hooks || [];
         let counter = 0;
         for (const h of hooks) {
@@ -22555,9 +25671,21 @@ ${lines.join(`
       if (params.script) {
         const targetPermsPath = join9(PROJECT_ROOT, ".claude/workers", target, "permissions.json");
         if (existsSync7(targetPermsPath)) {
-          const scriptContent = params.script.startsWith("@") ? existsSync7(params.script.slice(1)) ? readFileSync7(params.script.slice(1), "utf-8") : params.script : params.script;
+          let scriptContent;
+          if (params.script.startsWith("@")) {
+            const srcPath = params.script.slice(1);
+            const resolvedSrc = resolve2(srcPath);
+            const projectRootResolved = resolve2(PROJECT_ROOT);
+            const fleetDirResolved = resolve2(FLEET_DIR);
+            if (!resolvedSrc.startsWith(projectRootResolved) && !resolvedSrc.startsWith(fleetDirResolved)) {
+              return { content: [{ type: "text", text: `Script @-path rejected: must be within project or fleet directory (got: ${srcPath})` }], isError: true };
+            }
+            scriptContent = existsSync7(srcPath) ? readFileSync8(srcPath, "utf-8") : params.script;
+          } else {
+            scriptContent = params.script;
+          }
           try {
-            const perms = JSON.parse(readFileSync7(targetPermsPath, "utf-8"));
+            const perms = JSON.parse(readFileSync8(targetPermsPath, "utf-8"));
             const denyList = perms.denyList || [];
             for (const pattern of denyList) {
               const m = pattern.match(/^(\w+)\((.+)\)$/);
@@ -22577,7 +25705,7 @@ ${lines.join(`
         const targetPermsPath = join9(PROJECT_ROOT, ".claude/workers", target, "permissions.json");
         if (existsSync7(targetPermsPath)) {
           try {
-            const perms = JSON.parse(readFileSync7(targetPermsPath, "utf-8"));
+            const perms = JSON.parse(readFileSync8(targetPermsPath, "utf-8"));
             const denyList = perms.denyList || [];
             for (const pattern of denyList) {
               const m = pattern.match(/^(\w+)\((.+)\)$/);
@@ -22642,8 +25770,9 @@ ${lines.join(`
       const hook = hooks.find((h) => h.id === params.id);
       if (!hook)
         return { content: [{ type: "text", text: `No hook '${params.id}' on ${target}.` }], isError: true };
-      if (hook.ownership === "system") {
-        return { content: [{ type: "text", text: `Cannot remove system hook [${params.id}] on ${target}.` }], isError: true };
+      const crossRemoveBlocked = checkHookAccess(hook, "remove", WORKER_NAME);
+      if (crossRemoveBlocked) {
+        return { content: [{ type: "text", text: crossRemoveBlocked }], isError: true };
       }
       hook.status = "archived";
       hook.archived_at = new Date().toISOString();
@@ -22659,7 +25788,7 @@ ${lines.join(`
       if (params.id === "all") {
         let count = 0;
         for (const h of hooks) {
-          if (h.blocking && !h.completed && h.status !== "archived") {
+          if (h.blocking && !h.completed && h.status !== "archived" && h.ownership !== "system") {
             h.completed = true;
             h.completed_at = now;
             if (params.result)
@@ -22668,11 +25797,14 @@ ${lines.join(`
           }
         }
         writeTargetHooks(hooks);
-        return { content: [{ type: "text", text: `Completed ${count} blocking hook(s) on ${target}.` }] };
+        return { content: [{ type: "text", text: `Completed ${count} blocking hook(s) on ${target}. System hooks preserved.` }] };
       }
       const hook = hooks.find((h) => h.id === params.id);
       if (!hook)
         return { content: [{ type: "text", text: `No hook '${params.id}' on ${target}.` }], isError: true };
+      if (hook.ownership === "system") {
+        return { content: [{ type: "text", text: `Cannot complete system hook [${params.id}] on ${target}. System hooks are irremovable.` }], isError: true };
+      }
       hook.completed = true;
       hook.completed_at = now;
       if (params.result)
@@ -22687,6 +25819,7 @@ ${lines.join(`
 // mcp/worker-fleet/tools/lifecycle.ts
 import { writeFileSync as writeFileSync8, existsSync as existsSync8, readdirSync as readdirSync4 } from "fs";
 import { join as join10 } from "path";
+import { execSync as execSync6 } from "child_process";
 function registerLifecycleTools(server) {
   server.registerTool("round_stop", { description: `Mark the end of a work round: save checkpoint, write handoff document, send cycle report \u2014 but stay alive.
 
@@ -22718,6 +25851,12 @@ To actually restart a worker (fresh context, config reload), the operator runs \
       if (w) {
         w.custom = w.custom || {};
         w.custom.last_cycle_at = new Date().toISOString();
+        const sleepDuration = w.sleep_duration;
+        if (sleepDuration && sleepDuration > 0) {
+          w.status = "sleeping";
+          const wakeAt = new Date(Date.now() + sleepDuration * 1000).toISOString();
+          w.custom.sleep_until = wakeAt;
+        }
       }
     });
     try {
@@ -22749,12 +25888,38 @@ To actually restart a worker (fresh context, config reload), the operator runs \
         }).catch(() => {});
       }
     } catch {}
+    let pushResult = "";
+    try {
+      const cwd = getWorktreeDir();
+      const opts = { encoding: "utf-8", timeout: 15000, cwd };
+      execSync6("git add -A", opts);
+      const status = execSync6("git status --porcelain", opts).trim();
+      if (status) {
+        const commitMsg = `checkpoint: ${WORKER_NAME} round_stop
+
+${message.slice(0, 200)}`;
+        execSync6(`git commit -m ${JSON.stringify(commitMsg)}`, opts);
+      }
+      const branch = execSync6("git rev-parse --abbrev-ref HEAD", opts).trim();
+      execSync6(`git push origin ${branch} 2>&1 || git push -u origin ${branch} 2>&1`, { ...opts, timeout: 30000 });
+      pushResult = `Pushed ${branch} to origin.`;
+    } catch (e) {
+      pushResult = `Push failed: ${e.message?.slice(0, 100) || "unknown error"}`;
+    }
+    let sleepNote = "Keep working \u2014 check mail_inbox() for new tasks, or go idle if nothing pending.";
+    try {
+      const reg = readRegistry();
+      const w = reg[WORKER_NAME];
+      if (w?.status === "sleeping" && w?.custom?.sleep_until) {
+        sleepNote = `Entering sleep \u2014 watchdog will respawn you after ${w.sleep_duration}s (wake at ${w.custom.sleep_until}). Session will exit shortly.`;
+      }
+    } catch {}
     return {
       content: [{
         type: "text",
-        text: `Round logged, checkpoint saved, handoff written. You are still alive.
+        text: `Round logged, checkpoint saved, handoff written. ${pushResult}
 ` + `Handoff: "${message.slice(0, 120)}${message.length > 120 ? "..." : ""}"
-` + `Keep working \u2014 check mail_inbox() for new tasks, or go idle if nothing pending.`
+` + sleepNote
       }]
     };
   });
@@ -22803,15 +25968,15 @@ Facts: ${(key_facts || []).length} saved`
 }
 
 // mcp/worker-fleet/tools/fleet.ts
-import { readFileSync as readFileSync11, writeFileSync as writeFileSync11, appendFileSync as appendFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync11, lstatSync, rmSync as rmSync4, unlinkSync as unlinkSync2, symlinkSync as symlinkSync3, copyFileSync as copyFileSync4, cpSync } from "fs";
-import { join as join14 } from "path";
-import { execSync as execSync6, spawnSync as spawnSync3 } from "child_process";
-var TEMPLATE_TYPES_DIR = join14(CLAUDE_FLEET, "templates/flat-worker/types");
+import { readFileSync as readFileSync12, writeFileSync as writeFileSync11, appendFileSync as appendFileSync2, existsSync as existsSync12, mkdirSync as mkdirSync11, lstatSync, rmSync as rmSync4, unlinkSync as unlinkSync2, symlinkSync as symlinkSync3, copyFileSync as copyFileSync4, cpSync } from "fs";
+import { join as join16 } from "path";
+import { execSync as execSync7, spawnSync as spawnSync3 } from "child_process";
+var TEMPLATE_TYPES_DIR = join16(CLAUDE_FLEET, "templates/flat-worker/types");
 function loadTypeTemplate(type) {
-  const typeDir = join14(TEMPLATE_TYPES_DIR, type);
+  const typeDir = join16(TEMPLATE_TYPES_DIR, type);
   const result = {};
   try {
-    const perms = JSON.parse(readFileSync11(join14(typeDir, "permissions.json"), "utf-8"));
+    const perms = JSON.parse(readFileSync12(join16(typeDir, "permissions.json"), "utf-8"));
     if (perms.model)
       result.model = perms.model;
     if (perms.permission_mode)
@@ -22820,7 +25985,7 @@ function loadTypeTemplate(type) {
       result.disallowedTools = perms.denyList;
   } catch {}
   try {
-    const defaults = JSON.parse(readFileSync11(join14(typeDir, "defaults.json"), "utf-8"));
+    const defaults = JSON.parse(readFileSync12(join16(typeDir, "defaults.json"), "utf-8"));
     if ("sleep_duration" in defaults)
       result.sleep_duration = defaults.sleep_duration;
   } catch {}
@@ -22832,8 +25997,8 @@ function createWorkerFiles(input) {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
     return { ok: false, error: `Name must be kebab-case (got '${name}')` };
   }
-  const workerDir2 = join14(WORKERS_DIR, name);
-  if (existsSync11(workerDir2)) {
+  const workerDir2 = join16(WORKERS_DIR, name);
+  if (existsSync12(workerDir2)) {
     return { ok: false, error: `Worker '${name}' already exists at ${workerDir2}` };
   }
   if (!mission.trim()) {
@@ -22842,30 +26007,30 @@ function createWorkerFiles(input) {
   const tpl = type ? loadTypeTemplate(type) : {};
   mkdirSync11(workerDir2, { recursive: true });
   const projectSlug = PROJECT_ROOT.replace(/\//g, "-");
-  const autoMemoryDir = join14(HOME, ".claude", "projects", projectSlug, "memory", name);
+  const autoMemoryDir = join16(HOME, ".claude", "projects", projectSlug, "memory", name);
   mkdirSync11(autoMemoryDir, { recursive: true });
-  const autoMemoryPath = join14(autoMemoryDir, "MEMORY.md");
+  const autoMemoryPath = join16(autoMemoryDir, "MEMORY.md");
   try {
     if (lstatSync(autoMemoryPath).isSymbolicLink()) {
       rmSync4(autoMemoryPath);
     }
   } catch {}
-  if (!existsSync11(autoMemoryPath)) {
+  if (!existsSync12(autoMemoryPath)) {
     writeFileSync11(autoMemoryPath, `# ${name} Memory
 
 `);
   }
-  const perWorkerFleetDir = join14(FLEET_DIR, name);
+  const perWorkerFleetDir = join16(FLEET_DIR, name);
   mkdirSync11(perWorkerFleetDir, { recursive: true });
-  const perWorkerMission = join14(perWorkerFleetDir, "mission.md");
+  const perWorkerMission = join16(perWorkerFleetDir, "mission.md");
   writeFileSync11(perWorkerMission, mission.trim() + `
 `);
-  const centralMissionsDir = join14(FLEET_DIR, "missions");
+  const centralMissionsDir = join16(FLEET_DIR, "missions");
   mkdirSync11(centralMissionsDir, { recursive: true });
-  const centralMission = join14(centralMissionsDir, `${name}.md`);
+  const centralMission = join16(centralMissionsDir, `${name}.md`);
   writeFileSync11(centralMission, mission.trim() + `
 `);
-  const worktreeMission = join14(workerDir2, "mission.md");
+  const worktreeMission = join16(workerDir2, "mission.md");
   try {
     unlinkSync2(worktreeMission);
   } catch {}
@@ -22883,7 +26048,7 @@ function createWorkerFiles(input) {
     "Bash(git clean*)",
     "Bash(rm -rf*)"
   ];
-  const runtimeModelDefault = resolvedRuntime === "codex" ? "gpt-5.4" : "opus";
+  const runtimeModelDefault = resolvedRuntime === "codex" ? "gpt-5.4" : "opus[1m]";
   const selectedModel = model ?? tpl.model ?? runtimeModelDefault;
   const resolvedEffort = reasoning_effort ?? "high";
   const resolvedDisallowed = disallowed_tools ?? tpl.disallowedTools ?? defaultDisallowed;
@@ -22921,15 +26086,15 @@ async function handleFleetCreate(params) {
 `).map((w) => w.trim());
       if (!windows.includes(winName)) {
         const target = windowIndex != null ? `${tmuxSession}:${windowIndex}` : tmuxSession;
-        return execSync6(`tmux new-window -t "${target}" -n "${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`, { encoding: "utf-8", timeout: 5000 }).trim();
+        return execSync7(`tmux new-window -t "${target}" -n "${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`, { encoding: "utf-8", timeout: 5000 }).trim();
       }
-      const paneId = execSync6(`tmux split-window -t "${tmuxSession}:${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`, { encoding: "utf-8", timeout: 5000 }).trim();
+      const paneId = execSync7(`tmux split-window -t "${tmuxSession}:${winName}" -d -P -F '#{pane_id}' -c "${cwd}"`, { encoding: "utf-8", timeout: 5000 }).trim();
       spawnSync3("tmux", ["select-layout", "-t", `${tmuxSession}:${winName}`, "tiled"], { encoding: "utf-8" });
       return paneId;
     }, registerPane = function(paneId) {
       let paneTarget = "";
       try {
-        paneTarget = execSync6(`tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' | awk -v id="${paneId}" '$1 == id {print $2}'`, { encoding: "utf-8", timeout: 5000 }).trim();
+        paneTarget = execSync7(`tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index}' | awk -v id="${paneId}" '$1 == id {print $2}'`, { encoding: "utf-8", timeout: 5000 }).trim();
       } catch {}
       withRegistryLocked((registry2) => {
         const entry = registry2[name];
@@ -22969,7 +26134,7 @@ async function handleFleetCreate(params) {
     const reportTo = direct_report ? WORKER_NAME : report_to || defaultReportTo;
     const { state, permissions, runtime: resolvedRuntime, model: selectedModel } = result;
     const isPerpetual = (state.sleep_duration ?? null) !== null && (state.sleep_duration ?? 0) > 0;
-    const workerFleetDir = join14(FLEET_DIR, name);
+    const workerFleetDir = join16(FLEET_DIR, name);
     mkdirSync11(workerFleetDir, { recursive: true });
     const allHooks = [...getDefaultSystemHooks()];
     if (type) {
@@ -22980,7 +26145,7 @@ async function handleFleetCreate(params) {
       }
     }
     const workerConfig = {
-      model: permissions.model || "opus",
+      model: permissions.model || "opus[1m]",
       reasoning_effort: permissions.reasoning_effort || "high",
       permission_mode: permissions.permission_mode || "bypassPermissions",
       sleep_duration: state.sleep_duration ?? null,
@@ -23017,7 +26182,7 @@ async function handleFleetCreate(params) {
     withRegistryLocked((registry2) => {
       ensureWorkerInRegistry(registry2, name);
       const entry = registry2[name];
-      entry.model = permissions.model || "opus";
+      entry.model = permissions.model || "opus[1m]";
       entry.permission_mode = permissions.permission_mode || "bypassPermissions";
       entry.disallowed_tools = permissions.disallowedTools || [];
       entry.status = state.status || "idle";
@@ -23035,16 +26200,16 @@ async function handleFleetCreate(params) {
         entry.forked_from = WORKER_NAME;
       }
     });
-    const projectName = PROJECT_ROOT.split("/").pop();
-    const worktreeDir = join14(PROJECT_ROOT, "..", `${projectName}-w-${name}`);
+    const projectName = PROJECT_ROOT.split("/").pop().replace(/-w-.*$/, "");
+    const worktreeDir = join16(PROJECT_ROOT, "..", `${projectName}-w-${name}`);
     const workerBranch = `worker/${name}`;
     let worktreeReady = false;
     try {
-      if (!existsSync11(worktreeDir)) {
+      if (!existsSync12(worktreeDir)) {
         try {
-          execSync6(`git -C "${PROJECT_ROOT}" branch "${workerBranch}" HEAD 2>/dev/null`, { timeout: 5000 });
+          execSync7(`git -C "${PROJECT_ROOT}" branch "${workerBranch}" HEAD 2>/dev/null`, { timeout: 5000 });
         } catch {}
-        execSync6(`git -C "${PROJECT_ROOT}" worktree add "${worktreeDir}" "${workerBranch}"`, { encoding: "utf-8", timeout: 1e4 });
+        execSync7(`git -C "${PROJECT_ROOT}" worktree add "${worktreeDir}" "${workerBranch}"`, { encoding: "utf-8", timeout: 1e4 });
       }
       worktreeReady = true;
       const latestConfig = readWorkerConfig(name);
@@ -23053,35 +26218,35 @@ async function handleFleetCreate(params) {
         writeWorkerConfig(name, latestConfig);
         writeLaunchScript(name, latestConfig);
       }
-      const baseMcp = join14(PROJECT_ROOT, ".mcp.json");
+      const baseMcp = join16(PROJECT_ROOT, ".mcp.json");
       try {
-        const claudeHooksDir = process.env.CLAUDE_HOOKS_DIR || join14(HOME, ".claude-hooks");
-        const claudeHooksMcp = join14(claudeHooksDir, "mcp/index.ts");
-        if (existsSync11(claudeHooksMcp)) {
+        const claudeHooksDir = process.env.CLAUDE_HOOKS_DIR || join16(HOME, ".claude-hooks");
+        const claudeHooksMcp = join16(claudeHooksDir, "mcp/index.ts");
+        if (existsSync12(claudeHooksMcp)) {
           let mcpCfg = { mcpServers: {} };
-          if (existsSync11(baseMcp)) {
+          if (existsSync12(baseMcp)) {
             try {
-              mcpCfg = JSON.parse(readFileSync11(baseMcp, "utf-8"));
+              mcpCfg = JSON.parse(readFileSync12(baseMcp, "utf-8"));
             } catch {}
           }
           if (!mcpCfg.mcpServers)
             mcpCfg.mcpServers = {};
-          const bunPath = process.execPath || join14(HOME, ".bun/bin/bun");
+          const bunPath = process.execPath || join16(HOME, ".bun/bin/bun");
           mcpCfg.mcpServers["claude-hooks"] = {
             command: bunPath,
             args: ["run", claudeHooksMcp],
             env: {
-              HOOKS_DIR: join14(FLEET_DIR, name, "hooks"),
+              HOOKS_DIR: join16(FLEET_DIR, name, "hooks"),
               HOOKS_IDENTITY: name,
-              HOOKS_PERMISSIONS: join14(PROJECT_ROOT, ".claude/workers", name, "permissions.json")
+              HOOKS_PERMISSIONS: join16(PROJECT_ROOT, ".claude/workers", name, "permissions.json")
             }
           };
           writeFileSync11(baseMcp, JSON.stringify(mcpCfg, null, 2) + `
 `);
         }
       } catch {}
-      const wtMcp = join14(worktreeDir, ".mcp.json");
-      if (existsSync11(baseMcp)) {
+      const wtMcp = join16(worktreeDir, ".mcp.json");
+      if (existsSync12(baseMcp)) {
         try {
           unlinkSync2(wtMcp);
         } catch {}
@@ -23089,15 +26254,15 @@ async function handleFleetCreate(params) {
           symlinkSync3(baseMcp, wtMcp);
         } catch {}
       }
-      const setupScript = join14(PROJECT_ROOT, ".claude/scripts/worker/setup-worktree.sh");
-      if (existsSync11(setupScript)) {
+      const setupScript = join16(PROJECT_ROOT, ".claude/scripts/worker/setup-worktree.sh");
+      if (existsSync12(setupScript)) {
         try {
-          execSync6(`bash "${setupScript}" "${worktreeDir}"`, { timeout: 5000 });
+          execSync7(`bash "${setupScript}" "${worktreeDir}"`, { timeout: 5000 });
         } catch {}
       }
-      const wtWorkerDir = join14(worktreeDir, ".claude/workers", name);
+      const wtWorkerDir = join16(worktreeDir, ".claude/workers", name);
       mkdirSync11(wtWorkerDir, { recursive: true });
-      const wtMissionPath = join14(wtWorkerDir, "mission.md");
+      const wtMissionPath = join16(wtWorkerDir, "mission.md");
       try {
         writeFileSync11(wtMissionPath, mission.trim() + `
 `);
@@ -23117,18 +26282,30 @@ async function handleFleetCreate(params) {
         } else {
           if (worktreeReady) {
             try {
-              const callerCwd = process.cwd();
-              const parentSlug = callerCwd.replace(/\//g, "-");
+              const { readdirSync: readdirSync5 } = await import("fs");
+              const projectsDir = join16(HOME, ".claude/projects");
+              let parentProj = "";
+              for (const dir of readdirSync5(projectsDir)) {
+                const candidate = join16(projectsDir, dir, `${sessionId}.jsonl`);
+                if (existsSync12(candidate)) {
+                  parentProj = join16(projectsDir, dir);
+                  break;
+                }
+              }
+              if (!parentProj) {
+                const callerCwd = process.cwd();
+                const parentSlug = callerCwd.replace(/\//g, "-");
+                parentProj = join16(HOME, ".claude/projects", parentSlug);
+              }
               const newSlug = worktreeDir.replace(/\//g, "-");
-              const parentProj = join14(HOME, ".claude/projects", parentSlug);
-              const newProj = join14(HOME, ".claude/projects", newSlug);
+              const newProj = join16(HOME, ".claude/projects", newSlug);
               mkdirSync11(newProj, { recursive: true });
-              const jsonlSrc = join14(parentProj, `${sessionId}.jsonl`);
-              if (existsSync11(jsonlSrc))
-                copyFileSync4(jsonlSrc, join14(newProj, `${sessionId}.jsonl`));
-              const subdirSrc = join14(parentProj, sessionId);
-              if (existsSync11(subdirSrc))
-                cpSync(subdirSrc, join14(newProj, sessionId), { recursive: true });
+              const jsonlSrc = join16(parentProj, `${sessionId}.jsonl`);
+              if (existsSync12(jsonlSrc))
+                copyFileSync4(jsonlSrc, join16(newProj, `${sessionId}.jsonl`));
+              const subdirSrc = join16(parentProj, sessionId);
+              if (existsSync12(subdirSrc))
+                cpSync(subdirSrc, join16(newProj, sessionId), { recursive: true });
             } catch {}
           }
           try {
@@ -23138,20 +26315,20 @@ async function handleFleetCreate(params) {
   Launch: SKIPPED \u2014 pane creation failed. Run manually.`;
             } else {
               registerPane(childPaneId);
-              const forkScript = join14(CLAUDE_FLEET, "scripts/fork-worker.sh");
-              const workerModel = selectedModel || "opus";
-              const workerDir2 = join14(PROJECT_ROOT, ".claude/workers", name);
+              const forkScript = join16(CLAUDE_FLEET, "scripts/fork-worker.sh");
+              const workerModel = selectedModel || "opus[1m]";
+              const workerDir2 = join16(PROJECT_ROOT, ".claude/workers", name);
               const cwdFlag = worktreeReady ? `--cwd ${worktreeDir}` : "";
               const wrapperPath = `/tmp/fork-launch-${name}-${Date.now()}.sh`;
               const wrapperContent = [
                 `#!/bin/bash`,
                 `cd ${worktreeReady ? worktreeDir : PROJECT_ROOT}`,
-                `bash ${forkScript} ${ownPane.paneId} ${sessionId} --name ${name} --no-worktree ${cwdFlag} --model ${workerModel} --dangerously-skip-permissions --add-dir ${workerDir2}`,
+                `bash ${forkScript} ${ownPane.paneId} ${sessionId} --name ${name} --no-worktree ${cwdFlag} --model "${workerModel}" --dangerously-skip-permissions --add-dir "${workerDir2}"`,
                 `rm -f "${wrapperPath}"`
               ].join(`
 `);
               writeFileSync11(wrapperPath, wrapperContent, { mode: 493 });
-              execSync6(`tmux send-keys -t "${childPaneId}" "bash ${wrapperPath}" && tmux send-keys -t "${childPaneId}" -H 0d`, { timeout: 5000 });
+              execSync7(`tmux send-keys -t "${childPaneId}" "bash ${wrapperPath}" && tmux send-keys -t "${childPaneId}" -H 0d`, { timeout: 5000 });
               launchInfo = `
   Launched (fork from ${sessionId}): pane ${childPaneId}`;
             }
@@ -23207,14 +26384,71 @@ function handleFleetHelp() {
         `## MCP Tools (core)`,
         ``,
         `### create_worker(name, mission, ...) \u2014 Spawn a new worker`,
-        `Required: name, mission. Optional: type, runtime, model, reasoning_effort,`,
-        `sleep_duration, window, report_to, permission_mode, launch, direct_report.`,
+        `Full AgentSpec support. Required: name + (mission or prompt).`,
+        `Basic: type, runtime, model, reasoning_effort, sleep_duration, window,`,
+        `  report_to, permission_mode, launch, direct_report.`,
+        `AgentSpec extensions: spec_file, prompt, system_prompt, append_system_prompt,`,
+        `  allowed_tools, disallowed_tools, tools (JSON EventTool[]), hooks (JSON),`,
+        `  env (JSON), on_stop, add_dir, max_budget_usd, ephemeral.`,
         ``,
         `### fleet_help() \u2014 This reference`,
         ``,
-        `## Fleet CLI (from bash)`,
+        `## fleet run \u2014 Launch agents from spec files or flags`,
         ``,
-        `The fleet CLI covers everything beyond the core MCP tools:`,
+        `\`\`\`bash`,
+        `# Mode 1: AgentSpec file (YAML/JSON \u2014 the universal unit)`,
+        `fleet run --spec solver.agent.yaml`,
+        ``,
+        `# Mode 2: Inline flags (builds AgentSpec from CLI)`,
+        `fleet run --prompt "Solve the benchmark" --model sonnet[1m] --name solver`,
+        ``,
+        `# Mode 3: Interactive (original behavior)`,
+        `fleet run [name]`,
+        `\`\`\``,
+        ``,
+        `Key flags: --spec, --prompt, --model, --runtime (claude|codex|sdk|custom),`,
+        `  --effort, --permission, --hook "EVENT:COMMAND", --on-stop "CMD",`,
+        `  --tool "name:desc:cmd=script:param=type", --env KEY=VALUE,`,
+        `  --allowed-tools, --disallowed-tools, --system-prompt, --add-dir,`,
+        `  --window, --session, --dir, --json-schema, --max-budget`,
+        ``,
+        `## Runtimes`,
+        ``,
+        `| Runtime | How it runs | Best for |`,
+        `|---------|-------------|----------|`,
+        `| claude (default) | \`claude\` CLI in tmux | Interactive, general |`,
+        `| sdk | Agent SDK \`query()\` via bun | Programmatic, CI/CD, structured output |`,
+        `| codex | \`codex exec\` CLI | OpenAI models |`,
+        `| custom | Your launcher command | Anything else |`,
+        ``,
+        `SDK runtime uses @anthropic-ai/claude-agent-sdk natively\u2014supports`,
+        `hooks (callbacks), subagents, maxTurns, JSON schema output, session resume.`,
+        ``,
+        `## AgentSpec YAML format`,
+        ``,
+        `\`\`\`yaml`,
+        `name: my-agent          # required`,
+        `model: opus[1m]         # default: opus[1m]`,
+        `runtime: sdk            # claude | sdk | codex | custom`,
+        `prompt: "Do the thing"  # initial prompt (or @file.md)`,
+        `hooks:                  # any Claude Code event`,
+        `  - event: Stop`,
+        `    type: command`,
+        `    command: "fleet run --spec next.agent.yaml"`,
+        `tools:                  # Druids-style custom MCP tools`,
+        `  - name: submit`,
+        `    description: Submit results`,
+        `    mode: command`,
+        `    handler: "echo done"`,
+        `\`\`\``,
+        ``,
+        `## Event Tools (Druids-style)`,
+        ``,
+        `Custom MCP tools per agent. Defined in spec or --tool flag.`,
+        `mode:inline \u2192 TS function from program file. mode:command \u2192 bash.`,
+        `Handler context: sendMail(), updateState(), spawnWorker(), writeResult().`,
+        ``,
+        `## Fleet CLI (from bash)`,
         ``,
         `\`\`\`bash`,
         `fleet ls                          # List all workers with status`,
@@ -23224,28 +26458,16 @@ function handleFleetHelp() {
         `fleet config <name> [key] [value] # Get/set per-worker config`,
         `fleet defaults [key] [value]      # Get/set fleet-wide defaults`,
         `fleet log <name>                  # Tail worker output`,
-        `fleet mail <name>                 # Check worker's inbox`,
+        `fleet mail send <to> "<subj>" "<body>"  # Send Fleet Mail`,
         `fleet fork <parent> <child>       # Fork from existing session`,
+        `fleet pipeline <program>          # Run multi-agent pipeline`,
         `fleet doctor                      # Health check`,
         `\`\`\``,
         ``,
-        `## Deep Review (from bash)`,
+        `## Model defaults`,
         ``,
-        `\`\`\`bash`,
-        `bash ~/.deep-review/scripts/deep-review.sh --scope main --spec "verify changes"`,
-        `# Options: --passes N, --focus "security,logic", --verify, --no-judge, --no-context`,
-        `\`\`\``,
-        ``,
-        `## Common Operations (CLI equivalents)`,
-        ``,
-        `| Operation | How |`,
-        `|-----------|-----|`,
-        `| Move pane to window | \`tmux move-pane -t w:window-name\` |`,
-        `| Toggle standby | \`fleet stop <name>\` / \`fleet start <name>\` |`,
-        `| Update worker config | \`fleet config <name> key value\` |`,
-        `| Update fleet defaults | \`fleet defaults key value\` |`,
-        `| Preview archetype | \`fleet config <name>\` (shows full config) |`,
-        `| Deregister worker | \`fleet stop <name>\` + remove worker dir |`
+        `Default models: opus[1m] (workers), sonnet[1m] (pipelines).`,
+        `The [1m] suffix selects the 1M context variant.`
       ].join(`
 `)
     }]
@@ -23253,16 +26475,19 @@ function handleFleetHelp() {
 }
 function registerFleetTools(server) {
   server.registerTool("create_worker", {
-    description: "Create a new worker: worktree, branch, registry entry, optional launch.",
+    description: "Create a new worker with full AgentSpec support: worktree, branch, registry entry, hooks, tools, optional launch.",
     inputSchema: {
       name: exports_external.string().describe("Worker name (alphanumeric + hyphens)"),
-      mission: exports_external.string().describe("Mission markdown content"),
+      mission: exports_external.string().optional().describe("Mission markdown content (or use prompt)"),
+      prompt: exports_external.string().optional().describe("Initial prompt (AgentSpec: replaces mission as seed content)"),
       type: exports_external.enum(["implementer", "monitor", "coordinator", "optimizer", "verifier"]).optional().describe("Worker archetype"),
-      runtime: exports_external.enum(["claude", "codex"]).optional().describe("Execution engine (default: claude)"),
+      runtime: exports_external.enum(["claude", "codex", "sdk"]).optional().describe("Execution engine: claude (CLI), codex, sdk (Agent SDK programmatic)"),
       model: exports_external.string().optional().describe("LLM model override"),
       reasoning_effort: exports_external.enum(["low", "medium", "high", "extra_high"]).optional().describe("Depth of reasoning (default: high)"),
-      sleep_duration: exports_external.number().nullable().optional().describe("Seconds between cycles. null = one-shot (never respawned), N > 0 = perpetual (respawn after N seconds)"),
+      effort: exports_external.string().optional().describe("Alias for reasoning_effort"),
+      sleep_duration: exports_external.number().nullable().optional().describe("Seconds between cycles. null = one-shot, N > 0 = perpetual"),
       disallowed_tools: exports_external.string().optional().describe("JSON array of tool deny-list patterns"),
+      allowed_tools: exports_external.string().optional().describe("JSON array of allowed tool patterns"),
       window: exports_external.string().optional().describe("Target tmux window name"),
       window_index: exports_external.number().optional().describe("Explicit tmux window index for new windows"),
       report_to: exports_external.string().optional().describe("Who this worker reports to"),
@@ -23270,18 +26495,145 @@ function registerFleetTools(server) {
       launch: exports_external.boolean().optional().describe("Launch immediately after creation"),
       proposal_required: exports_external.boolean().optional().describe("Require HTML proposal before coding"),
       fork_from_session: exports_external.boolean().optional().describe("Fork caller's session (requires launch=true)"),
-      direct_report: exports_external.boolean().optional().describe("Set report_to to calling worker")
+      direct_report: exports_external.boolean().optional().describe("Set report_to to calling worker"),
+      spec_file: exports_external.string().optional().describe("Path to .agent.yaml/.agent.json spec file (overrides inline params)"),
+      system_prompt: exports_external.string().optional().describe("Custom system prompt"),
+      append_system_prompt: exports_external.string().optional().describe("Append to default system prompt"),
+      add_dir: exports_external.string().optional().describe("JSON array of additional directories"),
+      tools: exports_external.string().optional().describe("JSON array of EventTool definitions [{name,description,mode,handler,inputSchema}]"),
+      hooks: exports_external.string().optional().describe("JSON array of hook definitions [{event,type,command,to,subject,body}]"),
+      env: exports_external.string().optional().describe("JSON object of environment variables"),
+      on_stop: exports_external.string().optional().describe("Command to run on Stop (shorthand for hooks)"),
+      max_budget_usd: exports_external.number().optional().describe("Cost cap in USD"),
+      worktree: exports_external.boolean().optional().describe("Create git worktree (default: true)"),
+      ephemeral: exports_external.boolean().optional().describe("Auto-cleanup on completion")
     }
-  }, async (params) => handleFleetCreate(params));
+  }, async (params) => {
+    if (params.spec_file) {
+      try {
+        const { loadAgentSpec: loadAgentSpec2 } = await Promise.resolve().then(() => (init_types(), exports_types));
+        const spec = loadAgentSpec2(params.spec_file);
+        if (!params.name && spec.name)
+          params.name = spec.name;
+        if (!params.mission && !params.prompt && spec.prompt)
+          params.prompt = spec.prompt;
+        if (!params.mission && !params.prompt && spec.role)
+          params.mission = spec.role;
+        if (!params.model && spec.model)
+          params.model = spec.model;
+        if (!params.runtime && spec.runtime)
+          params.runtime = spec.runtime;
+        if (!params.permission_mode && spec.permission_mode)
+          params.permission_mode = spec.permission_mode;
+        if (!params.reasoning_effort && !params.effort && spec.effort)
+          params.effort = spec.effort;
+        if (!params.sleep_duration && spec.sleep_duration !== undefined)
+          params.sleep_duration = spec.sleep_duration;
+        if (!params.tools && spec.tools?.length)
+          params.tools = JSON.stringify(spec.tools);
+        if (!params.hooks && spec.hooks?.length)
+          params.hooks = JSON.stringify(spec.hooks);
+        if (!params.env && spec.env)
+          params.env = JSON.stringify(spec.env);
+        if (!params.system_prompt && spec.system_prompt)
+          params.system_prompt = spec.system_prompt;
+        if (!params.on_stop) {
+          const stopHook = spec.hooks?.find((h) => h.event === "Stop" && h.command);
+          if (stopHook?.command)
+            params.on_stop = stopHook.command;
+        }
+      } catch (e) {
+        return { content: [{ type: "text", text: `Error loading spec file: ${e.message}` }], isError: true };
+      }
+    }
+    if (!params.mission && params.prompt) {
+      params.mission = params.prompt;
+    }
+    if (params.effort && !params.reasoning_effort) {
+      params.reasoning_effort = params.effort;
+    }
+    const result = await handleFleetCreate(params);
+    if (result.isError)
+      return result;
+    const workerFleetDir = join16(FLEET_DIR, params.name);
+    const hooksDir = join16(workerFleetDir, "hooks");
+    mkdirSync11(hooksDir, { recursive: true });
+    if (params.tools) {
+      try {
+        const tools = typeof params.tools === "string" ? JSON.parse(params.tools) : params.tools;
+        if (Array.isArray(tools) && tools.length > 0) {
+          writeFileSync11(join16(workerFleetDir, "event-tools.json"), JSON.stringify({
+            programPath: null,
+            tools,
+            sessionDir: join16(workerFleetDir, "session"),
+            projectRoot: PROJECT_ROOT
+          }, null, 2));
+          mkdirSync11(join16(workerFleetDir, "session", "results", params.name), { recursive: true });
+        }
+      } catch {}
+    }
+    if (params.hooks || params.on_stop) {
+      try {
+        const hookDefs = [];
+        if (params.hooks) {
+          const parsed = typeof params.hooks === "string" ? JSON.parse(params.hooks) : params.hooks;
+          if (Array.isArray(parsed))
+            hookDefs.push(...parsed);
+        }
+        if (params.on_stop) {
+          hookDefs.push({ event: "Stop", type: "command", command: params.on_stop });
+        }
+        if (hookDefs.length > 0) {
+          const { installPipelineHooks: installPipelineHooks2 } = await Promise.resolve().then(() => (init_hook_generator(), exports_hook_generator));
+          await installPipelineHooks2(hooksDir, hookDefs, WORKER_NAME);
+        }
+      } catch {}
+    }
+    if (params.env) {
+      try {
+        const envObj = typeof params.env === "string" ? JSON.parse(params.env) : params.env;
+        if (typeof envObj === "object") {
+          const envLines = Object.entries(envObj).map(([k, v]) => `export ${k}="${v}"`).join(`
+`);
+          writeFileSync11(join16(workerFleetDir, "env.sh"), envLines + `
+`, { mode: 493 });
+        }
+      } catch {}
+    }
+    return result;
+  });
   server.registerTool("fleet_help", {
-    description: "Show fleet management documentation and available operations.",
+    description: "Show fleet management docs: AgentSpec format, fleet run, event tools, runtimes (claude/sdk/codex), CLI reference.",
     inputSchema: {}
   }, async () => handleFleetHelp());
 }
 
 // mcp/worker-fleet/tools/mail.ts
 import { readdirSync as readdirSync5 } from "fs";
-import { execSync as execSync7 } from "child_process";
+import { execSync as execSync8 } from "child_process";
+import { readFileSync as readFileSync13 } from "fs";
+import { join as join17 } from "path";
+var BACKPRESSURE_THRESHOLD = 10;
+async function getRecipientUnreadCount(workerName) {
+  const tokenPath = join17(FLEET_DIR, workerName, "token");
+  let token;
+  try {
+    token = readFileSync13(tokenPath, "utf-8").trim();
+  } catch {
+    return 0;
+  }
+  if (!token)
+    return 0;
+  try {
+    const resp = await fetch(`${FLEET_MAIL_URL}/api/messages?label=UNREAD&maxResults=1`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) });
+    if (!resp.ok)
+      return 0;
+    const data = await resp.json();
+    return data?._diagnostics?.unread_count ?? data?.messages?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
 function registerMailTools(server) {
   server.registerTool("mail_send", {
     description: `Send a message to another worker, the human operator, or the entire fleet. Messages are durably stored in Fleet Mail (persist across restarts, searchable, threaded) and delivered instantly via tmux overlay if the recipient's pane is live.
@@ -23312,8 +26664,8 @@ Escalate to operator when: (1) design/architecture decisions need human judgment
     if (to === "user") {
       let msgId = "";
       try {
-        const toIds = await resolveFleetMailRecipients(["user"]);
-        const ccIds2 = cc ? await resolveFleetMailRecipients(cc) : [];
+        const toIds = await resolveFleetMailRecipients(["user"], subject);
+        const ccIds2 = cc ? await resolveFleetMailRecipients(cc, subject) : [];
         const result = await fleetMailRequest("POST", "/api/messages/send", {
           to: toIds,
           subject,
@@ -23330,7 +26682,7 @@ Escalate to operator when: (1) design/architecture decisions need human judgment
         return { content: [{ type: "text", text: `Error sending to operator via Fleet Mail: ${e.message}` }], isError: true };
       }
       try {
-        execSync7(`terminal-notifier -title "Worker Escalation" -message ${JSON.stringify(`[${WORKER_NAME}] ${subject}`)} -sound default 2>/dev/null || osascript -e 'display notification ${JSON.stringify(`[${WORKER_NAME}] ${subject}`)} with title "Worker Escalation" sound name "default"'`, { timeout: 5000, shell: "/bin/bash" });
+        execSync8(`terminal-notifier -title "Worker Escalation" -message ${JSON.stringify(`[${WORKER_NAME}] ${subject}`)} -sound default 2>/dev/null || osascript -e 'display notification ${JSON.stringify(`[${WORKER_NAME}] ${subject}`)} with title "Worker Escalation" sound name "default"'`, { timeout: 5000, shell: "/bin/bash" });
       } catch {}
       return withLint({ content: [{ type: "text", text: `Sent to operator via Fleet Mail [${msgId}] + desktop notification` }] });
     }
@@ -23368,13 +26720,13 @@ Escalate to operator when: (1) design/architecture decisions need human judgment
     if (recipientNames.length === 0) {
       return { content: [{ type: "text", text: "No recipients resolved" }], isError: true };
     }
-    const ccIds = cc ? await resolveFleetMailRecipients(cc) : [];
+    const ccIds = cc ? await resolveFleetMailRecipients(cc, subject) : [];
     const mailSuccesses = [];
     const mailFailures = [];
     const tmuxDelivered = [];
     let lastMsgId = "";
     const sendResults = await Promise.allSettled(recipientNames.map(async (name) => {
-      const toIds = await resolveFleetMailRecipients([name]);
+      const toIds = await resolveFleetMailRecipients([name], subject);
       const result = await fleetMailRequest("POST", "/api/messages/send", {
         to: toIds,
         subject,
@@ -23409,7 +26761,7 @@ Escalate to operator when: (1) design/architecture decisions need human judgment
       try {
         const entry = registry2[name];
         const paneId = entry?.pane_id;
-        if (paneId && isPaneAlive(paneId)) {
+        if (paneId && isPaneOwnedBy(paneId, name)) {
           const prefix = recipientNames.length > 1 ? `[broadcast from ${WORKER_NAME}]` : `[mail from ${WORKER_NAME}]`;
           tmuxSendMessage(paneId, `${prefix} ${subject}: ${body}`);
           tmuxDelivered.push(name);
@@ -23428,7 +26780,14 @@ ${mailFailures.join(`
       if (entry && (!entry.pane_id || !isPaneAlive(entry.pane_id))) {
         paneWarning = ` (WARNING: no active pane \u2014 queued in Fleet Mail inbox)`;
       }
-      parts.push(`Sent to ${recipientNames[0]} [${lastMsgId}]${paneWarning}`);
+      let backpressureWarning = "";
+      try {
+        const unreadCount = await getRecipientUnreadCount(recipientNames[0]);
+        if (unreadCount > BACKPRESSURE_THRESHOLD) {
+          backpressureWarning = ` (\u26A0 recipient has ${unreadCount} unread messages \u2014 may be slow to respond)`;
+        }
+      } catch {}
+      parts.push(`Sent to ${recipientNames[0]} [${lastMsgId}]${paneWarning}${backpressureWarning}`);
     } else {
       parts.push(`Sent to ${mailSuccesses.length}/${recipientNames.length} workers`);
       if (tmuxDelivered.length > 0)
@@ -23592,22 +26951,235 @@ Your token: ${token}
 `);
   });
 }
+
+// mcp/worker-fleet/tools/event-tools.ts
+import { readFileSync as readFileSync14, writeFileSync as writeFileSync12, existsSync as existsSync13, mkdirSync as mkdirSync12 } from "fs";
+import { join as join18 } from "path";
+import { execSync as execSync9 } from "child_process";
+function buildContext(config2) {
+  const workerName = WORKER_NAME;
+  const resultsDir = join18(config2.sessionDir, "results", workerName);
+  return {
+    workerName,
+    projectRoot: config2.projectRoot,
+    sessionDir: config2.sessionDir,
+    async sendMail(to, subject, body) {
+      const mailUrl = FLEET_MAIL_URL || process.env.FLEET_MAIL_URL;
+      const mailToken = process.env.FLEET_MAIL_TOKEN;
+      if (!mailUrl || !mailToken)
+        return;
+      try {
+        await fetch(`${mailUrl}/api/messages`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${mailToken}`
+          },
+          body: JSON.stringify({ to, subject, body }),
+          signal: AbortSignal.timeout(5000)
+        });
+      } catch {}
+    },
+    updateState(key, value) {
+      const statePath = join18(FLEET_DIR, workerName, "state.json");
+      try {
+        const state = JSON.parse(readFileSync14(statePath, "utf-8"));
+        if (!state.custom)
+          state.custom = {};
+        state.custom[key] = value;
+        writeFileSync12(statePath, JSON.stringify(state, null, 2));
+      } catch {}
+    },
+    async spawnWorker(name, mission, opts) {
+      const model = opts?.model || "sonnet";
+      try {
+        execSync9(`fleet create "${name}" "${mission.replace(/"/g, "\\\"")}" --model "${model}"`, { timeout: 30000, stdio: "pipe" });
+      } catch {}
+    },
+    async triggerNode(nodeName) {
+      const fleetDir = process.env.CLAUDE_FLEET_DIR || join18(HOME, ".claude-fleet");
+      try {
+        execSync9(`nohup bun "${fleetDir}/engine/program/bridge.ts" "${config2.sessionDir}" --node "${nodeName}" >> "${config2.sessionDir}/bridge-launch.log" 2>&1 &`, { timeout: 5000, stdio: "pipe" });
+      } catch {}
+    },
+    writeResult(filename, content) {
+      mkdirSync12(resultsDir, { recursive: true });
+      writeFileSync12(join18(resultsDir, filename), content);
+    },
+    readResult(filename) {
+      const path = join18(resultsDir, filename);
+      try {
+        return readFileSync14(path, "utf-8");
+      } catch {
+        return null;
+      }
+    }
+  };
+}
+function paramToZod(param) {
+  let schema;
+  switch (param.type) {
+    case "number":
+      schema = exports_external.number();
+      break;
+    case "boolean":
+      schema = exports_external.boolean();
+      break;
+    case "object":
+      schema = exports_external.record(exports_external.unknown());
+      break;
+    case "array":
+      schema = exports_external.array(exports_external.unknown());
+      break;
+    default:
+      schema = exports_external.string();
+      break;
+  }
+  if (param.description)
+    schema = schema.describe(param.description);
+  if (!param.required)
+    schema = schema.optional();
+  return schema;
+}
+function registerEventTools(server) {
+  const configPath2 = join18(FLEET_DIR, WORKER_NAME, "event-tools.json");
+  if (!existsSync13(configPath2))
+    return;
+  let config2;
+  try {
+    config2 = JSON.parse(readFileSync14(configPath2, "utf-8"));
+  } catch {
+    return;
+  }
+  if (!config2.tools?.length)
+    return;
+  const ctx = buildContext(config2);
+  for (const tool of config2.tools) {
+    const zodShape = {};
+    if (tool.inputSchema) {
+      for (const [key, param] of Object.entries(tool.inputSchema)) {
+        zodShape[key] = paramToZod(param);
+      }
+    }
+    server.registerTool(tool.name, {
+      description: tool.description,
+      inputSchema: zodShape
+    }, async (params) => {
+      try {
+        let result;
+        if (tool.mode === "inline" && config2.programPath) {
+          const programModule = await import(config2.programPath);
+          const handlerFn = programModule[tool.handler];
+          if (typeof handlerFn !== "function") {
+            return { content: [{ type: "text", text: `Error: handler '${tool.handler}' not found in program file` }], isError: true };
+          }
+          result = await handlerFn(params, ctx);
+        } else {
+          const env2 = {
+            ...process.env,
+            WORKER_NAME: ctx.workerName,
+            SESSION_DIR: ctx.sessionDir,
+            PROJECT_ROOT: ctx.projectRoot,
+            RESULTS_DIR: join18(ctx.sessionDir, "results", ctx.workerName)
+          };
+          for (const [key, value] of Object.entries(params)) {
+            env2[`INPUT_${key.toUpperCase()}`] = String(value);
+          }
+          env2.INPUT_JSON = JSON.stringify(params);
+          const output = execSync9(tool.handler, {
+            env: env2,
+            timeout: 30000,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"]
+          });
+          result = { text: output.trim() };
+        }
+        return { content: [{ type: "text", text: result.text }] };
+      } catch (e) {
+        return { content: [{ type: "text", text: `Error in ${tool.name}: ${e.message}` }], isError: true };
+      }
+    });
+  }
+  console.error(`event-tools: registered ${config2.tools.length} tool(s) for ${WORKER_NAME}`);
+}
 // mcp/worker-fleet/seed.ts
-import { readFileSync as readFileSync12, existsSync as existsSync12 } from "fs";
-import { join as join15 } from "path";
+import { readFileSync as readFileSync16, existsSync as existsSync15 } from "fs";
+import { join as join20 } from "path";
+
+// shared/extensions.ts
+import { existsSync as existsSync14, readFileSync as readFileSync15, readdirSync as readdirSync6 } from "fs";
+import { join as join19, dirname as dirname2 } from "path";
+var __dirname = "/Users/wz/repos/boring/shared";
+var FLEET_ROOT2 = dirname2(__dirname);
+function loadExtensionManifests() {
+  const extDir = join19(FLEET_ROOT2, "extensions");
+  if (!existsSync14(extDir))
+    return [];
+  const results = [];
+  let entries;
+  try {
+    entries = readdirSync6(extDir);
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
+    const manifestPath = join19(extDir, entry, "manifest.json");
+    if (!existsSync14(manifestPath))
+      continue;
+    try {
+      const raw = readFileSync15(manifestPath, "utf-8");
+      const manifest = JSON.parse(raw);
+      results.push({ dir: join19(extDir, entry), manifest });
+    } catch {}
+  }
+  return results.sort((a, b) => a.manifest.name.localeCompare(b.manifest.name));
+}
+function loadSeedFragments() {
+  const extensions = loadExtensionManifests();
+  const fragments = [];
+  for (const { dir, manifest } of extensions) {
+    const paths = manifest.templates?.["seed-fragments"];
+    if (!paths || paths.length === 0)
+      continue;
+    for (const relPath of paths) {
+      const absPath = join19(dir, relPath);
+      if (!existsSync14(absPath)) {
+        console.warn(`[extensions] seed fragment not found: ${absPath} (extension: ${manifest.name})`);
+        continue;
+      }
+      try {
+        const content = readFileSync15(absPath, "utf-8");
+        fragments.push({ extensionName: manifest.name, content });
+      } catch {
+        console.warn(`[extensions] failed to read seed fragment: ${absPath}`);
+      }
+    }
+  }
+  return fragments;
+}
+
+// mcp/worker-fleet/seed.ts
 function loadSeedContext(branch, missionAuthority, workerName) {
   const name = workerName || WORKER_NAME;
-  const tmplPath = join15(CLAUDE_FLEET, "templates/seed-context.md");
+  const tmplPath = join20(CLAUDE_FLEET, "templates/seed-context.md");
   try {
-    return readFileSync12(tmplPath, "utf-8").replace(/\{\{WORKER_NAME\}\}/g, name).replace(/\{\{BRANCH\}\}/g, branch).replace(/\{\{MISSION_AUTHORITY\}\}/g, missionAuthority);
+    let content = readFileSync16(tmplPath, "utf-8").replace(/\{\{WORKER_NAME\}\}/g, name).replace(/\{\{BRANCH\}\}/g, branch).replace(/\{\{MISSION_AUTHORITY\}\}/g, missionAuthority);
+    for (const frag of loadSeedFragments()) {
+      const fragContent = frag.content.replace(/\{\{WORKER_NAME\}\}/g, name).replace(/\{\{BRANCH\}\}/g, branch).replace(/\{\{MISSION_AUTHORITY\}\}/g, missionAuthority);
+      content += `
+
+<!-- extension: ${frag.extensionName} -->
+${fragContent}`;
+    }
+    return content;
   } catch {
     return `Use \`mcp__worker-fleet__*\` MCP tools. Call \`mail_inbox()\` first. Report to ${missionAuthority}.`;
   }
 }
 function generateSeedContent(handoff, workerName) {
   const effectiveName = workerName || WORKER_NAME;
-  const workerDir2 = join15(PROJECT_ROOT, ".claude/workers", effectiveName);
-  const fleetWorkerDir = join15(FLEET_DIR, effectiveName);
+  const workerDir2 = join20(PROJECT_ROOT, ".claude/workers", effectiveName);
+  const fleetWorkerDir = join20(FLEET_DIR, effectiveName);
   const worktreeDir = getWorktreeDir();
   const branch = `worker/${effectiveName}`;
   const _seedConfig = readRegistry()._config;
@@ -23627,10 +27199,10 @@ ${JSON.stringify(entry.custom, null, 2)}
 These values were saved by your previous instance via \`update_state()\`. Use them to resume context.`;
     }
     if (entry?.custom?.proposal_required) {
-      const instrPath = join15(CLAUDE_FLEET, "templates/proposal-instructions.md");
-      const tmplPath = join15(CLAUDE_FLEET, "templates/proposal-template.html");
+      const instrPath = join20(CLAUDE_FLEET, "templates/proposal-instructions.md");
+      const tmplPath = join20(CLAUDE_FLEET, "templates/proposal-template.html");
       try {
-        let instrContent = readFileSync12(instrPath, "utf-8");
+        let instrContent = readFileSync16(instrPath, "utf-8");
         instrContent = instrContent.replace(/\{\{WORKER_NAME\}\}/g, effectiveName).replace(/\{\{MISSION_AUTHORITY\}\}/g, _missionAuth).replace(/\{\{TEMPLATE_PATH\}\}/g, tmplPath);
         proposalBlock = `
 
@@ -23645,10 +27217,10 @@ These values were saved by your previous instance via \`update_state()\`. Use th
 
 ${handoff}`;
   } else {
-    const checkpointLatest = join15(WORKERS_DIR, effectiveName, "checkpoints", "latest.json");
-    if (existsSync12(checkpointLatest)) {
+    const checkpointLatest = join20(WORKERS_DIR, effectiveName, "checkpoints", "latest.json");
+    if (existsSync15(checkpointLatest)) {
       try {
-        const cpRaw = readFileSync12(checkpointLatest, "utf-8").trim();
+        const cpRaw = readFileSync16(checkpointLatest, "utf-8").trim();
         const cp = JSON.parse(cpRaw);
         let cpBlock = `
 ## HANDOFF FROM PREVIOUS CYCLE \u2014 READ FIRST
@@ -23679,10 +27251,10 @@ ${cp.key_facts.map((f) => `- ${f}`).join(`
         }
         handoffBlock = cpBlock;
       } catch {
-        const handoffPath = join15(WORKERS_DIR, effectiveName, "handoff.md");
-        if (existsSync12(handoffPath)) {
+        const handoffPath = join20(WORKERS_DIR, effectiveName, "handoff.md");
+        if (existsSync15(handoffPath)) {
           try {
-            const handoffContent = readFileSync12(handoffPath, "utf-8").trim();
+            const handoffContent = readFileSync16(handoffPath, "utf-8").trim();
             if (handoffContent) {
               handoffBlock = `
 ## HANDOFF FROM PREVIOUS CYCLE \u2014 READ FIRST
@@ -23693,10 +27265,10 @@ ${handoffContent}`;
         }
       }
     } else {
-      const handoffPath = join15(WORKERS_DIR, effectiveName, "handoff.md");
-      if (existsSync12(handoffPath)) {
+      const handoffPath = join20(WORKERS_DIR, effectiveName, "handoff.md");
+      if (existsSync15(handoffPath)) {
         try {
-          const handoffContent = readFileSync12(handoffPath, "utf-8").trim();
+          const handoffContent = readFileSync16(handoffPath, "utf-8").trim();
           if (handoffContent) {
             handoffBlock = `
 ## HANDOFF FROM PREVIOUS CYCLE \u2014 READ FIRST
@@ -23707,12 +27279,26 @@ ${handoffContent}`;
       }
     }
   }
+  let supervisorBlock = "";
+  try {
+    const reg = readRegistry();
+    const config2 = reg._config;
+    const hasSupervisorAuthority = isMissionAuthority(effectiveName, config2) || Object.entries(reg).some(([name, entry]) => name !== "_config" && name !== effectiveName && entry.report_to === effectiveName);
+    if (hasSupervisorAuthority) {
+      const supervisorPath = join20(CLAUDE_FLEET, "templates/seed-supervisor.md");
+      if (existsSync15(supervisorPath)) {
+        supervisorBlock = `
+
+` + readFileSync16(supervisorPath, "utf-8");
+      }
+    }
+  } catch {}
   let seed = `You are worker **${effectiveName}**.
 Worktree: ${worktreeDir} (branch: ${branch})
 Worker config: ${workerDir2}/
 ${handoffBlock}
 Read these files NOW in this order:
-1. ${existsSync12(join15(workerDir2, "mission.md")) ? workerDir2 : fleetWorkerDir}/mission.md \u2014 your mission and goals (you own this file \u2014 update it as your mission evolves)
+1. ${existsSync15(join20(workerDir2, "mission.md")) ? workerDir2 : fleetWorkerDir}/mission.md \u2014 your mission and goals (you own this file \u2014 update it as your mission evolves)
 2. Call \`mail_inbox()\` \u2014 check for messages before anything else
 3. Check \`.claude/scripts/${effectiveName}/\` for existing scripts
 
@@ -23720,37 +27306,37 @@ Read these files NOW in this order:
 
 If your inbox has a message from the user or ${_missionAuth} (mission_authority), prioritize it over your current work.${stateBlock}${proposalBlock}
 
-${loadSeedContext(branch, _missionAuth)}`;
+${loadSeedContext(branch, _missionAuth)}${supervisorBlock}`;
   return seed;
 }
 // mcp/worker-fleet/runtime.ts
 var CLAUDE_RUNTIME = {
   type: "claude",
   binary: "claude",
-  defaultModel: "opus",
+  defaultModel: "opus[1m]",
   buildLaunchCmd({ model, permissionMode, disallowedTools, workerDir: workerDir2, reasoningEffort }) {
-    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model "${model}"`;
     if (permissionMode === "bypassPermissions")
       cmd += " --dangerously-skip-permissions";
     if (reasoningEffort)
-      cmd += ` --effort ${reasoningEffort}`;
+      cmd += ` --effort "${reasoningEffort}"`;
     if (disallowedTools)
       cmd += ` --disallowed-tools "${disallowedTools}"`;
-    cmd += ` --add-dir ${workerDir2}`;
+    cmd += ` --add-dir "${workerDir2}"`;
     return cmd;
   },
   buildResumeCmd({ model, permissionMode, workerDir: workerDir2, sessionId }) {
-    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model "${model}"`;
     if (permissionMode === "bypassPermissions")
       cmd += " --dangerously-skip-permissions";
-    cmd += ` --add-dir ${workerDir2} --resume ${sessionId}`;
+    cmd += ` --add-dir "${workerDir2}" --resume ${sessionId}`;
     return cmd;
   },
   buildForkCmd({ model, permissionMode, workerDir: workerDir2, sessionId }) {
-    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+    let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model "${model}"`;
     if (permissionMode === "bypassPermissions")
       cmd += " --dangerously-skip-permissions";
-    cmd += ` --add-dir ${workerDir2} --resume ${sessionId} --fork-session`;
+    cmd += ` --add-dir "${workerDir2}" --resume ${sessionId} --fork-session`;
     return cmd;
   },
   exitCommand: "/exit",
@@ -23765,13 +27351,13 @@ var CODEX_RUNTIME = {
   binary: "codex",
   defaultModel: "gpt-5.4",
   buildLaunchCmd({ model, permissionMode, reasoningEffort }) {
-    let cmd = `codex -m ${model}`;
+    let cmd = `codex -m "${model}"`;
     if (permissionMode === "bypassPermissions")
       cmd += " --dangerously-bypass-approvals-and-sandbox";
     else
       cmd += " -s workspace-write -a on-request";
     if (reasoningEffort)
-      cmd += ` -c model_reasoning_effort=${reasoningEffort}`;
+      cmd += ` -c model_reasoning_effort="${reasoningEffort}"`;
     cmd += " --no-alt-screen";
     return cmd;
   },
@@ -23788,9 +27374,30 @@ var CODEX_RUNTIME = {
     return {};
   }
 };
+var SDK_RUNTIME = {
+  type: "sdk",
+  binary: "bun",
+  defaultModel: "opus[1m]",
+  buildLaunchCmd({ model }) {
+    return `echo "SDK runtime: use fleet run --spec with runtime: sdk"`;
+  },
+  buildResumeCmd({ sessionId }) {
+    return `echo "SDK resume not supported via CLI \u2014 use query({ options: { resume: '${sessionId}' } })"`;
+  },
+  buildForkCmd({ sessionId }) {
+    return `echo "SDK fork not supported via CLI \u2014 use query({ options: { resume: '${sessionId}', forkSession: true } })"`;
+  },
+  exitCommand: "",
+  processPattern: /bun.*sdk-/,
+  tuiReadyPattern: /\[sdk\] Starting/,
+  buildEnv() {
+    return {};
+  }
+};
 var RUNTIMES = {
   claude: CLAUDE_RUNTIME,
-  codex: CODEX_RUNTIME
+  codex: CODEX_RUNTIME,
+  sdk: SDK_RUNTIME
 };
 function getWorkerRuntime(workerName) {
   const name = workerName || WORKER_NAME;
@@ -23813,6 +27420,7 @@ registerHookTools(server);
 registerLifecycleTools(server);
 registerFleetTools(server);
 registerMailTools(server);
+registerEventTools(server);
 async function main() {
   const transport = new StdioServerTransport;
   await server.connect(transport);
@@ -23830,9 +27438,11 @@ export {
   writeLaunchScript,
   writeFleetConfig,
   withRegistryLocked,
+  scanScriptAgainstDenyList,
   runDiagnostics,
   resolveRecipient,
   releaseLock,
+  registerEventTools,
   readWorkerState,
   readWorkerConfig,
   readRegistry,
@@ -23853,6 +27463,7 @@ export {
   findOwnPane,
   ensureWorkerInRegistry,
   createWorkerFiles,
+  checkHookAccess,
   canUpdateWorker,
   buildMessageBody,
   acquireLock,

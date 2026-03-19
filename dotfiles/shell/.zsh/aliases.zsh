@@ -59,9 +59,7 @@ alias snippi='snippets search -p -i'
 alias conda-init='eval "$(conda shell.zsh hook 2>/dev/null || /opt/miniconda3/bin/conda shell.zsh hook)"'
 
 # ===== China network routing =====
-alias cn='~/.claude/scripts/china_network.sh'
-alias cn-on='cn on'
-alias cn-off='cn off'
+# cn() function defined in functions.zsh (needs to export HTTPS_PROXY in current shell)
 
 # ===== fzs (program launcher) =====
 alias fzs="fzs --config ~/.config/fzs/config.toml"

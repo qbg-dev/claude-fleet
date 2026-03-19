@@ -176,7 +176,7 @@ CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" codex exec -p "$CASE_PROMPT" --model gpt-5.4
 \`\`\``
     : `Launch each case as a separate \`claude\` subprocess:
 \`\`\`bash
-CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" claude --model ${opts.model || "sonnet"} --dangerously-skip-permissions -p "$CASE_PROMPT"
+CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" claude --model "${opts.model || "sonnet"}" --dangerously-skip-permissions -p "$CASE_PROMPT"
 \`\`\``;
 
   return `You are the benchmark executor for **${benchmark}**.

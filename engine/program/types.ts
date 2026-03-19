@@ -17,10 +17,12 @@
 export type HookEvent =
   | "SessionStart" | "SessionEnd" | "UserPromptSubmit"
   | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
-  | "PermissionRequest" | "Notification" | "Stop"
+  | "PermissionRequest" | "Notification" | "Stop" | "StopFailure"
   | "SubagentStart" | "SubagentStop" | "TeammateIdle"
   | "TaskCompleted" | "InstructionsLoaded" | "ConfigChange"
-  | "PreCompact" | "WorktreeCreate" | "WorktreeRemove";
+  | "PreCompact" | "PostCompact"
+  | "Elicitation" | "ElicitationResult"
+  | "WorktreeCreate" | "WorktreeRemove";
 
 export interface PipelineHook {
   event: HookEvent;

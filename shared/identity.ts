@@ -36,7 +36,7 @@ export function resolveSessionId(opts?: { sessionId?: string; tmuxPane?: string 
   // Try TMUX_PANE → pane-map lookup
   const pane = opts?.tmuxPane || process.env.TMUX_PANE;
   if (pane) {
-    const byPanePath = join(PANE_MAP_DIR, "by-pane", pane.replace("%", ""));
+    const byPanePath = join(PANE_MAP_DIR, "by-pane", pane);
     try {
       const sid = readFileSync(byPanePath, "utf-8").trim();
       if (sid && isValidSessionId(sid)) return sid;

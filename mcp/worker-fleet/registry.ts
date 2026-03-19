@@ -184,9 +184,9 @@ export function generateLaunchScript(name: string, config: WorkerConfig): string
   const permMode = config.permission_mode || "bypassPermissions";
   const missionPath = join(FLEET_DIR, name, "mission.md");
 
-  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model ${model}`;
+  let cmd = `CLAUDE_CODE_SKIP_PROJECT_LOCK=1 claude --model "${model}"`;
   if (permMode === "bypassPermissions") cmd += " --dangerously-skip-permissions";
-  if (effort) cmd += ` --effort ${effort}`;
+  if (effort) cmd += ` --effort "${effort}"`;
   // Note: disallowed_tools are now hooks in config.json, not CLI flags
 
   return `#!/bin/bash

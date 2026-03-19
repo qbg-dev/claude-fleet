@@ -11,7 +11,7 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # Use the Wechat project as test input (real codebase)
-PROJECT_ROOT="${1:-/Users/wz/Desktop/zPersonalProjects/Wechat-w-chief-of-staff}"
+PROJECT_ROOT="${1:-/Users/wz/zPersonalProjects/Wechat-w-chief-of-staff}"
 
 if [ ! -d "$PROJECT_ROOT/.git" ] && [ ! -f "$PROJECT_ROOT/.git" ]; then
   echo "ERROR: $PROJECT_ROOT is not a git repo"

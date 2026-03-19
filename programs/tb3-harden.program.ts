@@ -30,7 +30,7 @@ export interface Tb3HardenOpts {
 }
 
 const TASK = "ranger-provisioning-service";
-const PROJECT_ROOT = "/Users/wz/Desktop/zPersonalProjects/terminal-bench-3-w-tb3-ranger";
+const PROJECT_ROOT = "/Users/wz/zPersonalProjects/terminal-bench-3-w-tb3-ranger";
 const TASK_DIR = `${PROJECT_ROOT}/tasks/${TASK}`;
 
 export default function tb3Harden(opts: Tb3HardenOpts): Program {

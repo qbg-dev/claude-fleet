@@ -74,6 +74,7 @@ import { register as registerRegister } from "./commands/register";
 import { register as registerState } from "./commands/state";
 import { register as registerCheckpoint } from "./commands/checkpoint";
 import { register as registerSession } from "./commands/session";
+import { register as registerSend } from "./commands/send";
 
 registerSetup(program);
 registerCreate(program);
@@ -108,5 +109,6 @@ registerRegister(program);
 registerState(program);
 registerCheckpoint(program);
 registerSession(program);
+registerSend(program);
 
 program.parse();

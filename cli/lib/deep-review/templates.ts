@@ -223,7 +223,7 @@ cd "${ctx.workDir}"
 ${fleetEnv ? fleetEnv + projectRootExport : ""}
 
 # Run the review worker
-claude --model ${config.workerModel} --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/worker-${i}-seed.md')"
+claude --model "${config.workerModel}" --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/worker-${i}-seed.md')"
 
 # Post-exit validation: ensure findings JSON is structurally valid
 OUTPUT_FILE="${ctx.sessionDir}/findings-pass-${i}.json"
@@ -257,7 +257,7 @@ fi
   const coordScript = `#!/usr/bin/env bash
 cd "${ctx.workDir}"
 ${coordFleetEnv ? coordFleetEnv + coordPrExport : ""}
-exec claude --model ${config.coordModel} --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/coordinator-seed.md')"
+exec claude --model "${config.coordModel}" --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/coordinator-seed.md')"
 `;
   writeFileSync(join(ctx.sessionDir, "run-coordinator.sh"), coordScript, { mode: 0o755 });
 
@@ -272,7 +272,7 @@ exec claude --model ${config.coordModel} --dangerously-skip-permissions "$(cat '
     const judgeScript = `#!/usr/bin/env bash
 cd "${ctx.workDir}"
 ${judgeFleetEnv ? judgeFleetEnv + judgePrExport : ""}
-exec claude --model ${config.workerModel} --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/judge-seed.md')"
+exec claude --model "${config.workerModel}" --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/judge-seed.md')"
 `;
     writeFileSync(join(ctx.sessionDir, "run-judge.sh"), judgeScript, { mode: 0o755 });
   }
@@ -304,7 +304,7 @@ mkfifo "$FIFO" 2>/dev/null || true
 cat "$FIFO" > /dev/null
 echo "$(date '+%H:%M:%S') Hook received. Launching ${vtype} verification..."
 
-claude --model ${config.workerModel} --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/verifier-${vtype}-seed.md')"
+claude --model "${config.workerModel}" --dangerously-skip-permissions "$(cat '${ctx.sessionDir}/verifier-${vtype}-seed.md')"
 
 # Post-exit validation
 if [ -f "${voutput}" ]; then

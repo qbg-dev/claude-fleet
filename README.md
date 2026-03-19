@@ -52,7 +52,8 @@ Available via the [plugin marketplace](plugins/README.md). The onboarding agent 
 ```
 fleet onboard                           # guided setup (the entry point)
 fleet create <name> "<mission>"         # create + launch worker
-fleet ls [--json]                       # list workers with liveness
+fleet register [--name <name>]         # register session (auto on first prompt)
+fleet ls [--json]                       # list all workers (incl. auto-registered)
 fleet start <name>                      # restart worker
 fleet stop <name> [--all]               # graceful stop
 fleet attach <name>                     # attach tmux pane

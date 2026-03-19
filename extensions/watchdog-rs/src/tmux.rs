@@ -78,6 +78,18 @@ pub fn window_exists(session: &str, window: &str) -> bool {
     }
 }
 
+/// Create a new tmux window in the given session
+pub fn create_window(session: &str, window: &str) -> Result<()> {
+    let status = Command::new("tmux")
+        .args(["new-window", "-t", session, "-n", window, "-d"])
+        .status()?;
+    if !status.success() {
+        bail!("new-window failed for {session}:{window}");
+    }
+    debug!(session, window, "Created new tmux window");
+    Ok(())
+}
+
 // --- Actions (write) ---
 
 /// Fault-tolerant Enter: try normal Enter first, fall back to hex 0d
@@ -228,8 +240,8 @@ pub fn launch_claude(
         "cd {worktree} && CLAUDE_CODE_SKIP_PROJECT_LOCK=1 WORKER_NAME={name} claude --model {model} --effort {effort} {perm} --add-dir {wdir}",
         worktree = shell_escape(worktree),
         name = shell_escape(worker_name),
-        model = model,
-        effort = reasoning_effort,
+        model = shell_escape(model),
+        effort = shell_escape(reasoning_effort),
         perm = perm_flag,
         wdir = shell_escape(worker_dir),
     );
@@ -310,7 +322,10 @@ pub fn fleet_start(worker: &str, project: &str) -> Result<()> {
 }
 
 fn shell_escape(s: &str) -> String {
-    if s.contains(' ') || s.contains('\'') {
+    // Quote if string contains spaces, quotes, or shell glob characters
+    if s.contains(' ') || s.contains('\'') || s.contains('[') || s.contains(']')
+        || s.contains('*') || s.contains('?') || s.contains('{') || s.contains('}')
+    {
         format!("'{}'", s.replace('\'', "'\\''"))
     } else {
         s.to_string()

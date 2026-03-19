@@ -75,7 +75,7 @@ for f in ~/.zsh/*.zsh(N); do source "$f"; done
 
 # ===== Tool initializations =====
 if [[ -o interactive ]]; then
-  eval "$(zoxide init zsh)"
+  eval "$(zoxide init zsh --cmd cd)"
 fi
 
 # fzf integration

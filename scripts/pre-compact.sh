@@ -134,6 +134,7 @@ if $IS_SESSION_AGENT; then
   WORKER_NAME=$(jq -r '.customName // "session"' "$HOME/.claude/fleet/.sessions/$SESSION_ID/identity.json" 2>/dev/null || echo "session")
   WORKER_DIR="$HOME/.claude/fleet/.sessions/$SESSION_ID"
   MAIN_ROOT="$PROJECT_ROOT"
+  _PROJECT_NAME=$(basename "$MAIN_ROOT")
 else
   # Legacy flat worker
   WORKER_NAME="${BRANCH#worker/}"

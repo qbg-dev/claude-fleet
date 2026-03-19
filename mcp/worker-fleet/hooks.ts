@@ -20,14 +20,15 @@ import type { DynamicHook } from "../../shared/types";
 // Re-export from shared types
 export type { DynamicHook } from "../../shared/types";
 
-// All 18 Claude Code hook events
+// All 22 Claude Code hook events
 export type HookEvent =
   | "SessionStart" | "SessionEnd" | "InstructionsLoaded"
   | "UserPromptSubmit"
   | "PreToolUse" | "PermissionRequest" | "PostToolUse" | "PostToolUseFailure"
-  | "Notification" | "Stop"
+  | "Notification" | "Stop" | "StopFailure"
   | "SubagentStart" | "SubagentStop" | "TeammateIdle" | "TaskCompleted"
-  | "ConfigChange" | "PreCompact"
+  | "ConfigChange" | "PreCompact" | "PostCompact"
+  | "Elicitation" | "ElicitationResult"
   | "WorktreeCreate" | "WorktreeRemove";
 
 // ── State ────────────────────────────────────────────────────────────

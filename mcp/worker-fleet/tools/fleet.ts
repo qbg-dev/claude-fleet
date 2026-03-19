@@ -499,7 +499,7 @@ async function handleFleetCreate(params: Record<string, any>): Promise<McpResult
               const wrapperContent = [
                 `#!/bin/bash`,
                 `cd ${worktreeReady ? worktreeDir : PROJECT_ROOT}`,
-                `bash ${forkScript} ${ownPane.paneId} ${sessionId} --name ${name} --no-worktree ${cwdFlag} --model ${workerModel} --dangerously-skip-permissions --add-dir ${workerDir}`,
+                `bash ${forkScript} ${ownPane.paneId} ${sessionId} --name ${name} --no-worktree ${cwdFlag} --model "${workerModel}" --dangerously-skip-permissions --add-dir "${workerDir}"`,
                 `rm -f "${wrapperPath}"`,
               ].join("\n");
               writeFileSync(wrapperPath, wrapperContent, { mode: 0o755 });

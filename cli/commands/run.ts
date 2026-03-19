@@ -340,7 +340,7 @@ async function runWithSpec(
   } else if (runtime === "custom" && spec.custom_launcher) {
     execLine = `exec ${spec.custom_launcher}`;
   } else {
-    let cmd = `exec claude --model ${model} --dangerously-skip-permissions`;
+    let cmd = `exec claude --model "${model}" --dangerously-skip-permissions`;
     if (spec.effort) cmd += ` --effort "${spec.effort}"`;
     if (spec.system_prompt) {
       const syspromptPath = join(sessionDir, "system-prompt.md");
