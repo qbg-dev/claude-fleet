@@ -57,3 +57,4 @@ relay-secret
 .annotations/
 claude_files/
 *.annotations.*
+.claude/worktrees/
