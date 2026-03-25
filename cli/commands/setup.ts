@@ -489,6 +489,23 @@ export function register(parent: Command): void {
         info("Deep review: not found (optional — multi-pass adversarial code review)");
       }
 
+      // Cron extension
+      const cronInstallScript = join(fleetDir, "extensions/cron/install.sh");
+      if (opts.extensions && existsSync(cronInstallScript)) {
+        info("Installing cron extension...");
+        const install = Bun.spawnSync(
+          ["bash", cronInstallScript],
+          { stdout: "inherit", stderr: "inherit" },
+        );
+        if (install.exitCode === 0) {
+          ok("Cron: installed (worker types: cron, meta-cron)");
+        } else {
+          warn("Cron extension install failed");
+        }
+      } else if (existsSync(cronInstallScript)) {
+        ok("Cron: available (run fleet setup --extensions to install)");
+      }
+
       // Fleet Mail TUI
       {
         const { findTuiBinary } = await import("./tui");

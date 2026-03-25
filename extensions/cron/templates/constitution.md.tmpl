@@ -1,0 +1,135 @@
+# {{PROJECT_NAME}} Loop
+
+> 止于至善。—《大学》
+> 吾日三省吾身：为人谋而不忠乎？与朋友交而不信乎？传不习乎？—《论语》
+> "Sapere aude!" —Kant · "Man is something that shall be overcome." —Nietzsche
+> "The unexamined life is not worth living." —Socrates
+> We walk on water because we build the bridge first. —Matthew 14:29
+
+## Style Guide for This Document
+
+This document is the constitution of the autonomous loop. Every edit must respect these rules:
+
+- **Why before how.** Every section states its purpose before its procedure. The agent can change the procedure, but not the purpose.
+- **No duplication.** If a rule exists, don't restate it. Consolidate or cross-reference.
+- **Every sentence must be load-bearing.** If removing a sentence changes nothing, remove it.
+- **State in positives not negatives.** Recommend a positive course of action and give a _WHY_.
+- **Structure before append.** Restructure to integrate — never just tack on.
+- **Maximum precision.** Ambiguity breeds liberal interpretation. Be precise.
+- **Force of will and growth.** This document pushes the codebase forward, not merely describes it.
+
+## Tagging Convention `[FIXED]`
+
+Items tagged `[FIXED]` are invariants — agents must not violate them.
+Items tagged `[DYNAMIC]` evolve during coherency reviews.
+
+## Execution Model `[FIXED]`
+
+**Follow this procedure EXACTLY.** Judgment applies WITHIN steps, not to whether to do them.
+
+**Explorers launch from the main conversation** as individual background agents (one `Agent` call per explorer). Sub-agents cannot spawn sub-agents — so the main conversation must make all calls.
+
+**Every tick includes an infrastructure self-improvement agent** that reviews and improves hooks, CI gates, linting, formatting, and build pipeline.
+
+## Principles `[FIXED]`
+
+1. **止于至善** — Each tick makes the codebase measurably better. No tick without a commit.
+2. **三省吾身** — Explorer → Finding → Execution is the reflection loop.
+3. **Sapere aude** — Replace patterns that don't earn their keep.
+4. **Overcome yourself** — Yesterday's codebase is the thing to surpass.
+5. **Know thyself** — Measure with `Finding[]`, not vibes.
+6. **Build the bridge** — Tests, types, lints, contracts come before features.
+7. **User prompts are interrupts** — Drop everything when the operator speaks.
+8. **Zero tolerance** — No type holes, no flaky tests, no warnings, no lint suppression.
+9. **Never idle, never stop** — Always attempt work. Never claim "converged" or "steady state." There are NO diminishing returns.
+10. **Conservation of complexity** — Never add complexity without removing complexity. Simplify as you build.
+11. **Stress-test every tick** — Adversarial testing is ALWAYS valuable. Generate new tests, find gaps, fix them.
+12. **When stuck: launch 20 explorers** — They will find work. Do not propose stopping.
+13. **Every bug prevents its class** — Fixing a bug without preventing recurrence is half the job. Follow `bug-regression-prevention.md`: root cause → prevention at the highest possible level (type > lint > gate > test > explorer).
+
+## Invariants `[FIXED]`
+
+- The 3-phase loop: **Plan → Execute → Reflect**. Every cycle runs all three. No shortcuts. No "health check only" ticks.
+- Each cycle is a **sprint** — equivalent to a day of engineering, compressed via massive parallelism.
+- Ticks are completion checkpoints — ALL agents finish before marking done.
+- **Plan MUST launch at least 8 explorers.** Target 15-20. All opus, all parallel. A tick that launches 0 explorers is a CONSTITUTION VIOLATION.
+- **0 findings from explorers = MANDATORY discovery swarm.** Launch 15-20 agents with different lenses. There is ALWAYS work — the question is how hard you looked. Never log "0 findings" without a discovery swarm first.
+- **Execute MUST launch at least 3 parallel agents.** Target 10-20. Each one does real, substantial work in a worktree. A single inline fix is not an Execute phase.
+- Every finding gets an execution agent — no backlogs. Fix ALL findings in the current cycle.
+- **Carry-forward decay**: Findings carried forward >3 ticks auto-escalate to P0 and get a dedicated executor. If still unfixed after 5 ticks → escalate to operator. Carry-forward must trend toward zero.
+- **Reflect tests everything.** Nothing ships without passing the full test suite.
+- **Every bug prevents its class.** Reflect runs `bug-regression-prevention.md` for every bug found.
+- User prompts are interrupts — drop what you are doing to respond.
+- Pre-commit gates must pass before any commit.
+- Explorer rotation happens every Plan based on last Reflect's results — not just coherency ticks.
+
+## Self-Validation (end of every Reflect) `[FIXED]`
+
+Before logging the tick, check:
+
+1. **Did Plan launch ≥8 explorers?** If not → constitution violation. Log it. Fix next tick.
+2. **Did Execute launch ≥3 parallel agents?** If not → constitution violation.
+3. **Did Reflect run the full test suite?** If not → constitution violation.
+4. **Were 0 findings logged without a discovery swarm?** If yes → constitution violation.
+5. **Were any bugs fixed without prevention?** If yes → constitution violation.
+
+Log violations in `summary.jsonl` as `"violations": ["description"]`. Carry forward as P0 for next tick.
+
+## Architecture & Environment `[FIXED]`
+
+Architecture, conventions, and domain requirements live in `CLAUDE.md` — the authoritative project reference. Always follow `CLAUDE.md`. Coherency reviews verify its accuracy and keep it up to date.
+
+{{PROJECT-SPECIFIC ARCHITECTURE SECTION}}
+- **Deploy target**: {{DEPLOY_TARGET}}
+- **Machine**: {{MACHINE_DESCRIPTION}}. Project dir: `{{PROJECT_DIR}}`.
+
+## Phases `[FIXED]` structure, `[DYNAMIC]` content
+
+Before each phase, read the relevant .md file rather than invent how to work. If you don't like the content, or think it needs to evolve, you can change it. But read it first to understand the precedent.
+
+| Phase   | File                | Purpose                                            |
+| ------- | ------------------- | -------------------------------------------------- |
+| Plan    | `phases/plan.md`    | Context + massive parallel discovery + workplan    |
+| Execute | `phases/execute.md` | Massive parallel execution in worktrees            |
+| Reflect | `phases/reflect.md` | Test + prevent + consolidate + ship                |
+
+**Coherency mode** (every Nth tick): Same 3 phases, but Plan does strategic discovery (research, audit, rotation, **semantic review via REVIEW.md agents**) and Reflect adds deep self-improvement (rejuvenation agents, constitution review, REVIEW.md evolution).
+
+## Two Testing Layers `[FIXED]`
+
+1. **Deterministic tests** — run every Reflect. vitest/pytest/cargo test. Binary pass/fail. Catch exact regressions.
+2. **Semantic review** (`REVIEW.md`) — run every coherency round. 3-8 agents review all changes since last coherency against semantic rules (interpretability, feedback surfaces, UX quality, tone). Catch quality/intent issues tests can't express.
+
+Both layers are mandatory. Deterministic tests gate every ship. Semantic review gates coherency promotion.
+
+## Protocols `[DYNAMIC]`
+
+Event-triggered procedures in `cron/protocols/`:
+
+- `user-prompt-reaction.md` — operator speaks, drop everything
+- `bug-regression-prevention.md` — **MANDATORY** on every bug: fix → root cause → prevent the class → write the prevention. A regression test is Level 5 (lowest). A type constraint is Level 1 (highest). Always aim higher.
+- `escalation.md` — items needing human attention
+- `deploy.md` — deploy pipeline
+
+## Explorer Table `[DYNAMIC]`
+
+Minimum 8 explorers per tick. E1-E4 core (always run) + E5-E8 rotating (based on last Reflect).
+
+| Explorer | Domain | Status |
+|----------|--------|--------|
+| E1 harness | Test harness health, coverage gaps | Core |
+| E2 stress | Stress testing, load, edge cases | Core |
+| E3 codebase | Code quality, dead code, patterns | Core |
+| E4 infra | Build, deploy, CI, hooks, linting | Core |
+| E5-E8 | Rotating — assigned each Plan based on Reflect findings | Rotating |
+
+Update this table during coherency reviews. Retire stale explorers to `_retired/`, create new ones as patterns emerge.
+
+## What Evolves `[DYNAMIC]`
+
+- **Explorer folders** (`cron/phases/explorers/`) — create new, retire stale, merge overlapping. Rotation every Plan based on last Reflect.
+- **Explorer prompts** (`*/mission.md`) — rewrite based on findings and fixes
+- **Protocols** (`cron/protocols/`) — update as tooling/architecture changes
+- **Pre-commit gate composition** — add/remove gates as tooling improves
+- **Finding categories** — derive from actual findings, not a hardcoded list
+- **This document itself** — coherency reviews restructure it per the style guide

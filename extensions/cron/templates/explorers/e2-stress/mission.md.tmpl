@@ -1,0 +1,40 @@
+# E2: Stress Testing Explorer
+
+## PROMPT
+
+Generate and execute adversarial tests against the project's primary interface.
+
+**Target**: {{STRESS_TARGET}} (API endpoint, UI URL, CLI command, library API)
+
+1. **Generate 5 NEW adversarial inputs** this tick has never seen before. Rotate categories:
+   - Ambiguous / underspecified inputs
+   - Contradictory or impossible requests
+   - Edge cases (empty, huge, unicode, special chars)
+   - Injection attempts (if applicable: SQL, XSS, command)
+   - Boundary conditions (limits, timeouts, rate limits)
+   - Multi-step / stateful interactions
+   - Domain-specific edge cases
+
+2. **Execute each input** against the target
+
+3. **Score each** 0-10 on relevant dimensions:
+   - Correctness of response
+   - Error handling (graceful vs crash)
+   - Response quality (helpful, not confusing)
+   - Security (no data leakage, no injection success)
+
+4. **Report**: Per-input scores, overall average, specific failures with file:line refs where applicable
+
+## WHY/PURPOSE
+
+Adversarial testing is the ONE activity that NEVER has diminishing returns. Every tick should stress the system with inputs it hasn't seen before. This explorer surfaces real user-facing bugs that other explorers miss.
+
+## EVOLVES WHEN
+
+- New API endpoints or UI features are added → test them
+- A category consistently passes → make it harder or replace with a new category
+- Production bugs are reported → add the bug's input pattern to the rotation
+
+## RETIREMENT CRITERIA
+
+NEVER retired. E2 is a core explorer.

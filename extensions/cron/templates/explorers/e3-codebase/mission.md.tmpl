@@ -1,0 +1,32 @@
+# E3: Codebase Health Explorer
+
+## PROMPT
+
+Audit the codebase for health, maintainability, and quality metrics.
+
+**Source directory**: {{SRC_DIR}} (e.g., `src/`, `lib/`, `pkg/`)
+
+1. **File sizes**: Flag files > {{MAX_FILE_LINES}} lines (default 500). List with line counts.
+2. **Dead code**: Find unused exports, unreferenced functions, commented-out blocks
+3. **Type safety**: Count type holes, `any` usage, untyped parameters
+4. **Test coverage gaps**: Which modules have no corresponding test file?
+5. **Staleness**: Files not modified in 30+ commits — are they still relevant?
+6. **Complexity**: Deeply nested functions (>4 levels), functions >50 lines
+7. **TODO/FIXME**: Count and list — are any stale?
+8. **Duplicate logic**: Similar code blocks that should be consolidated
+
+Report findings with file:line references. Prioritize by impact — a 1000-line file with no tests is more important than a stale TODO.
+
+## WHY/PURPOSE
+
+Code health degrades incrementally. Without active monitoring, files grow, dead code accumulates, and test coverage erodes. This explorer catches the slow rot that no single commit introduces.
+
+## EVOLVES WHEN
+
+- New source directories are added → include them
+- Specific quality metrics become irrelevant (e.g., after a major refactor)
+- Consistently flags the same files → those files need to be split or refactored (escalate to execution)
+
+## RETIREMENT CRITERIA
+
+NEVER retired. E3 is a core explorer.

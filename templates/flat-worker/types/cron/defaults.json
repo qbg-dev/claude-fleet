@@ -1,0 +1,6 @@
+{
+  "sleep_duration": null,
+  "model": "opus",
+  "effort": "high",
+  "description": "Autonomous improvement loop — Plan → Execute → Reflect sprint cycle"
+}

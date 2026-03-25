@@ -1,0 +1,46 @@
+# REVIEW.md — Semantic Lint Rules
+
+> These are the things deterministic tests CAN'T catch. They require judgment. Each rule is checked by a dedicated review agent during coherency rounds.
+
+## How it works
+
+- **Deterministic tests** (vitest, pytest, etc.) run every Reflect. They catch exact failures.
+- **Semantic reviews** (this file) run every coherency round. They catch quality, intent, and UX issues that tests can't express.
+- During coherency, 3-8 review agents are launched based on the complexity of this file. Each agent owns a section and reviews ALL changes since the last coherency round.
+
+## Review Scope
+
+Each review agent runs: `git diff HEAD~{commits_since_last_coherency} -- .` to get all changes, then evaluates them against its assigned rules.
+
+---
+
+## Rules
+
+{{PROJECT-SPECIFIC SEMANTIC RULES}}
+
+### Template examples (customize for your project):
+
+### Interpretability
+Every decision the system flags (low, high, anomalous, etc.) MUST be interpretable:
+- What formula/threshold was used?
+- What data went into the calculation?
+- Why was this flagged and not that?
+- A user should be able to trace any flag back to its source data.
+
+### Feedback Surface
+Every user-facing judgment MUST have a feedback mechanism:
+- A "this is incorrect" button, flag, or channel
+- Feedback must be captured with context (what was shown, what the user expected)
+- Feedback feeds back into the system (explorer findings, data corrections, threshold adjustments)
+
+### Progressive Disclosure
+Don't dump all data at once:
+- Summary first (1-3 key numbers)
+- Drill-down available on demand
+- Suggestion chips for next actions
+
+### Professional Tone
+No emoji, no casual language in production outputs. Domain-appropriate terminology. Data disclaimers where applicable.
+
+### No Black Boxes
+If the system makes a recommendation, it must show its work. No "trust me" verdicts. Every output should answer: "why this number?" and "where did this data come from?"
