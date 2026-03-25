@@ -1,6 +1,0 @@
-{
-  "sleep_duration": null,
-  "model": "opus",
-  "effort": "high",
-  "description": "Meta-cron monitor — checks project crons for constitution compliance, enforces via writes"
-}

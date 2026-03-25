@@ -1,8 +1,0 @@
-{
-  "name": "cron",
-  "version": "1.0.0",
-  "description": "Autonomous improvement loop — 3-phase sprint cycle (Plan → Execute → Reflect) with constitution-driven ticking via CronCreate, massive parallel explorers, bug prevention hierarchy, semantic review, and meta-cron monitoring.",
-  "install": "install.sh",
-  "worker_types": ["cron", "meta-cron"],
-  "root_files": ["REVIEW.md"]
-}
